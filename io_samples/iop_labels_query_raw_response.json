@@ -1,0 +1,243 @@
+{
+ "res_code": "0",
+ "res_desc": "查询成功。",
+ "result": {
+  "BUSIINFO": [
+   {
+    "ITEMCODE": "fe9b8a2dcfa42363e3f77d397b84cf835",
+    "ITEMNAME": "职业（快递员、外卖员、网约车）",
+    "ITEMVALUE": "不详"
+   },
+   {
+    "ITEMCODE": "3de853e341b4a5f4e4e5cbc6e882530",
+    "ITEMNAME": "网龄",
+    "ITEMVALUE": "2~5月"
+   },
+   {
+    "ITEMCODE": "dd18a02702b979dbd2b5411ac1779041",
+    "ITEMNAME": "爱奇艺偏好",
+    "ITEMVALUE": "无使用"
+   },
+   {
+    "ITEMCODE": "ecc542bd798dc631e4e77a9e80306069",
+    "ITEMNAME": "腾讯偏好",
+    "ITEMVALUE": "无使用"
+   },
+   {
+    "ITEMCODE": "c8fbbddc4337da705ee054ad4946f905",
+    "ITEMNAME": "芒果偏好",
+    "ITEMVALUE": "中度使用"
+   },
+   {
+    "ITEMCODE": "1791727e8215c874ef4663d358042c9d",
+    "ITEMNAME": "优酷偏好",
+    "ITEMVALUE": "中度使用"
+   },
+   {
+    "ITEMCODE": "bdc6a5be80628123cdbfad96fa6ae1b3",
+    "ITEMNAME": "终端制式",
+    "ITEMVALUE": "56"
+   },
+   {
+    "ITEMCODE": "9d3dcb099694a28ebcf14f063a938681",
+    "ITEMNAME": "最后一次投诉时间",
+    "ITEMVALUE": ""
+   },
+   {
+    "ITEMCODE": "4b5168c2f11a30e0c8f09b7ddbc81a54",
+    "ITEMNAME": "名下号卡数",
+    "ITEMVALUE": "3"
+   },
+   {
+    "ITEMCODE": "28f7d17f23ba86e761a47d0182982272",
+    "ITEMNAME": "是否长期出行",
+    "ITEMVALUE": "0"
+   },
+   {
+    "ITEMCODE": "aca5d71e17912311af1922a705a70ca",
+    "ITEMNAME": "是否能够足够",
+    "ITEMVALUE": "0"
+   },
+   {
+    "ITEMCODE": "86fc40e1e90a06fa12b191c07f578cd6",
+    "ITEMNAME": "30天内查资费次数",
+    "ITEMVALUE": "0"
+   },
+   {
+    "ITEMCODE": "d87d64f2237828561858acc56f14cd4f",
+    "ITEMNAME": "365天内查资费次数",
+    "ITEMVALUE": "0"
+   },
+   {
+    "ITEMCODE": "b19f545e253238e85e144b488231323",
+    "ITEMNAME": "是否车主",
+    "ITEMVALUE": "0"
+   },
+   {
+    "ITEMCODE": "b311fda7776c720ed937fc8b9011b482",
+    "ITEMNAME": "卡槽状态",
+    "ITEMVALUE": "移动双卡用户"
+   },
+   {
+    "ITEMCODE": "3b1367d9e0882fad472a99f5422a221b",
+    "ITEMNAME": "友商卡是否有宽带",
+    "ITEMVALUE": ""
+   },
+   {
+    "ITEMCODE": "389d0dadac02c5fe84b4e788e4e8af52",
+    "ITEMNAME": "疑似友商插卡",
+    "ITEMVALUE": "0"
+   },
+   {
+    "ITEMCODE": "f62bd0dc79c741451d9a935bd8f8013",
+    "ITEMNAME": "是否有老人",
+    "ITEMVALUE": "0"
+   },
+   {
+    "ITEMCODE": "ae0602d858e787c6f9c9a38aa4a61ff1",
+    "ITEMNAME": "是否有学生",
+    "ITEMVALUE": "0"
+   },
+   {
+    "ITEMCODE": "5a97ec3766612b41d4833ade8b3117fa",
+    "ITEMNAME": "是否有小孩",
+    "ITEMVALUE": "0"
+   },
+   {
+    "ITEMCODE": "26965b6d630bcedc1794adfe50940329",
+    "ITEMNAME": "名下宽带数量",
+    "ITEMVALUE": "0"
+   },
+   {
+    "ITEMCODE": "cf776ead3739bc1f8d6c598e226a863",
+    "ITEMNAME": "疑似宽带带渗透",
+    "ITEMVALUE": "0"
+   },
+   {
+    "ITEMCODE": "32484b477a627e639fd92b1f2e14256a",
+    "ITEMNAME": "家庭服务目标标签下线_79",
+    "ITEMVALUE": "0"
+   },
+   {
+    "ITEMCODE": "fdc259ecbf6fdb32556e806bd0a6cf36",
+    "ITEMNAME": "90天内宽频活跃天数*",
+    "ITEMVALUE": "0/0/0"
+   },
+   {
+    "ITEMCODE": "9090640dac6bd92c1f323adab326c076",
+    "ITEMNAME": "90天内顶盒活跃天数",
+    "ITEMVALUE": "0/0/0"
+   },
+   {
+    "ITEMCODE": "5ddb6455a5719b0403560e3a326db028",
+    "ITEMNAME": "变更前价值",
+    "ITEMVALUE": ""
+   },
+   {
+    "ITEMCODE": "11b58b45a7d21717c5e08419f38147ec",
+    "ITEMNAME": "友商卡流量（DOU）",
+    "ITEMVALUE": ""
+   },
+   {
+    "ITEMCODE": "a63765aa2b2f31075ea430247cf2211",
+    "ITEMNAME": "友商卡价值（ARPU）",
+    "ITEMVALUE": ""
+   },
+   {
+    "ITEMCODE": "ac81138bc5d7b5355d01329dfb67a80",
+    "ITEMNAME": "最近查资费日期",
+    "ITEMVALUE": "2024-12-27"
+   },
+   {
+    "ITEMCODE": "617f83e94e59c8bb5e79737fa6db4fa",
+    "ITEMNAME": "流量个性化运营标签98%",
+    "ITEMVALUE": "39%"
+   },
+   {
+    "ITEMCODE": "f9aa80c9037190eadd246866b1d6a2af",
+    "ITEMNAME": "近三个月通用流量使用量",
+    "ITEMVALUE": "11.46/15.16/27.96"
+   },
+   {
+    "ITEMCODE": "408c9f03f36b4c77594f011cf3d2fc03",
+    "ITEMNAME": "近三个月通用流量饱和度",
+    "ITEMVALUE": "37.56/59.28/83.46"
+   },
+   {
+    "ITEMCODE": "3b1e38002725eb25b0dcf23fc76b3a99",
+    "ITEMNAME": "近三个月平均主叫（分钟）",
+    "ITEMVALUE": "210.33"
+   },
+   {
+    "ITEMCODE": "fb50fc5c1d1d1a24ce3346ae80c847af",
+    "ITEMNAME": "省内九大权益负向名单",
+    "ITEMVALUE": "0"
+   },
+   {
+    "ITEMCODE": "aa9bcae53d73b19ac0858ad97dcafab",
+    "ITEMNAME": "是否银发用户*",
+    "ITEMVALUE": "0"
+   },
+   {
+    "ITEMCODE": "11c819a69445e52239fc9f642279dffa",
+    "ITEMNAME": "是否医疗陪诊客群",
+    "ITEMVALUE": "0"
+   },
+   {
+    "ITEMCODE": "95213737e22ee74b7dfbb435e5569eb",
+    "ITEMNAME": "是否交流学习客群",
+    "ITEMVALUE": "0"
+   },
+   {
+    "ITEMCODE": "d9c8a16a39e44927f1d2bf6744fd750",
+    "ITEMNAME": "是否生活福利客群",
+    "ITEMVALUE": "0"
+   },
+   {
+    "ITEMCODE": "8aa031937b1672ef876b1a1dc50876c",
+    "ITEMNAME": "是否省心陪伴客群",
+    "ITEMVALUE": "0"
+   },
+   {
+    "ITEMCODE": "77a09178d49061a23207123b13bd2a2",
+    "ITEMNAME": "是否旅游出行客群",
+    "ITEMVALUE": "0"
+   },
+   {
+    "ITEMCODE": "764ac472b385559385424b28d951dd7",
+    "ITEMNAME": "是否居家安全客群",
+    "ITEMVALUE": "0"
+   },
+   {
+    "ITEMCODE": "e43a8a839bec6a51302e7e304d0e1499",
+    "ITEMNAME": "是否健康检测客群",
+    "ITEMVALUE": "0"
+   },
+   {
+    "ITEMCODE": "9b03f8d20ec78cdeb10ac608dfe0c8",
+    "ITEMNAME": "是否在线问诊客群",
+    "ITEMVALUE": "0"
+   },
+   {
+    "ITEMCODE": "92714822ec802a76523cf2ba894c24d",
+    "ITEMNAME": "是否视频内容客群",
+    "ITEMVALUE": "0"
+   },
+   {
+    "ITEMCODE": "fe25ff9a904a5d6a871c1fa20c4a85f",
+    "ITEMNAME": "备用标签",
+    "ITEMVALUE": ""
+   },
+   {
+    "ITEMCODE": "69f32493a0cb531c1a0650119aab2a10",
+    "ITEMNAME": "升档融硬件",
+    "ITEMVALUE": ""
+   },
+   {
+    "ITEMCODE": "6f01cb7945457cd5bf4e1c3229700326",
+    "ITEMNAME": "升档20加",
+    "ITEMVALUE": ""
+   }
+  ]
+ }
+}

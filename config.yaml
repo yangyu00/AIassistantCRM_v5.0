@@ -1,0 +1,32 @@
+log_dir: ""
+
+fastapi:
+  host: "0.0.0.0"
+  port: 8989
+  reload: False
+
+marketAssistant:
+  url: "/api/speechQryService"
+  users:
+    - "CRM"
+
+IOP:
+  TOKEN:
+    host: "134.80.220.55"
+    port: "80"
+    id: "202408131154527921000059"
+    secret: "8bd777c80673af7833105f5bf4219a84"
+  CustInfo:
+    host: "134.80.220.55"
+    port: "80"
+    version: "1.0.1"
+    type: "M"
+
+sftp:
+  host: "134.80.199.252"
+  username: "wangsi"
+  port: 22
+  password: "W_s173O"
+
+
+  #  14上启动：docker run -itd --name crm4 -p 8989:8989 -v /app/lz/pythonproject/AIAssistant/AIassistantCRM_v4.0:/home/AIassistantCRM aicrm:v2 python /home/AIassistantCRM/main.py
