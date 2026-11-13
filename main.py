@@ -2,7 +2,6 @@ import datetime
 import importlib
 import os
 import subprocess
-import threading
 from pathlib import Path
 from typing import List
 
@@ -18,17 +17,16 @@ from services.rewrite_by_spec_f09554.rewrite import ProductInfoRewrite as Produc
 from services.rewrite_by_spec_f09591.rewrite import ProductInfoRewrite as ProductInfoBySpec9591
 from services.rewrite_by_spec_f09609.rewrite import ProductInfoRewrite as ProductInfoBySpec9609
 from sftp_workdir_f09554 import data_query as data_query_f09554
-from sftp_workdir_f09554.run import run_sftp_service_task as run_sftp_service_f09554_task
 from sftp_workdir_f09591 import data_query as data_query_f09591
-from sftp_workdir_f09591.run import run_sftp_service_task as run_sftp_service_f09591_task
 from sftp_workdir_f09609 import data_query as data_query_f09609
-from sftp_workdir_f09609.run import run_sftp_service_task as run_sftp_service_f09609_task
 from src import consts
 from src.call_stat import record_call
 from src.exceptions import telnumError, productIdError, register_errors_handlers
 from src.log_util import my_log
 from src.task_scheduler import repeat_task
 
+# 数据更新（SFTP 拉取 → SQLite 入库）由 tasks/ 下的 3 个独立进程负责；
+# 本进程只处理在线查询与维表热更新。
 app = FastAPI()
 register_errors_handlers(app)
 global_config = ImmutableYamlConfig()
@@ -85,24 +83,6 @@ def repeat_update_consts() -> None:
             else:
                 importlib.reload(consts)
                 excel_update_time[i] = mtime
-
-    # 任务2. SFTP 定时拉取/入库任务已拆分为独立进程（tasks/task_*.py），
-    # 不再在本进程内起线程。独立进程与此处靠 tasks/state/*.lock 文件锁互斥：
-    # 若独立进程已在运行，下面的启动会被跳过（不会重复拉取/入库）。
-    # 如需回退到“随服务一起跑”，把下面的 _start_legacy_sftp_tasks() 调用打开即可。
-    # _start_legacy_sftp_tasks()
-
-
-def _start_legacy_sftp_tasks() -> None:
-    """旧行为：在 3 个守护线程里分别 subprocess 调用 sftp_service.py。
-    默认不再调用，保留代码以便回退。"""
-    for name, target in (
-        ("F09554", run_sftp_service_f09554_task),
-        ("F09591", run_sftp_service_f09591_task),
-        ("F09609", run_sftp_service_f09609_task),
-    ):
-        my_log.info(f"SFTP_{name} 数据更新任务：正在启动子进程...")
-        threading.Thread(target=target, daemon=True).start()
 
 
 class ProductIds(BaseModel):

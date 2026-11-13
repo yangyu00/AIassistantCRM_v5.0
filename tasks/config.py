@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""tasks 独立配置：读取项目根目录 .env。
+"""tasks 独立配置：读取项目根目录 .env，并提供 SQLite 库目录给在线查询复用。
 
-不依赖根目录 config.py / config.yaml，也不读取各 sftp_workdir_* 的 CONFIG。
+不依赖项目总 config.py / config.yaml。
 优先级：系统环境变量 > .env；可用 TASKS_ENV_FILE 指定其他 .env 路径。
 """
 import os
@@ -114,3 +114,11 @@ TASKS = {
     "f09591_loss": _sharded_task("TASK2"),
     "f09609_diag": _sharded_task("TASK3"),
 }
+
+# 各任务写入 SQLite 的目录，与 base_task 子类的 DB_DIR 约定一致。
+# 在线查询 data_query.py 也读这里，保证读写路径只有一处定义。
+DB_ROOT = PROJECT_ROOT / "tasks" / "sqlite_db"
+
+
+def db_dir(task_name: str) -> Path:
+    return DB_ROOT / task_name

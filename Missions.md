@@ -1,6 +1,8 @@
 # 定时数据更新任务说明（SFTP AVL 拉取 → SQLite 入库）
 
 > 3 个任务各自独立进程运行，代码在 `tasks/`；在线业务（FastAPI）只读 SQLite。
+> 原随 `main.py` 启动的拉取实现（`sftp_workdir_*/run.py`、`sftp_service.py`）已删除，
+> 三个 `sftp_workdir_*` 目录现只保留在线查询用的 `data_query.py`。
 
 ## 通用规则
 
@@ -29,7 +31,9 @@
 ## 配置
 
 - 三个任务的配置统一由 `tasks/config.py` 读取并解析项目根目录 `.env`，脚本从 `TASKS[...]` 取值。
-- **不沿用项目总的 `config.yaml` / `config.py`**，也不再依赖各 `sftp_workdir_*/sftp_service.py` 里的 `CONFIG`；tasks 独立维护一份。
+- **不沿用项目总的 `config.yaml` / `config.py`**；配置只在 `tasks/config.py` 一处定义。
+- 在线查询 `sftp_workdir_*/data_query.py` 复用同一份 `TASKS[...]`，库目录由 `db_dir(任务名)`
+  统一指向 `tasks/sqlite_db/{任务名}/`，与三个任务脚本的写入路径一致，读写不再各算一套。
 - 优先级：**系统环境变量 > `.env`**；设置 `TASKS_ENV_FILE` 可指向其他 `.env` 路径。
   `.env` 支持 `#` 注释、行内注释、`export`、`${VAR}` 插值、单/双引号；缺必需键会在启动时报错，不会静默连错服务器。
 - 分组：SFTP 公共 5 项（`SFTP_HOST/PORT/USERNAME/PASSWORD/REMOTE_PATH`），
@@ -47,7 +51,7 @@
   | `POLL_INTERVAL_SECONDS` | 600 | 1800 | 3600 |
   | `NUM_TABLES` / `TABLE_NAME_PREFIX` | — | 128 / `data_F09591` | 128 / `data_F09609` |
 
-  > 任务2 保留天数沿用原 `sftp_service.py` CONFIG 的 **3 天**；此前文档写的 50 天有误，按代码实际值迁移。需要 50 天改 `.env` 一行即可。
+  > 任务2 保留天数为 **3 天**；需要 50 天改 `.env` 一行即可。
 - `.env` 含 SFTP 明文密码：仓库公开时建议加入 `.gitignore`，或部署时改用系统环境变量注入（不提交 `.env`）。
 - 本方案取代原待办「统一迁到 `config.yaml`」：不并入项目总配置，避免 tasks 与在线业务的配置耦合。
 
@@ -61,7 +65,7 @@
 - 主键自带索引，不再额外建 `(product_no, op_time)` 索引。
 - `REPLACE` 是后写覆盖先写。批量补跑历史文件按文件名日期**升序**执行（先旧后新）；
   常驻轮询按「昨天 → 今天」跑，天然符合。
-- 在线查询 `data_query.py` 无需改动：表名、列名、分表路由键都不变。
+- 在线查询 `data_query.py` 表名、列名、分表路由键不变，库路径见「配置」小节。
 
 ---
 
@@ -187,8 +191,8 @@ op_time 直接取自文件第 1 列，代码不做日期改写。当前样例 `F
 
 ## 补充/待确认事项
 
-- **配置已外置**：三个任务改由 `tasks/config.py` 读取根目录 `.env`，
-  不再依赖各 `sftp_workdir_*/sftp_service.py` 的 `CONFIG`；详见「配置」小节。
+- **重复模块已清理**：数据更新统一由 `tasks/` 独立进程承担，`main.py` 不再保留旧的
+  startup 线程启动入口；配置与库路径详见「配置」小节。
 - 样本文件 `io_samples/*.AVL` 中：F09591/F09609 每条逻辑记录有 2 条物理记录、多组产品时列数为 9（3 + 3 组）；
   生产上 F09609 约 103 列（约 50 组），解析逻辑与列数无关。
 - **op_time 偏移量**：任务1 = T-2、任务2 = T-1（已确认）；任务3 按样例推断为 T-2，待生产数据核实。
