@@ -286,8 +286,8 @@ python -m excel2consts.dim_watcher --config /path/to/registry.json --interval 30
 - 未实现旧脚本里的复杂话术加工（`cut_in_str2tuple` 解析切入/挽留话术、`匹配结果2` 分组、
   动态列 `标签0…标签26`）。本阶段只做固定表头的**列映射直取**；需要加工时再以可配置的
   transform 规则扩展，避免一上来引入难以排查的转换 bug。
-- 未做在线业务按 version 读取、未做版本回滚/历史版本查询、未接入 `tasks/config.py` 的 `.env`
-  （本模块只依赖 `registry.json`，自包含）。
+- 未做基于 `version` 的缓存/灰度切换、未做版本回滚/历史版本查询、未接入 `tasks/config.py` 的 `.env`
+  （本模块只依赖 `registry.json`，自包含）。在线业务读取侧的进展见下一节。
 
 ### 依赖与注意事项
 
@@ -297,4 +297,88 @@ python -m excel2consts.dim_watcher --config /path/to/registry.json --interval 30
   本阶段不做表结构迁移。
 - 试跑：仓库 `io_samples/` 下有 `卖点维表.xlsx` / `标签转换维表.xlsx` 样例，
   复制到 `excel2consts/` 后执行 `python -m excel2consts.dim_watcher --once` 即可。
+
+---
+
+## 维表 SQLite 化（第二阶段·第 1 步：替换 label_name_mapping 读取）
+
+> 逐步替换在线业务对 `src/consts.py` 的依赖。**本步只换一处**：
+> `services/product_info_raw.py` 里辅助画像拼装时对 `consts.label_name_mapping` 的查找。
+> 其余 `consts` 变量（`product_selling_point_match_dict`、`cut_in_script_dict`）
+> 及所有业务判断逻辑一律未动。
+
+### 改动文件
+
+| 文件 | 改动 |
+|---|---|
+| `services/product_info_raw.py` | 原两行 `in consts.label_name_mapping.keys()` / `consts.label_name_mapping[...]` 改为查库得到的 `label_name_mapping` 局部变量；`from src import consts` 保留（另有 3 处仍用） |
+| `excel2consts/dim_reader.py`（新增） | 在线业务只读查询侧，提供 `load_lookup(table_name) -> dict` |
+| `excel2consts/registry.json` | `label_name_mapping` 表新增 `lookup: {"key": "label_id", "value": "display_name"}` |
+| `excel2consts/dim_config.py` | 校验并透传 `lookup`（key/value 必须来自 `columns` 中已声明的列） |
+| `Missions.md` | 追加本节 |
+
+`dim_watcher.py` / `dim_importer.py` 未改动，写入侧行为不变。
+
+### 替换前后
+
+```python
+# 替换前
+if self.queried_label_ids[i] in consts.label_name_mapping.keys():
+    label_name = consts.label_name_mapping[self.queried_label_ids[i]]
+
+# 替换后（循环外先加载一次）
+label_name_mapping = load_lookup("label_name_mapping")
+...
+if self.queried_label_ids[i] in label_name_mapping:
+    label_name = label_name_mapping[self.queried_label_ids[i]]
+```
+
+`label_name_mapping` 在 `__get_auxiliary_portrait` 循环**外**加载一次，
+每个 `ProductInfoRaw` 实例只开一次连接，循环内仍是纯内存 dict 查找。
+判断条件、后续所有标签特殊处理规则、输出字符串格式**逐字未改**。
+
+### 读取侧约定
+
+- 库路径、`table_name`、key/value 列名全部取自 `registry.json` 的 `database` / `tables[].lookup`，
+  不在业务代码里硬编码；换列名、换库路径只改配置。
+- **只读打开**：`sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)`。
+  在线业务绝不创建空库、绝不写入维表库，避免与 `dim_watcher` 抢写。
+- **优雅降级**：库文件不存在、表不存在、未声明 `lookup`、查询异常、
+  `registry.json` 缺失或损坏 → 返回空 `{}`，业务行为退化为「标签名沿用上游
+  `custom_label_info` 给的名字」，与旧逻辑「key 不在 dict 里时不改名」完全一致。
+  即维表侧出任何问题都不会让 API 500。同一类告警每进程只打印一次，避免刷屏。
+- `dim_watcher` 尚未启动 / 维表还没导入时，在线业务不会报错，只是没有映射生效。
+- **不做进程级缓存**：每次实例读一次全表（当前 60 行），天然读到 `dim_watcher` 写入的最新版本，
+  没有缓存失效、脏读、reload 时序问题。`version` 字段目前只记在 `dim_meta` 供审计，
+  后续若要省连接可再按 `table_name` 的 version 做缓存——注意各表 version 独立。
+
+### 两套链路并存的现状
+
+- `main.py` startup 仍会定时调用 `excel2consts/labelName1_to_labelName2.py` 重写
+  `src/consts.py` 并 `importlib.reload(consts)`；这一步**没动**。
+- 但 `consts.label_name_mapping` 现在**已无人读取**，变成死数据；旧热更新是否跑、
+  跑几次都不再影响辅助画像的标签名。等后续把 `product_selling_point_match_dict` /
+  `cut_in_script_dict` 也迁完，再整体拆掉 startup 里的旧链路，避免中途出现半新半旧。
+- 新的生效路径：`dim_watcher` 独立进程 → `excel2consts/sqlite_db/dimensions.db`
+  → `load_lookup()` → `ProductInfoRaw`。**部署时两个进程都要起**。
+
+### 本步未做
+
+- 未替换 `product_selling_point_match_dict`、`cut_in_script_dict`（`services/` 下还有
+  `rewrite_by_excel/rewrite.py` 等多处引用），留待后续逐步迁移。
+- 未删除 `excel2consts/labelName1_to_labelName2.py` 等旧转换脚本，未改 `main.py`。
+- 未实现话术加工（`cut_in_str2tuple`、动态 `标签0…标签26` 分组），库里仍存原始列值。
+- 未做版本回滚、历史版本查询、基于 version 的灰度切换。
+
+### 验证要点
+
+- 用 `io_samples/标签转换维表.xlsx` 跑 `dim_watcher --once` 建库后，
+  同一组 `custom_label_info` 下 `auxiliary_portrait` 与旧 `consts` 版**逐字一致**；
+  样例里的真实标签 `bfa9a99b…` 显示名「常去商超」能被在线业务直接读到。
+- 删库 / 表不存在 / `registry.json` 损坏时退化为无映射版，也与旧逻辑一致、不抛异常。
+- `dim_watcher` 更新文件使 version 递增后，在线业务**无需 reload 任何模块**，
+  下一次请求即读到新名字；反过来改 `consts.label_name_mapping` 已完全不影响结果。
+- `mode=ro` 验证：删库后调用 `load_lookup` 不会创建任何文件。
+- `import main` 正常，其余 services 模块行为不变；改动仅限本节列出的 5 个文件。
+
 

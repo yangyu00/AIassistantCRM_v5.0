@@ -27,6 +27,7 @@
       "sheet": "标签名称--标签ID",
       "header_row": 1,
       "primary_key": ["label_id"],
+      "lookup": {"key": "label_id", "value": "display_name"},
       "columns": [
         {"source": "标签ID", "column": "label_id", "type": "TEXT"},
         {"source": "营销助手显示名字", "column": "display_name", "type": "TEXT"},

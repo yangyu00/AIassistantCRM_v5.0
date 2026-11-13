@@ -85,6 +85,17 @@ def load_registry(path=None):
         _need(all(not next(c for c in columns if c["column"] == k)["optional"] for k in pk),
               f"{name}: 主键列不能设为 optional")
 
+        # 在线业务读取侧用的 {key: value} 映射声明（本次只有 label_name_mapping 用到）。
+        lookup = t.get("lookup")
+        if lookup is not None:
+            _need(isinstance(lookup, dict), f"{name}: lookup 需为对象")
+            key, value = lookup.get("key"), lookup.get("value")
+            _need(isinstance(key, str) and _NAME_RE.match(key), f"{name}: lookup.key 非法")
+            _need(isinstance(value, str) and _NAME_RE.match(value), f"{name}: lookup.value 非法")
+            _need(key in seen_cols and value in seen_cols,
+                  f"{name}: lookup 的 key/value 必须来自 columns 中的列名")
+            lookup = {"key": key, "value": value}
+
         specs.append({
             "table": name,
             "source": _resolve(src),
@@ -92,6 +103,7 @@ def load_registry(path=None):
             "header_row": header_row,
             "primary_key": list(pk),
             "columns": columns,
+            "lookup": lookup,
         })
 
     return {

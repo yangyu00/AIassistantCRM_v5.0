@@ -1,4 +1,5 @@
 from src import consts
+from excel2consts.dim_reader import load_lookup
 
 
 class ProductInfoRaw(object):
@@ -36,6 +37,7 @@ class ProductInfoRaw(object):
     def __get_auxiliary_portrait(self):
         portrait_str = ""
         exist_label_name_list = []
+        label_name_mapping = load_lookup("label_name_mapping")
         for i, label_nv in enumerate(self.queried_label_nvs):
             if label_nv is None:
                 continue
@@ -43,8 +45,8 @@ class ProductInfoRaw(object):
             if not label_value:
                 continue
 
-            if self.queried_label_ids[i] in consts.label_name_mapping.keys():
-                label_name = consts.label_name_mapping[self.queried_label_ids[i]]
+            if self.queried_label_ids[i] in label_name_mapping:
+                label_name = label_name_mapping[self.queried_label_ids[i]]
 
             # 近期上网掉线、卡顿记录的特殊处理
             if self.queried_label_ids[i] == "a1e357f57b474d51119bf003443bd088" and str(label_value) == "0.00":
