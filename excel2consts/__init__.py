@@ -1,2 +1,2 @@
 # -*- coding: utf-8 -*-
-"""维表目录：原有 convert 脚本保留，新增 dim_* 为 SQLite 化第一阶段实现。"""
+"""维表模块：Excel 注册文件 → SQLite 写入（dim_watcher）→ 在线业务只读（dim_reader）。"""

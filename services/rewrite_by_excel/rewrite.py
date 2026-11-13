@@ -9,7 +9,7 @@ from src.log_util import my_log
 class ProductInfoRewrite(ProductInfoRaw):
     def __init__(self, product_id, custom_label_info):
         super().__init__(product_id, custom_label_info)
-        # 读取侧重建与旧 consts.cut_in_script_dict 同形的 dict，本实例复用一次
+        # 读取侧重建切入/挽留话术映射，本实例复用一次
         self.cut_in_script_dict = load_cut_in_script()
         self.selling_point = self.__get_selling_point()
         self.cut_in_statement = self.__get_cut_in_statement()

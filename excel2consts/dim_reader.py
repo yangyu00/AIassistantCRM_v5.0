@@ -2,7 +2,7 @@
 """维表 SQLite 读取侧（在线业务用）。
 
 只读打开 SQLite，不创建库、不写库；库/表/列未就绪时返回空 dict，
-让业务沿用原有降级路径。
+让业务按「无维表」降级。
 
 数据库路径、表名、key/value 列都来自 registry.json，不硬编码。
 lookup 支持两种形状（由 registry 声明）：
@@ -79,8 +79,8 @@ def load_lookup(table_name, cfg=None):
 def load_product_selling_point(cfg=None):
     """卖点维表：{business_id: (product_name, selling_point, label_id)}。
 
-    形状与旧 consts.product_selling_point_match_dict 完全一致，
-    因此业务侧的 [0] / [1] / [2].split("\\n") 无需改动。
+    元组顺序由 registry 的 lookup.values 决定，业务侧按 [0] / [1] / [2] 取值，
+    [2] 为含换行的标签 ID 原文，由业务侧自行 split。
     """
     return load_lookup("product_selling_point_match", cfg=cfg)
 
@@ -89,8 +89,8 @@ def load_cut_in_script(cfg=None):
     """切入/挽留话术：{business_id: {标签ID / 兜底话术: [切入, 挽留] 或 ""}}。
 
     库里只存「兜底话术」「匹配结果2」「标签0…标签N」原始列，拆解加工由
-    dim_transform 在读取侧完成；返回形状与旧 consts.cut_in_script_dict 完全一致，
-    所以 rewrite_by_excel 里的 [0] / [1] 取值逻辑无需改动。
+    dim_transform 在读取侧完成；值为 [切入话术, 挽留话术] 或空串 ""，
+    rewrite_by_excel 按 [0] / [1] 取值。
 
     列名、标签列顺序、兜底 key 全部取自 registry.json 的 cut_in_script 声明。
     """
@@ -125,7 +125,7 @@ def load_cut_in_script(cfg=None):
         finally:
             conn.close()
     except sqlite3.Error as e:
-        # 典型场景：旧库未重建，缺少 tag_* 列
+        # 典型场景：表结构变更后未重建库，缺少 tag_* 列
         _warn_once(f"dim_reader: 读取 cut_in_script 失败（{e}），暂用空映射；"
                    "若提示 no such column，请删除维表库后由 dim_watcher 重建")
         return {}

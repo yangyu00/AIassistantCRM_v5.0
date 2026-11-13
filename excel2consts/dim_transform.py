@@ -5,16 +5,15 @@
   cut_in_str2tuple：把「切入话术…拒绝挽留话术…」文本拆成 [切入, 挽留]
   build_cut_in_script_dict：按「匹配结果2」分组、对齐「标签0…标签N」重建嵌套 dict
 
-语义与 excel2consts/product_selling_point_match.py 的旧生成器逐字对齐，
-包括两处不直观但必须保留的行为（详见 Missions.md 第 3 步）：
-  - 「匹配结果2」为空时整条置为 {}，连「兜底话术」一起丢弃
+两条分组规则：
+  - 「匹配结果2」为空时整条置为 {}（含兜底话术一并丢弃）
   - 分组数超过标签列数量时，多出来的分组填 ""
 """
 import re
 
 
 def cut_in_str2tuple(fusion_scripts: str):
-    """与旧生成器同名函数完全一致，返回 [切入话术, 挽留话术] 或 ""。"""
+    """把话术文本拆成 [切入话术, 挽留话术]；两段都为空时返回 ""。"""
     def remake_statement(extract_chunk):
         statement_list = []
         for one_cut_in_statement in extract_chunk.splitlines():
@@ -63,8 +62,8 @@ def build_cut_in_script_dict(rows, key_col, fallback_col, groups_col, tag_cols,
                              fallback_key="兜底话术"):
     """由原始行重建 {business_id: {标签ID / 兜底话术: [切入, 挽留] 或 ""}}。
 
-    :param rows: 可迭代的「列名 → 值」映射，顺序按原表顺序（重复 key 后写覆盖）
-    :param tag_cols: 有序标签列名，下标 g 对应旧生成器的「标签{g}」列
+    :param rows: 可迭代的「列名 → 值」映射，即 dim_reader 查出的原始行
+    :param tag_cols: 有序标签列名，下标 g 对应 Excel「标签{g}」列
     """
     result = {}
     for row in rows:
@@ -84,7 +83,7 @@ def build_cut_in_script_dict(rows, key_col, fallback_col, groups_col, tag_cols,
                 inner[one_id] = ""
             result[key_id] = inner
         else:
-            # 旧生成器在「匹配结果2」为空时直接置 {}，连兜底话术一起丢弃
+            # 无分组 ID 时整条置空 dict
             result[key_id] = {}
 
     return result

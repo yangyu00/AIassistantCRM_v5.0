@@ -200,496 +200,341 @@ op_time 直接取自文件第 1 列，代码不做日期改写。当前样例 `F
 
 ---
 
-## 维表 SQLite 化（第一阶段：写入侧）
+# 维表维护（Excel → SQLite → 在线业务只读）
 
-> 现状：`main.py` startup 定时比对 `excel2consts/*.xlsx` 的 mtime，改写 `src/consts.py` 再 reload 热更新。
-> 目标：改为写本地 SQLite，用 `version` 字段维护版本，在线业务按版本读取，摆脱「改源码 + reload」。
-> **本阶段只做第一步**：独立进程检测注册文件是否更新 → 按配置抽列写库。
-> `main.py`、`src/consts.py`、`services/`、在线业务读取逻辑**一律未改**，旧热更新链路仍原样运行。
-> 假设维表 xlsx 仍放在 `excel2consts/` 目录下（仓库未提交 xlsx，仅有 `io_samples/` 下的同名样例）。
+> 维表由独立进程 `excel2consts.dim_watcher` 从 Excel 抽列写入本地 SQLite；
+> 在线业务通过 `excel2consts.dim_reader` 以 `mode=ro` 只读。
+> **库里只存原始单元格文本**，所有字符串加工（HTML 包装、按换行拆分、分组对齐）
+> 都在读取侧 `dim_transform` 完成，不写回库、不固化样式。
 
-### 新增文件（均在 `excel2consts/`，未改动项目其余文件）
+## 架构与进程
+
+```
+卖点维表.xlsx ─┐
+                ├─→ dim_watcher（独立进程，写）─→ excel2consts/sqlite_db/dimensions.db
+标签转换维表.xlsx ┘                                      │
+                                                        │ mode=ro
+                                                        ↓
+                                    main.py / services/（在线业务，只读）
+```
+
+| 进程 | 命令（项目根目录） | 职责 |
+|---|---|---|
+| SFTP 拉取 ×3 | `python -m tasks.task_xxx` | AVL → `tasks/sqlite_db/` |
+| 维表写入 ×1 | `python -m excel2consts.dim_watcher` | xlsx → `dimensions.db` |
+| 在线 API ×1 | `python main.py` | 只读所有 SQLite，无写库逻辑 |
+
+**部署时 5 个进程都要起**。`main.py` 不含任何 startup 定时任务，也不写任何库；
+`dim_watcher` 不依赖 `.env` / `tasks/config.py` / 项目总 `config.yaml`，自包含于 `excel2consts/`。
+
+## 文件清单
+
+`excel2consts/` 下全部文件：
 
 | 文件 | 作用 |
 |---|---|
-| `registry.json` | 注册表：库路径、轮询间隔、文件↔表名↔主键↔字段映射 |
-| `dim_config.py` | 加载并校验 `registry.json`，相对路径解析到 `excel2consts/` |
-| `dim_importer.py` | 读 xlsx 抽列、建表、指纹比对、整表替换与 version 递增 |
-| `dim_watcher.py` | 独立进程主程序：单实例锁、定时轮询、日志、参数解析 |
+| `registry.json` | 注册表：库路径、轮询间隔、文件↔表名↔主键↔列映射、动态列、读取侧角色声明 |
+| `dim_config.py` | 加载并校验 `registry.json`，相对路径解析到 `excel2consts/`，展开动态列 |
+| `dim_importer.py` | 读 xlsx 抽列、建表/结构校验、sha256 指纹比对、单事务整表覆盖与 version 递增 |
+| `dim_watcher.py` | 写入侧进程：单实例锁、定时轮询、日志、命令行参数 |
+| `dim_reader.py` | 读取侧：三个只读加载函数，`mode=ro`，缺库/缺表/配置异常一律降级为空 dict |
+| `dim_transform.py` | 读取侧加工：话术文本解析与嵌套映射重建，只依赖 `re` |
 | `__init__.py` | 使 `python -m excel2consts.dim_watcher` 可用 |
 
-运行时产物也在 `excel2consts/` 下：`sqlite_db/`、`state/dim_watcher.lock`、`log/dim_watcher.log`。
+运行时产物（均在 `excel2consts/` 下）：
 
-### 运行方式（项目根目录）
+| 路径 | 内容 |
+|---|---|
+| `sqlite_db/dimensions.db` | 唯一的维表库 |
+| `state/dim_watcher.lock` | `fcntl` 非阻塞锁，保证单机单实例 |
+| `log/dim_watcher.log` | 按天轮转（`midnight`），保留 7 天，同时输出到 stderr |
+
+注册文件 `卖点维表.xlsx` / `标签转换维表.xlsx` 放在 `excel2consts/` 目录；
+仓库未提交 xlsx，`io_samples/` 下有同名样例。
+
+## 注册配置（`registry.json`）
+
+### 顶层
+
+| 配置 | 当前值 | 含义 |
+|---|---|---|
+| `database` | `sqlite_db/dimensions.db` | 库路径，相对路径解析到 `excel2consts/` |
+| `poll_interval_seconds` | `600` | 轮询间隔（秒），可被 `--interval` 覆盖 |
+| `version_column` | `version` | 版本列名 |
+| `meta_table` | `dim_meta` | 版本元数据表名 |
+
+### `tables[]`
+
+| 配置 | 含义 |
+|---|---|
+| `table` | 英文表名 |
+| `source` | 注册文件名（相对 `excel2consts/`） |
+| `sheet` / `header_row` | 工作表（序号或名称）、表头行号（1-based） |
+| `primary_key` | 主键列数组，支持联合主键；必须来自 `columns[].column`，不可重复、不可设为 `optional` |
+| `columns[].source` → `columns[].column` | **Excel 表头 → SQLite 列名**映射 |
+| `columns[].column_index` | 可选，按列序号（1-based）取列；同名表头时更稳妥。与 `source` 同时给出时优先用序号 |
+| `columns[].type` | `TEXT` / `INTEGER` / `REAL`，默认 `TEXT`，全部按字符串读取 |
+| `columns[].default` / `strip` / `optional` | 空值兜底、是否去首尾空白、缺列时是否允许填空串 |
+| `dynamic_columns` | 把编号表头批量展开为普通列，见下 |
+| `lookup` | 读取侧映射声明，见下 |
+| `cut_in_script` | 读取侧加工所需的列角色声明，见下 |
+
+### `dynamic_columns`
+
+| 配置 | 当前值 | 含义 |
+|---|---|---|
+| `source_prefix` | `标签` | Excel 表头前缀 |
+| `column_prefix` | `tag_` | SQLite 列名前缀 |
+| `start` | `0` | 起始编号（0..10000） |
+| `count` | `28` | 数量（1..200） |
+
+展开结果：`标签0 → tag_0` … `标签27 → tag_27`，均为 `optional: true`。
+表头缺列时填空串，正好对应读取侧「标签列无内容 → 该分组填 `""`」。
+生产维表标签列更多时只改 `count`。
+
+### `lookup`（两种互斥形状）
+
+| 声明 | 返回形状 | 用途 |
+|---|---|---|
+| `"value": "display_name"` | `{key: 单值}` | `label_name_mapping` |
+| `"values": ["product_name", "selling_point", "label_id"]` | `{key: (值1, 值2, 值3)}` | `product_selling_point_match` |
+
+`values` 的顺序即元组顺序，业务侧按 `[0] / [1] / [2]` 取值。
+`key` / `value` / `values` 必须来自 `columns` 中已声明的列，且不等于 `key`；
+`values` 不可重复。换列名或调顺序只改 `registry.json`。
+
+### `cut_in_script`
+
+| 配置 | 当前值 | 含义 |
+|---|---|---|
+| `key` | `business_id` | 业务 ID 列（查找键） |
+| `fallback` | `fallback_script` | 兜底话术原始列 |
+| `groups` | `match_result` | 分组 ID 原始列（「匹配结果2」，按 `\n` 拆分） |
+| `tags` | `"dynamic_columns"` | 标签话术列的有序数组，或直接引用展开结果；下标 g 对应 `标签{g}` |
+| `fallback_key` | `兜底话术` | 生成的嵌套 dict 里兜底项的键名 |
+
+⚠️ `fallback_key` 可配，但 `services/rewrite_by_excel/rewrite.py` 用 `"兜底话术"`
+做比较，改它需同步改业务代码。所有角色列必须来自 `columns` 声明。
+
+### 当前注册的两张表
+
+| 注册文件 | 表名 | 主键 | 固定列（Excel 表头 → 列名） | 动态列 |
+|---|---|---|---|---|
+| `卖点维表.xlsx` | `product_selling_point_match` | `business_id` | 业务ID→`business_id`、产品名称→`product_name`、生成话术→`selling_point`、标签ID→`label_id`、兜底话术→`fallback_script`、匹配结果2→`match_result`、产品大类→`product_category`、产品小类→`product_subcategory` | `标签0…标签27` → `tag_0…tag_27`（28 列） |
+| `标签转换维表.xlsx` | `label_name_mapping` | `label_id` | 标签ID→`label_id`、营销助手显示名字→`display_name`、标签管理平台标签名→`platform_label_name` | 无 |
+
+### 配置校验（`dim_config.py`）
+
+启动时校验：表名/列名/版本列名合法性、表名不重复、列名不重复且不与版本列冲突、
+主键必须来自列定义、动态列不与已有列冲突、`lookup` 的 `value`/`values` 互斥且必填其一、
+`cut_in_script` 各角色列已声明、`tags` 不可重复、`count` 在 1..200、轮询间隔为正整数。
+不合法直接抛 `ValueError`，不会静默按错误配置连库或写错列。
+
+## 库表结构
+
+每张表 = 配置列 + `version INTEGER NOT NULL` + `PRIMARY KEY (主键列)`；主键列额外 `NOT NULL`。
+
+| 表 | 列数 | 说明 |
+|---|---|---|
+| `dim_meta` | 8 | `table_name TEXT PRIMARY KEY, version, source_file, sha256, file_size, file_mtime, row_count, updated_at` |
+| `product_selling_point_match` | 37 | 8 个固定列 + 28 个 `tag_*` 列 + `version`；主键 `business_id` |
+| `label_name_mapping` | 4 | `label_id, display_name, platform_label_name, version`；主键 `label_id` |
+
+`version` 列写在每一行上，值等于本次导入的版本号。数据表只保留**当前版本**，
+被删除的行不会残留；历史版本不落库。
+
+`ensure_table()` 每次启动都会比对 `PRAGMA table_info` 与配置的列集合，
+不一致抛 `RuntimeError` 并提示删库重建，不会静默写错列。
+
+## 写入侧（`dim_watcher` + `dim_importer`）
+
+### 运行方式
 
 ```bash
-python -m excel2consts.dim_watcher                 # 常驻轮询，默认 60s
-python -m excel2consts.dim_watcher --once         # 只检测一轮后退出（便于 crontab / 验证）
+python -m excel2consts.dim_watcher                 # 常驻轮询，间隔由 registry 控制（当前 600s）
+python -m excel2consts.dim_watcher --once         # 只检测一轮后退出（crontab / 验证）
 python -m excel2consts.dim_watcher --once --force # 忽略指纹强制重导并递增 version
 python -m excel2consts.dim_watcher --config /path/to/registry.json --interval 300
 ```
 
-生产建议 systemd/nohup 起一个常驻进程，与 `tasks/` 三个任务并列；单机单实例，靠
-`state/dim_watcher.lock`（`fcntl` 非阻塞锁）互斥。`--force` 通常只配合 `--once` 使用。
+生产建议 systemd/nohup 起一个常驻进程，与 `tasks/` 三个任务并列。
+`--force` 通常只配合 `--once` 使用。
 
-### 可配置项（`registry.json`）
+### 单轮流程（逐表执行）
 
-| 配置 | 含义 |
-|---|---|
-| `database` | SQLite 库路径，默认 `excel2consts/sqlite_db/dimensions.db` |
-| `poll_interval_seconds` | 轮询间隔（秒），可被 `--interval` 覆盖 |
-| `version_column` | 版本列名，默认 `version` |
-| `meta_table` | 版本元数据表名，默认 `dim_meta` |
-| `tables[].source` | 注册文件名 → 对应**英文表名** `tables[].table` |
-| `tables[].sheet` / `header_row` | 工作表（序号或名称）、表头行号（1-based） |
-| `tables[].primary_key` | 主键列（数组，支持联合主键），必须来自 `columns[].column` |
-| `columns[].source` → `columns[].column` | **Excel 表头 → SQLite 列名**的映射 |
-| `columns[].column_index` | 可选，按列序号（1-based）取列；同名表头（如卖点维表有两个「备注」）时更稳妥。与 `source` 同时给出时优先用序号 |
-| `columns[].type` | `TEXT` / `INTEGER` / `REAL`，默认 `TEXT`（与旧逻辑一致，全部按字符串读） |
-| `columns[].default` / `strip` / `optional` | 空值兜底、是否去首尾空白、缺列时是否允许跳过 |
+1. **文件存在性**：注册文件不存在 → 告警跳过该表，不退出进程。
+2. **指纹比对**：算文件 sha256，与 `dim_meta` 中该表的 `sha256` 比较；
+   相同且非 `--force` → SKIP，version 不变。用内容指纹而非 mtime，
+   避免「另存为但 mtime 相同」漏判或「touch 一下」误判。
+3. **抽列**：`openpyxl` 以 `read_only=True, data_only=True` 打开，按表头名或
+   `column_index` 定位列；`strip` 去首尾空白；`optional` 列缺失时填 `default`（默认空串）；
+   缺必需表头列抛 `MissingColumn`，本轮跳过、指纹不更新、下轮重试。
+4. **去重**：主键为空的行跳过；重复主键**后写覆盖先写**（与 `INSERT OR REPLACE` 一致）。
+   跳过条数、覆盖条数写进日志。
+5. **单事务整表覆盖**：`DELETE FROM 表` → 写入全量行（每行带新 `version`）→
+   更新 `dim_meta` 该行。事务内任一环节失败整体回滚，指纹不更新，下轮自动重试。
+6. **日志**：`[表名] version=N 写入 X 行 (空主键跳过 …，重复主键覆盖 …，sha256=…)`。
 
-当前注册两张表（列名沿用 `src/consts.py` 中变量名，便于后续切换）：
+其他失败场景：xlsx 正被 Excel 写入导致读取失败、表结构与配置不一致，
+同样按「本轮失败 + 下轮重试」处理，不更新指纹、不写坏数据。
 
-| 注册文件 | 表名 | 主键 | 抽取字段（Excel 表头 → 列名） |
-|---|---|---|---|
-| `卖点维表.xlsx` | `product_selling_point_match` | `business_id` | 业务ID→business_id、产品名称→product_name、生成话术→selling_point、标签ID→label_id、兜底话术→fallback_script、匹配结果2→match_result、产品大类→product_category、产品小类→product_subcategory |
-| `标签转换维表.xlsx` | `label_name_mapping` | `label_id` | 标签ID→label_id、营销助手显示名字→display_name、标签管理平台标签名→platform_label_name |
+### version 语义（按表独立，不共享全局计数器）
 
-**加字段、改主键、加表只需改 `registry.json`，不用改 Python 代码。**
-配置加载时会校验表名/列名合法性、主键必须来自列定义且不能重复或设为 optional、
-列名不与版本列冲突、表名不重复；
-已有表的结构与配置不一致会直接报错并提示删库重建，不会静默写错列。
+`dim_meta` 以 `table_name` 为主键，一行对应一张表；每张表各自从 1 起，
+**仅在该表对应的文件成功导入时 +1**。文件没变的表 SKIP、version 不动；
+某张表导入失败也不影响其他表继续递增。
+**不同表的 version 数值互不可比**——例如 product=3、label=1 只说明卖点维表改过 3 次、
+标签转换维表改过 1 次，不代表谁新谁旧、也不要求两边对齐。
 
-### 表结构与 version 语义
-
-- 每张表 = 配置列 + `version INTEGER NOT NULL` + `PRIMARY KEY (主键列)`；主键列额外 `NOT NULL`。
-- 每次检测到文件变更：**单事务内 `DELETE` 整表 → 写入全量行（每行带同一个新 version）→ 更新元数据**，
-  对应旧逻辑「合成 dict 后整体替换」，不会残留已删除的行。
-- `version` 从 1 起，每次成功导入 +1；`dim_meta` 记录每个表的
-  `version / source_file / sha256 / file_size / file_mtime / row_count / updated_at`。
-  数据表只保留**当前版本**，历史版本暂不落库（后续如需回溯，可改为按 version 追加）。
-- 主键为空的行跳过，重复主键后写覆盖先写（与旧 `dict(zip(keys, values))` 语义一致），计数写进日志。
-
-### 变更检测
-
-- 用 **sha256 内容指纹**判断，不只比 mtime（避免「另存为但 mtime 相同」或「touch 一下」误判）。
-  指纹未变 → 直接 SKIP，version 不变。
-- 指纹存 `dim_meta`，进程重启不会重复导入；**导入失败不更新指纹**，下一轮自动重试。
-- 注册文件不存在 → 告警跳过，不退出进程（维表可能稍后才放进来）。
-- 缺必需表头列 → 报错跳过本轮、不写库、不更新指纹，下轮重试；`optional: true` 的列缺失时填空串。
-- xlsx 正在被 Excel 写入导致读取失败时同样按失败处理，下轮重试。
-
-### 本阶段未做（避免牵动在线业务）
-
-- **不动 `main.py` / `src/consts.py`**：在线业务仍读 `consts` 里的 dict，旧 startup 热更新照常跑，
-  两套链路目前并存，本进程只负责把维表数据写进 SQLite。
-- 未实现旧脚本里的复杂话术加工（`cut_in_str2tuple` 解析切入/挽留话术、`匹配结果2` 分组、
-  动态列 `标签0…标签26`）。本阶段只做固定表头的**列映射直取**；需要加工时再以可配置的
-  transform 规则扩展，避免一上来引入难以排查的转换 bug。
-- 未做基于 `version` 的缓存/灰度切换、未做版本回滚/历史版本查询、未接入 `tasks/config.py` 的 `.env`
-  （本模块只依赖 `registry.json`，自包含）。在线业务读取侧的进展见下一节。
-
-### 依赖与注意事项
-
-- 只需 `openpyxl`（读 xlsx），不引入 pandas / yapf；标准库完成 SQLite、指纹、日志与文件锁。
-- `fcntl` 文件锁为 Linux 单机单实例设计，与项目部署环境一致。
-- 表结构变更（增删列、改主键）需人工删除 `excel2consts/sqlite_db/dimensions.db` 后重建，
-  本阶段不做表结构迁移。
-- 试跑：仓库 `io_samples/` 下有 `卖点维表.xlsx` / `标签转换维表.xlsx` 样例，
-  复制到 `excel2consts/` 后执行 `python -m excel2consts.dim_watcher --once` 即可。
-
----
-
-## 维表 SQLite 化（第二阶段·第 1 步：替换 label_name_mapping 读取）
-
-> 逐步替换在线业务对 `src/consts.py` 的依赖。**本步只换一处**：
-> `services/product_info_raw.py` 里辅助画像拼装时对 `consts.label_name_mapping` 的查找。
-> 其余 `consts` 变量（`product_selling_point_match_dict`、`cut_in_script_dict`）
-> 及所有业务判断逻辑一律未动。
-
-### 改动文件
-
-| 文件 | 改动 |
-|---|---|
-| `services/product_info_raw.py` | 原两行 `in consts.label_name_mapping.keys()` / `consts.label_name_mapping[...]` 改为查库得到的 `label_name_mapping` 局部变量；`from src import consts` 保留（另有 3 处仍用） |
-| `excel2consts/dim_reader.py`（新增） | 在线业务只读查询侧，提供 `load_lookup(table_name) -> dict` |
-| `excel2consts/registry.json` | `label_name_mapping` 表新增 `lookup: {"key": "label_id", "value": "display_name"}` |
-| `excel2consts/dim_config.py` | 校验并透传 `lookup`（key/value 必须来自 `columns` 中已声明的列） |
-| `Missions.md` | 追加本节 |
-
-`dim_watcher.py` / `dim_importer.py` 未改动，写入侧行为不变。
-
-### 替换前后
-
-```python
-# 替换前
-if self.queried_label_ids[i] in consts.label_name_mapping.keys():
-    label_name = consts.label_name_mapping[self.queried_label_ids[i]]
-
-# 替换后（循环外先加载一次）
-label_name_mapping = load_lookup("label_name_mapping")
-...
-if self.queried_label_ids[i] in label_name_mapping:
-    label_name = label_name_mapping[self.queried_label_ids[i]]
-```
-
-`label_name_mapping` 在 `__get_auxiliary_portrait` 循环**外**加载一次，
-每个 `ProductInfoRaw` 实例只开一次连接，循环内仍是纯内存 dict 查找。
-判断条件、后续所有标签特殊处理规则、输出字符串格式**逐字未改**。
-
-### 读取侧约定
-
-- 库路径、`table_name`、key/value 列名全部取自 `registry.json` 的 `database` / `tables[].lookup`，
-  不在业务代码里硬编码；换列名、换库路径只改配置。
-- **只读打开**：`sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)`。
-  在线业务绝不创建空库、绝不写入维表库，避免与 `dim_watcher` 抢写。
-- **优雅降级**：库文件不存在、表不存在、未声明 `lookup`、查询异常、
-  `registry.json` 缺失或损坏 → 返回空 `{}`，业务行为退化为「标签名沿用上游
-  `custom_label_info` 给的名字」，与旧逻辑「key 不在 dict 里时不改名」完全一致。
-  即维表侧出任何问题都不会让 API 500。同一类告警每进程只打印一次，避免刷屏。
-- `dim_watcher` 尚未启动 / 维表还没导入时，在线业务不会报错，只是没有映射生效。
-- **不做进程级缓存**：每次实例读一次全表（当前 60 行），天然读到 `dim_watcher` 写入的最新版本，
-  没有缓存失效、脏读、reload 时序问题。`version` 字段目前只记在 `dim_meta` 供审计，
-  后续若要省连接可再按 `table_name` 的 version 做缓存——注意各表 version 独立。
-
-### 两套链路并存的现状
-
-- `main.py` startup 仍会定时调用 `excel2consts/labelName1_to_labelName2.py` 重写
-  `src/consts.py` 并 `importlib.reload(consts)`；这一步**没动**。
-- 但 `consts.label_name_mapping` 现在**已无人读取**，变成死数据；旧热更新是否跑、
-  跑几次都不再影响辅助画像的标签名。`product_selling_point_match_dict` 已在第 2 步迁完；
-  等 `cut_in_script_dict` 也迁完，再整体拆掉 startup 里的旧链路，避免中途出现半新半旧。
-- 新的生效路径：`dim_watcher` 独立进程 → `excel2consts/sqlite_db/dimensions.db`
-  → `load_lookup()` → `ProductInfoRaw`。**部署时两个进程都要起**。
-
-### 本步未做
-
-- 本步未替换 `product_selling_point_match_dict`、`cut_in_script_dict`；前者已在
-  第 2 步完成，后者仍留在 `consts`（`rewrite_by_excel/rewrite.py` 多处引用）。
-- 本步未删除 `excel2consts/labelName1_to_labelName2.py` 等旧转换脚本，未改 `main.py`
-  （第 2 步为替换路由判断才改了 `main.py`）。
-- 未实现话术加工（`cut_in_str2tuple`、动态 `标签0…标签26` 分组），库里仍存原始列值。
-- 未做版本回滚、历史版本查询、基于 version 的灰度切换。
-
-### 验证要点
-
-- 用 `io_samples/标签转换维表.xlsx` 跑 `dim_watcher --once` 建库后，
-  同一组 `custom_label_info` 下 `auxiliary_portrait` 与旧 `consts` 版**逐字一致**；
-  样例里的真实标签 `bfa9a99b…` 显示名「常去商超」能被在线业务直接读到。
-- 删库 / 表不存在 / `registry.json` 损坏时退化为无映射版，也与旧逻辑一致、不抛异常。
-- `dim_watcher` 更新文件使 version 递增后，在线业务**无需 reload 任何模块**，
-  下一次请求即读到新名字；反过来改 `consts.label_name_mapping` 已完全不影响结果。
-- `mode=ro` 验证：删库后调用 `load_lookup` 不会创建任何文件。
-- `import main` 正常，其余 services 模块行为不变；改动仅限本节列出的 5 个文件。
-
----
-
-## 维表 SQLite 化（第二阶段·第 2 步：替换 product_selling_point_match_dict）
-
-> 本步把卖点维表相关的读取全部改为查库。**`cut_in_script_dict` 仍留在 `consts`**，
-> 留待第 3 步；旧转换脚本与 `main.py` startup 热更新链路仍未删除。
-
-### 字段口径核对（结论：判断基本正确，两处需精确化）
-
-| 判断 | 核对结果 |
-|---|---|
-| 用到 `business_id` / `product_name` / `selling_point` / `label_id` | ✅ 对。`business_id` 是**主键/查找键**，其余 3 列组成 value 三元组 `(product_name, selling_point, label_id)`，对应旧 dict 的 `[0]` `[1]` `[2]` |
-| `selling_point` 涉及添加 HTML 标签的格式转换 | ✅ 确实存在，但**属于业务侧展示逻辑，不在写库侧**。见下文 |
-| `label_id` 根据换行拆分成列表 | ✅ 对，但**拆分应继续留在业务侧**，读取侧返回原始含换行字符串。见下文 |
-
-另外补一处容易漏的：`main.py` 里 `in consts.product_selling_point_match_dict.keys()`
-是**「维表中业务」路由判断**，本步也一并改为查库。
-
-### 关于 HTML 格式转换（重要）
-
-转换代码在 `services/rewrite_by_excel/rewrite.py::__get_selling_point()`：
-用正则 `\d、.*?：` 找「1、资费：」「2、价格：」等编号段，把首段包进
-`<strong>` + `<span style="color:red;">`，后续段落逐段 `<strong>` 拼接并补换行；
-匹配不到编号时只加 `【卖点】\n` 前缀。输出再经 `__strong_text()` 把
-`【辅助画像】/【切入话术】/【卖点】/【挽留话术】` 包成 `<strong>`。
-
-**本步的处理：库里继续存原始「生成话术」文本，转换逻辑一行未改，只换数据源。**
-理由：
-
-- 这是纯字符串 → HTML 的**运行时展示格式化**，不是维表数据本身的属性；
-- 若把格式化后的 HTML 写进库，等于把前端样式固化进数据层，以后改配色/标签要重导全表；
-- 保持业务侧原样，才能做到新旧输出**逐字一致**，也符合「逐步替换、不出难查 bug」的前提。
-
-⚠️ 别和另一处混淆：`excel2consts/product_selling_point_match.py::cut_in_str2tuple()`
-对**兜底话术**做的 `<strong><span style="color: blue;">` 包装属于
-`cut_in_script_dict`，是第 3 步的事，本步不涉及。
-
-### 关于 label_id 换行拆分
-
-样例里 `标签ID` 确实是多行单元格，如
-`026de6be…\n71527bf3…`。旧逻辑是 `[2].split("\n")`，本步**原样保留**这一行：
-
-```python
-return self.product_selling_point_match_dict[self.product_id][2].split("\n")
-```
-
-读取侧只返回 `label_id` 原始字符串（库里已按 `strip()` 存，与旧生成器
-`label_id.strip()` 一致），不提前拆、不过滤空串、不额外 strip 每一项。
-连续换行产生的空串旧逻辑不过滤，新逻辑也不过滤，保证 `queried_label_ids`
-逐字一致——否则会静默改变 `__get_queried_label_nvs` 与辅助画像。
-
-### 配置扩展：lookup 支持单值 / 多值
-
-`registry.json` 的 `product_selling_point_match` 新增：
-
-```json
-"lookup": {
-  "key": "business_id",
-  "values": ["product_name", "selling_point", "label_id"]
-}
-```
-
-`dim_config.py` 的 `lookup` 校验扩展为两种形状，互斥且必填其一：
-
-| 声明 | 返回形状 | 用途 |
+| 操作 | `product_selling_point_match` | `label_name_mapping` |
 |---|---|---|
-| `"value": "display_name"` | `{key: 单值}` | `label_name_mapping`（第 1 步，不变） |
-| `"values": [列1, 列2, …]` | `{key: (值1, 值2, …)}` | `product_selling_point_match`（本步） |
+| 首次导入两个文件 | 1 | 1 |
+| 改「卖点维表.xlsx」 | **2** | 1（SKIP） |
+| 再改「卖点维表.xlsx」 | **3** | 1（SKIP） |
+| 改「标签转换维表.xlsx」 | 3（SKIP） | **2** |
 
-`values` 的顺序即元组顺序，也就是旧 dict 的 `[0]/[1]/[2]`。
-校验包括：列名合法、必须来自 `columns`、不等于 key、不可重复。
-**换列名或调顺序只改 `registry.json`，Python 代码不动。**
+`dim_meta` 记录每个表的
+`version / source_file / sha256 / file_size / file_mtime / row_count / updated_at`。
 
-`dim_reader.py` 的 `load_lookup()` 统一支持两种形状，并新增语义化包装
-`load_product_selling_point()`；返回 dict 与旧 `consts.product_selling_point_match_dict`
-**完全同形**，所以业务侧 `[0]` / `[1]` / `[2].split("\n")` 一行都不用改。
+## 读取侧（`dim_reader`）
 
-### 改动文件
+三个加载函数，全部 `mode=ro` 打开、用完即关，**在线业务绝不创建/写入维表库**。
 
-| 文件 | 改动 |
+| 函数 | 返回形状 | 消费方 |
+|---|---|---|
+| `load_lookup("label_name_mapping")` | `{label_id: display_name}` | `ProductInfoRaw` 辅助画像 |
+| `load_product_selling_point()` | `{business_id: (product_name, selling_point, label_id)}` | `main.py` 路由、`ProductInfoRaw`、`ProductInfoByExcel` |
+| `load_cut_in_script()` | `{business_id: {标签ID / 兜底话术: [切入, 挽留] 或 ""}}` | `ProductInfoByExcel` |
+
+`load_cut_in_script()` 用 `ORDER BY rowid` 取
+`{key, fallback, groups} + tag_*` 原始列，把每行转成列名映射后交给
+`dim_transform.build_cut_in_script_dict()`；列名、标签列顺序、兜底键全部取自
+`registry.json`，不硬编码。
+
+### 降级矩阵
+
+| 场景 | 行为 |
 |---|---|
-| `services/product_info_raw.py` | `__init__` 里加载一次并存为 `self.product_selling_point_match_dict`；`__get_product_name` / `__get_queried_label_ids` 换数据源；删掉已无用的 `from src import consts` |
-| `services/rewrite_by_excel/rewrite.py` | `__get_selling_point` 两处换为 `self.product_selling_point_match_dict`；**HTML 转换逻辑逐字未改**；`consts` import 保留（`cut_in_script_dict` 仍在用） |
-| `main.py` | 引入 `load_product_selling_point()`；在 `marketAssistant` 循环**外**加载一次供路由判断复用；`from src import consts` 保留（startup 仍需 `importlib.reload(consts)`） |
-| `excel2consts/registry.json` | 卖点表新增多值 `lookup` |
-| `excel2consts/dim_config.py` | 扩展 `lookup` 校验 |
-| `excel2consts/dim_reader.py` | 支持单值/多值，新增 `load_product_selling_point()` |
-| `Missions.md` | 追加本节、修正第 1 步的「后续待迁」措辞 |
+| 库文件不存在 | 返回 `{}` |
+| 表不存在 / 列缺失（如缺 `tag_*`） | 返回 `{}`，提示删库重建 |
+| 未注册表 / 未声明 `lookup` / `cut_in_script` | 返回 `{}` |
+| 查询异常、`registry.json` 缺失或损坏 | 返回 `{}` |
+| 注册 xlsx 缺失 | 写入侧告警跳过，库保留上次成功版本 |
 
-`dim_watcher.py` / `dim_importer.py` 未改动，写入侧行为不变。
+返回 `{}` 时业务行为：产品名为 `None`、`queried_label_ids` 为 `[]`、
+卖点/切入/挽留话术为空、辅助画像的标签名沿用上游 `custom_label_info` 给的名字。
+**维表侧出任何问题都不会让 API 500**。同一类告警每进程只打印一次（`_WARNED` 集合），避免刷屏。
 
-### 读取次数与降级
+### 读取次数
 
-- **不做进程级缓存**（沿用第 1 步约定）：每次 `load_product_selling_point()` 读一次全表
-  （当前 1361 行），天然读到 `dim_watcher` 写入的最新版本，无缓存失效或脏读。
-  一次请求最多 2 次全表读：`main.py` 路由判断 1 次 + 每个 `ProductInfoRaw` 实例 1 次；
-  `ProductInfoByExcel` 通过 `self` 复用父类那份，不再重复读。本地 SQLite 开销可忽略，
-  后续若要省连接可基于**各表独立的 version** 加缓存。
-- 降级语义与第 1 步一致：库/表不存在、未声明 lookup、查询异常、`registry.json` 损坏
-  → 返回 `{}`。此时 `product_name` 为 `None`、`queried_label_ids` 为 `[]`、卖点为空，
-  与旧「key 不在 dict 里」完全一致，**不会让 API 500**。
-- 仍为 `mode=ro` 只读，在线业务不创建/不写维表库。
+不做进程级缓存，每次调用读一次全表，天然读到 `dim_watcher` 写入的最新值，
+无缓存失效或脏读问题。一次请求内：
 
-### 与旧 consts 的行为差异（已确认无业务影响）
+- `main.py` 的 `marketAssistant` 循环**外**加载 1 次，供「维表中业务」路由判断复用；
+- 每个 `ProductInfoRaw` 实例加载 1 次卖点表 + 1 次标签映射表（循环外各一次）；
+- `ProductInfoByExcel` 复用父类那份卖点表，另加载 1 次 `cut_in_script`（36 列原始列）。
 
-旧生成器对 `业务ID` 为空的行会生成 `line{i+2}` 这样的占位 key；新库导入时
-`dim_importer` 按主键为空直接跳过（样例中 187 行）。这些占位 key 不对应任何真实
-`product_id`，业务请求不会命中，故不影响结果。
-另外旧生成器用 `dict(zip(...))` 让重复业务 ID 后者覆盖前者，新库
-`PRIMARY KEY (business_id)` + 整表替换同样是后写覆盖（样例中 98 行重复），语义一致。
+标签映射表 60 行、卖点表 1361 行，本地 SQLite 开销可忽略。
+后续若要省连接，可基于**各表独立的 version** 加缓存。
 
-### 两套链路并存的现状
+## 读取侧加工（`dim_transform`）
 
-- `consts.product_selling_point_match_dict` 与 `consts.label_name_mapping` **均已无人读取**，
-  成为死数据；`consts.cut_in_script_dict` 在本步仍被 `rewrite_by_excel/rewrite.py` 读取
-  （**第 3 步已迁完，见下一节**）。
-- `main.py` startup 仍定时重写 `src/consts.py` 并 `importlib.reload(consts)`，本步未动。
-  第 3 步迁完后 `consts` 已无任何读取方，整体删除旧脚本与 startup 逻辑留到第 4 步收尾。
-- 生效路径：`dim_watcher` → `sqlite_db/dimensions.db` → `load_product_selling_point()`
-  → `ProductInfoRaw` / `ProductInfoByExcel` / `main.py` 路由。**部署时两个进程都要起。**
+只依赖 `re`，不写回库。库里存的是含换行、`**`、原始 HTML 片段的单元格文本；
+`strip()`、`.replace("**", "")`、HTML 包装都在这一步做。
 
-### 本步未做
+### `cut_in_str2tuple(text)`
 
-- 未替换 `cut_in_script_dict`（含 `cut_in_str2tuple` 话术加工、动态 `标签0…标签26` 分组）。
-- 未删除旧转换脚本、未改 startup 热更新、未删 `src/consts.py` 中的变量。
-- 未做版本回滚、历史版本查询、基于 version 的缓存或灰度切换。
+把一段话术文本拆成 `[切入话术, 挽留话术]`：
 
-### 验证要点
+1. 正则 `切入话术(.*?)拒绝挽留话术(.*)`（`re.DOTALL`）拆两段。
+2. 每段逐行处理：跳过空行；`:` 统一为 `：` 后按 `：` 切分；
+   只有 1 段时原样保留；有 `：` 时用 `^\d+\s?\.\s?` 去掉行首编号，
+   把「前缀：」包成 `<strong><span style="color: blue;">前缀：</span></strong>` 再拼回正文。
+3. 行间用 `\n` 连接；切入段加 `【切入话术】\n` 前缀，挽留段加 `【挽留话术】\n` 前缀。
+4. 匹配不到标记，或两段都为空 → 返回空字符串 `""`（**不是 list**）。
 
-- 用 `io_samples/卖点维表.xlsx` 跑 `dim_watcher --once` 建库，按旧生成器逻辑复刻
-  `consts` 版 dict 作基准，对多个真实 `business_id` 逐字比对
-  `product_name` / `queried_label_ids` / `selling_point`（含 HTML）/ `output_script`。
-- 覆盖多段编号话术、无编号话术、`label_id` 多行、以及不在维表中的 `product_id`。
-- `consts.product_selling_point_match_dict` 改成任意值后结果不变，确认已成死数据。
-- 维表 version 递增后在线业务**无需 reload** 即生效；库不存在时降级且 `import main` 正常。
+业务侧 `fusion_script_list[0]` 取切入、`[1]` 取挽留；值为 `""` 时 `""[0]`
+会 `IndexError` 并被业务侧 `except` 吞掉返回空串。
 
----
+### `build_cut_in_script_dict(rows, ...)`
 
-## 维表 SQLite 化（第二阶段·第 3 步：替换 cut_in_script_dict）
+按原始行重建嵌套 dict：
 
-> **本步按「库里存原始、拆解加工放外面」实施**：SQLite 只保存 Excel 的原始单元格文本，
-> `cut_in_str2tuple` 解析、按「匹配结果2」分组、对齐「标签0…标签N」等加工全部在
-> **读取侧**完成，不写回库、不固化 HTML。
-> 至此 `consts` 的三个变量全部成为死数据；旧脚本与 startup 链路留到第 4 步统一删除。
+1. 以 `key_col`（`business_id`）为外层键；先算兜底项
+   `{fallback_key: cut_in_str2tuple(fallback.strip().replace("**", ""))}`。
+2. `groups`（`match_result`）非空 → 按 `\n` 拆成 ID 列表；对每个下标 g：
+   `tag_cols[g]` 有内容则 `cut_in_str2tuple(...)` 存入 `inner[one_id]`，否则存 `""`。
+   **分组数超过 `tag_cols` 长度时，多出来的分组填 `""`**。
+3. `groups` 为空 → **整条置为 `{}`**，兜底项一并丢弃。
+4. 重复 `business_id` 按行序后写覆盖。
 
-### 旧结构长什么样
+样例维表有 28 个标签列，个别行拆出 29~30 个分组，规则 2 会生效；
+`groups` 为空的行在库里有 403 条，规则 3 会生效。
 
-`consts.cut_in_script_dict` 是嵌套 dict：
+## 在线业务接入点
 
-```python
-{
-  business_id: {
-      "兜底话术": [切入话术, 挽留话术] 或 "",   # cut_in_str2tuple 的结果
-      标签ID_1:  [切入话术, 挽留话术] 或 "",   # 来自「标签0」
-      标签ID_2:  ...,                          # 来自「标签1」…
-  },
-  ...
-}
+| 位置 | 加载函数 | 消费方式 |
+|---|---|---|
+| `main.py::marketAssistant` | `load_product_selling_point()` | `if one_product_obj.id in dict` 判断是否走「维表中业务」分支 |
+| `services/product_info_raw.py::__init__` | 同上，存 `self.product_selling_point_match_dict` | `[0]` 取产品名；`[2].split("\n")` 取 `queried_label_ids`（不提前拆、不过滤空串、不额外 strip 每项） |
+| `services/product_info_raw.py::__get_auxiliary_portrait` | `load_lookup("label_name_mapping")` | 命中则替换辅助画像的标签名，后续所有标签特殊规则不变 |
+| `services/rewrite_by_excel/rewrite.py::__init__` | `load_cut_in_script()`，存 `self.cut_in_script_dict` | 切入取 `[0]`、挽留取 `[1]` |
+| `services/rewrite_by_excel/rewrite.py::__get_selling_point` | 复用父类 `self.product_selling_point_match_dict` 的 `[1]` | 正则 `\d、.*?：` 找编号段，首段包 `<strong>` + `<span style="color:red;">`，后续段落逐段 `<strong>` 拼接补换行；匹配不到编号只加 `【卖点】\n`。输出再经 `__strong_text()` 把四个小节标题包 `<strong>` |
+
+**格式转换全部留在业务侧**，库里 `selling_point` 存原始「生成话术」文本，
+以后改配色/标签不用重导全表。
+
+## 扩展与运维
+
+### 常见配置变更
+
+| 需求 | 做法 |
+|---|---|
+| 加字段 / 改字段映射 | 改 `registry.json` 的 `columns[]`，然后**删库重建** |
+| 改主键 | 改 `primary_key`，同时调整 `lookup.key` / `cut_in_script.key`，删库重建 |
+| 标签列增减 | 改 `dynamic_columns.count`（上限 200），删库重建 |
+| 加一张维表 | 在 `tables[]` 追加一项；需要在线读取则声明 `lookup` 或 `cut_in_script` |
+| 换库路径 / 轮询间隔 | 改顶层 `database` / `poll_interval_seconds`，或用 `--config` / `--interval` 覆盖 |
+
+> ⚠️ **表结构变更必须删库重建**：`CREATE TABLE IF NOT EXISTS` 不会改已有表结构，
+> `ensure_table()` 检测到列集合不一致会抛错并停止导入。执行：
+> ```bash
+> rm excel2consts/sqlite_db/dimensions.db
+> python -m excel2consts.dim_watcher --once
+> ```
+> 未删库时写入侧每轮报「结构与 registry.json 不一致」，读取侧查询新列失败并
+> 降级为空映射（不会 500，但相应维表数据会丢）。不做自动表结构迁移。
+
+### 试跑
+
+```bash
+cp io_samples/卖点维表.xlsx io_samples/标签转换维表.xlsx excel2consts/
+python -m excel2consts.dim_watcher --once
 ```
 
-旧生成器（`excel2consts/product_selling_point_match.py`）的构造规则：
+预期：卖点表 1361 行（空主键跳过 187、重复主键覆盖 98）、标签表 60 行，
+两表 `version=1`。
 
-1. `script_combo = cut_in_str2tuple(row["兜底话术"].strip().replace("**", ""))`，
-   先存进 `inner_dict = {"兜底话术": script_combo}`；
-2. 若 `匹配结果2.strip()` 非空 → 按 `\n` 拆成 `id_group_list`；
-   对每个下标 g，`标签{g}` 列非空则 `cut_in_str2tuple(标签{g})` 存入 `inner_dict[one_id]`，
-   否则存 `""`；
-3. 若 `匹配结果2` 为空 → `nested_dict[key_id] = {}`。
+### 依赖与约定
 
-**两处不直观但必须原样复刻的行为**（旧代码如此，本步不做"顺手修好"）：
+- 写入侧只需 `openpyxl`（读 xlsx）；读取侧与加工只依赖标准库
+  （`sqlite3` / `hashlib` / `fcntl` / `logging` / `argparse` / `re`）。
+  不引入 pandas / yapf，不读 `.env` 或项目总 `config.yaml`。
+- `fcntl` 文件锁为 Linux 单机单实例设计，与项目部署环境一致。
+- `excel2consts/sqlite_db/`、`state/`、`log/` 是运行时产物，建议加入 `.gitignore`。
 
-- **`匹配结果2` 为空时，连「兜底话术」一起丢弃**，整条置为 `{}`。样例 1646 行里有
-  596 行属于此类（这些行的兜底话术恰好也为空，所以没有实际损失，但语义必须一致）。
-- **分组数超过标签列数量时，多出来的分组填 `""`**。样例表头只有
-  `标签0…标签27`（28 列），但有 19 行的 `匹配结果2` 拆出 29~30 个 ID；
-  旧代码用 `f"标签{g}" in row.keys()` 判定，超出的下标直接走 `else` 填 `""`。
+### 自检要点
 
-上述 1646 / 596 / 19 都是 pandas 读到的**原始行数**；库里按 `business_id`
-去重并跳过空主键后是 1361 行，对应 403 条空 dict、2 条超界分组。统计口径不同，
-但逐条对比结果一致。
+- `dim_watcher --once` 后 `dim_meta` 两行各自 `version=1`、`row_count` 与日志一致。
+- 再跑一次：两表都 SKIP、version 不变；改其中一个文件：只有对应表的 version +1。
+- 只改卖点表中的 `product_name` 后直接请求接口，下一次调用即读到新名字，
+  无需重启任何进程。
+- 删库后调用 `load_product_selling_point()` / `load_cut_in_script()` 应返回 `{}`
+  且不创建任何文件。
+- `import main` 正常，`app.router.on_startup` 为空。
 
-`cut_in_str2tuple` 本身：正则 `切入话术(.*?)拒绝挽留话术(.*)`（`re.DOTALL`）拆两段，
-逐行把 `1. xxx：` 的编号去掉并包 `<strong><span style="color: blue;">`，
-两段分别加 `【切入话术】\n` / `【挽留话术】\n` 前缀；匹配不到则返回 `""`（空字符串，
-**不是 list**）。业务侧 `__get_cut_in_statement` 取 `[0]`、`__get_retain_statement` 取 `[1]`。
+### 未实现
 
-### 库里新增什么（只存原始）
-
-`registry.json` 的 `product_selling_point_match` 新增 `dynamic_columns` 声明：
-
-```json
-"dynamic_columns": {
-  "source_prefix": "标签",
-  "column_prefix": "tag_",
-  "start": 0,
-  "count": 28
-}
-```
-
-`dim_config.py` 把它展开成 28 个普通列：`标签0 → tag_0` … `标签27 → tag_27`，
-均 `optional: true`（表头缺列时填空串，正好对应旧逻辑「列不存在 → `""`」）。
-**`dim_importer.py` 一行未改**，它按既有列映射把每列原始文本写入库。
-
-于是卖点表列数从 8 增至 36（+ `version` = 37）。库里存的是
-`兜底话术` / `匹配结果2` / `标签0…标签27` 的**原始文本**（含换行、`**`、HTML 片段原字符），
-不含任何加工结果。`cut_in_str2tuple` 里的 `.replace("**", "")`、`strip()` 都在读取侧做。
-
-> ⚠️ **表结构变更，必须删库重建**：已有 `excel2consts/sqlite_db/dimensions.db` 是
-> 8 列旧结构。`ensure_table` 会检测并报「结构与 registry.json 不一致，请删除…后重建」；
-> 未删库时 `load_cut_in_script()` 查询 `tag_*` 列会失败并**降级为空映射**（切入/挽留话术为空，
-> 不会让 API 500）。部署时先 `rm excel2consts/sqlite_db/dimensions.db`，再起
-> `dim_watcher` 重建。本阶段按既有约定不做表结构迁移。
-
-### 加工放在哪里
-
-新增 `excel2consts/dim_transform.py`（**只依赖 `re`**，不引入 pandas / yapf）：
-
-| 函数 | 作用 |
-|---|---|
-| `cut_in_str2tuple()` | 从旧脚本精确复制，行为逐字一致 |
-| `build_cut_in_script_dict(rows, ...)` | 按上述 1/2/3 规则重建嵌套 dict，含两处怪异行为 |
-
-`dim_reader.py` 新增 `load_cut_in_script(cfg=None)`：`mode=ro` 查
-`{key, fallback, groups} + tag_*` 原始列（`ORDER BY rowid` 保证顺序）→
-把每行转成列名映射 → 交给 `dim_transform` 加工 → 返回**与旧 dict 完全同形**的结果，
-所以业务侧 `fusion_script_list[0]` / `[1]` 一行都不用改。
-
-### 可配置项（`registry.json`）
-
-| 配置 | 含义 |
-|---|---|
-| `dynamic_columns.source_prefix` / `column_prefix` / `start` / `count` | 要抽取的编号列：Excel 表头前缀、SQLite 列名前缀、起始编号、数量。生产维表标签列更多时只改 `count`（上限 200） |
-| `cut_in_script.key` | 业务 ID 列（查找键），当前 `business_id` |
-| `cut_in_script.fallback` | 兜底话术原始列，当前 `fallback_script` |
-| `cut_in_script.groups` | 分组 ID 原始列（按 `\n` 拆），当前 `match_result` |
-| `cut_in_script.tags` | 标签话术列的有序数组；`"dynamic_columns"` 表示直接用上面展开的列（顺序即 `标签0…标签N`，与下标 g 对齐）。也可显式写列名数组 |
-| `cut_in_script.fallback_key` | 内部兜底键名，当前 `兜底话术` |
-
-`dim_config.py` 会校验：所有角色列必须来自 `columns` 声明、`tags` 不可重复、
-`dynamic_columns` 展开的列名合法且不与已有列冲突、`count` 在 1..200。
-⚠️ `fallback_key` 虽然可配，但 `rewrite_by_excel/rewrite.py` 里硬编码了
-`"兜底话术"` 做比较，改它需同步改业务代码；一般不要动。
-
-### 改动文件
-
-| 文件 | 改动 |
-|---|---|
-| `excel2consts/dim_transform.py`（新增） | 库外拆解加工 |
-| `excel2consts/registry.json` | 卖点表新增 `dynamic_columns` 与 `cut_in_script` 声明 |
-| `excel2consts/dim_config.py` | 展开动态列、校验并透传 `cut_in_script` |
-| `excel2consts/dim_reader.py` | 新增 `load_cut_in_script()` |
-| `services/rewrite_by_excel/rewrite.py` | `__init__` 加载一次存 `self.cut_in_script_dict`；8 处 `consts.cut_in_script_dict` 换数据源；**切入/挽留取值与 HTML 加工逻辑逐字未改**；删掉 `from src import consts`（本文件已无 consts 引用） |
-| `Missions.md` | 追加本节，修正第 2 步「两套链路并存」的过时表述 |
-
-`main.py`、`services/product_info_raw.py`、`dim_watcher.py`、`dim_importer.py`、
-`src/consts.py` 均未改动。
-
-### 读取次数与降级
-
-- `load_cut_in_script()` 每次读一次全表（当前 1361 行 × 31 列）并在内存中重建嵌套 dict。
-  **不做进程级缓存**，天然读到最新 version；只有 `ProductInfoByExcel` 调用它
-  （放在子类 `__init__`，不拖累 `ProductInfoRaw` 及三个 spec 子类）。
-  维表量级若明显增长，后续可基于**各表独立的 version** 加缓存。
-- 降级沿用前两步：库/表不存在、未声明 `cut_in_script`、查询异常（含旧库缺 `tag_*` 列）、
-  `registry.json` 损坏 → 返回 `{}`，业务侧 `cut_in_statement` / `retain_statement` 为空，
-  **不会让 API 500**。同类告警每进程只打印一次。
-- 仍为 `mode=ro` 只读，在线业务不创建/不写维表库。
-
-### 与旧 consts 的已知差异（无业务影响）
-
-- 旧生成器遍历 pandas 全部 1646 行，业务 ID 为空的行会以 `""` 为 key 写进 dict；
-  新库导入时按主键为空跳过（样例 187 行）。`""` 不对应任何真实 `product_id`，
-  业务请求不会命中。验证时按「非空 business_id」逐字对比。
-- 旧生成器对重复业务 ID 按行序后者覆盖；新库 `PRIMARY KEY (business_id)` +
-  `read_rows` 去重同样是后写覆盖（样例 98 行重复），语义一致。
-- `cut_in_str2tuple` 返回 `""` 时业务侧 `""[0]` 会 `IndexError` 并被
-  `except` 吞掉返回空串；新旧 dict 的值形状一致，因此这条路径也一致。
-
-### 两套链路并存的现状（第 3 步后）
-
-- `consts.label_name_mapping`、`consts.product_selling_point_match_dict`、
-  `consts.cut_in_script_dict` **三个变量已全部无人读取**，`src/consts.py` 变成
-  「只被 startup 写、没有读」的死文件。
-- `main.py` startup 仍定时调用两个旧转换脚本重写 `src/consts.py` 并
-  `importlib.reload(consts)`；本步未动。第 4 步收尾再统一删除
-  `repeat_update_consts`、`importlib` / `subprocess` / `os` / `datetime` 相关代码，
-  以及 `excel2consts/labelName1_to_labelName2.py`、
-  `excel2consts/product_selling_point_match.py`、`excel2consts/basic_ops.py`。
-- 生效路径：`dim_watcher` → `sqlite_db/dimensions.db` →
-  `load_lookup` / `load_product_selling_point` / `load_cut_in_script` → 业务侧。
-  **部署时两个进程都要起**。
-
-### 本步未做（留待第 4 步收尾）
-
-- 未删旧转换脚本、未改 `main.py` startup、未删 `src/consts.py` 中的变量。
-- 未做基于 version 的缓存、版本回滚、历史版本查询、灰度切换。
-
-### 验证要点
-
-- 在改动前的项目副本上**真实运行旧生成器**（patch 掉 `FormatFile` 以避开 yapf 依赖）
-  写出 `src/consts.py`，`import` 得到真实的 `cut_in_script_dict` 作基准；
-  与 `load_cut_in_script()` 结果按非空 `business_id` 逐字比对，含 list / `""` 类型差异。
-- 覆盖：有分组且标签话术非空、分组数 > 28、`匹配结果2` 为空（值应为 `{}`）、
-  兜底话术含 `**` 与 `：【】` 混排、重复 business_id、不存在的 ID。
-- 业务侧逐字比对 `cut_in_statement` / `retain_statement` / `output_script`。
-- 旧库未重建时 `load_cut_in_script()` 降级为空且不抛异常；`mode=ro` 不创建文件；
-  `import main` 正常、三个 spec 子类不受影响。
-
-
-
-
+- 基于 `version` 的进程级缓存、版本回滚、历史版本查询、灰度切换。
+- 加工规则的完全配置化：当前 `cut_in_str2tuple` 与分组规则写在 `dim_transform.py`，
+  `registry.json` 只声明列角色与列顺序。

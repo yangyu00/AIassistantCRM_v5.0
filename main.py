@@ -1,8 +1,3 @@
-import datetime
-import importlib
-import os
-import subprocess
-from pathlib import Path
 from typing import List
 
 import uvicorn
@@ -20,14 +15,13 @@ from services.rewrite_by_spec_f09609.rewrite import ProductInfoRewrite as Produc
 from sftp_workdir_f09554 import data_query as data_query_f09554
 from sftp_workdir_f09591 import data_query as data_query_f09591
 from sftp_workdir_f09609 import data_query as data_query_f09609
-from src import consts
 from src.call_stat import record_call
 from src.exceptions import telnumError, productIdError, register_errors_handlers
 from src.log_util import my_log
-from src.task_scheduler import repeat_task
 
 # 数据更新（SFTP 拉取 → SQLite 入库）由 tasks/ 下的 3 个独立进程负责；
-# 本进程只处理在线查询与维表热更新。
+# 维表更新由 excel2consts.dim_watcher 独立进程负责；
+# 本进程只处理在线查询，所有维表与业务数据一律只读 SQLite。
 app = FastAPI()
 register_errors_handlers(app)
 global_config = ImmutableYamlConfig()
@@ -41,49 +35,6 @@ async def count_call_middleware(request, call_next):
     finally:
         record_call()
     return response
-
-
-excel_update_time = []
-first_launch = True
-
-MAIN_PATH = Path(__file__).resolve().parent
-
-
-@app.on_event('startup')
-@repeat_task(seconds=60 * 60)
-def repeat_update_consts() -> None:
-    # 任务1.定时检查卖点维表和标签转换维表是否更新，更新则重写src中的consts文件，并利用importlib.reload(consts)实现热更新
-    # 对应api中“维表中业务”
-    global excel_update_time, first_launch
-    heart_file = {
-        f'{str(MAIN_PATH)}/excel2consts/卖点维表.xlsx': f'{str(MAIN_PATH)}/excel2consts/product_selling_point_match.py',
-        f'{str(MAIN_PATH)}/excel2consts/标签转换维表.xlsx': f'{str(MAIN_PATH)}/excel2consts/labelName1_to_labelName2.py'
-    }
-
-    for i, (one_file_path, convert_script) in enumerate(heart_file.items()):
-        mtime = os.path.getmtime(one_file_path)  # 获取文件更新时间
-        mtime = datetime.datetime.fromtimestamp(mtime)  # 时间转为datetime格式
-
-        if len(excel_update_time) < len(heart_file):
-            excel_update_time.append(mtime)
-
-        if mtime != excel_update_time[i] or first_launch:
-            if len(excel_update_time) == len(heart_file):
-                first_launch = False
-            my_log.info(f'{os.path.basename(one_file_path)} 触发更新任务')
-            try:
-                if isinstance(convert_script, str):
-                    cmd_list = ['python', f'{convert_script}']
-                    subprocess.run(cmd_list, shell=False, capture_output=False, check=False)
-                elif isinstance(convert_script, list):
-                    for script in convert_script:
-                        cmd_list = ['python', f'{script}']
-                        subprocess.run(cmd_list, shell=False, capture_output=False, check=False)
-            except Exception as e:
-                my_log.error(f'UPDATE {os.path.basename(one_file_path)} ERROR')
-            else:
-                importlib.reload(consts)
-                excel_update_time[i] = mtime
 
 
 class ProductIds(BaseModel):
