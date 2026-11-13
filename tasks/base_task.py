@@ -42,6 +42,76 @@ REMOTE_NAME_TMPL = "{prefix}{date}000000.AVL"
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
 
 
+def ensure_table_with_pk(conn, table_name: str, schema, pk_columns, log,
+                         drop_indexes=()):
+    """确保表存在且以 ``pk_columns`` 为主键；旧的无主键表会自动重建。
+
+    SQLite 不支持 ``ALTER TABLE ... ADD PRIMARY KEY``，所以从「追加模式」切到
+    「product_no 主键 + INSERT OR REPLACE」时，已经存在的旧库必须重建，否则
+    REPLACE 没有唯一约束可冲突，等价于普通 INSERT，仍会产生重复行。
+
+    重建在单个事务内完成，失败则整体回滚，旧表原样保留：
+      1. 旧表 rename 成 ``{table}__nopk_tmp``
+      2. 建带 PRIMARY KEY 的新表
+      3. ``INSERT OR REPLACE ... SELECT ... ORDER BY op_time ASC, rowid ASC``
+         —— 同一 product_no 只保留 op_time 最新（相同则保留后写入）的一条；
+         顺带过滤掉 product_no 为空的记录（新表该列为 NOT NULL）
+      4. DROP 临时旧表（挂在它上面的旧索引一并消失）
+
+    :param conn: sqlite3.Connection
+    :param schema: [(列名, 列类型), ...]
+    :param pk_columns: 主键列元组，如 ("product_no",)
+    :param drop_indexes: 需要清理的历史遗留索引名（主键已自带索引，无需再建）
+    """
+    cur = conn.cursor()
+    cols_def = ", ".join(f"{c} {t}" for c, t in schema)
+    col_names = ", ".join(c for c, _ in schema)
+    pk_def = ", ".join(pk_columns)
+
+    # 必须用 fetchall 把结果读尽：只 fetchone 会让 SELECT statement 保持 active，
+    # 其持有的 schema 读锁会导致后续 ALTER/DROP 报 "database table is locked"。
+    exists = cur.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table_name,)
+    ).fetchall()
+    if not exists:
+        cur.execute(f"CREATE TABLE {table_name} ({cols_def}, PRIMARY KEY ({pk_def}))")
+        conn.commit()
+        log.info(f"建表 {table_name}（PRIMARY KEY ({pk_def})）")
+        return
+
+    info = cur.execute(f"PRAGMA table_info({table_name})").fetchall()
+    pk_cols = [r[1] for r in sorted((r for r in info if r[5] > 0), key=lambda r: r[5])]
+    if pk_cols == list(pk_columns):
+        # 结构已正确，只清理历史遗留的冗余复合索引
+        for idx in drop_indexes:
+            cur.execute(f"DROP INDEX IF EXISTS {idx}")
+        conn.commit()
+        return
+
+    tmp = f"{table_name}__nopk_tmp"
+    # 显式事务：DDL 与 INSERT 一起原子提交。若依赖 Python sqlite3 的隐式事务，
+    # DDL 会自动提交、INSERT 才开启事务，DROP 旧表时容易撞上 "database table is locked"。
+    cur.execute("BEGIN IMMEDIATE")
+    cur.execute(f"DROP TABLE IF EXISTS {tmp}")
+    for idx in drop_indexes:
+        cur.execute(f"DROP INDEX IF EXISTS {idx}")
+    cur.execute(f"ALTER TABLE {table_name} RENAME TO {tmp}")
+    cur.execute(f"CREATE TABLE {table_name} ({cols_def}, PRIMARY KEY ({pk_def}))")
+    cur.execute(
+        f"INSERT OR REPLACE INTO {table_name} ({col_names}) "
+        f"SELECT {col_names} FROM {tmp} "
+        f"WHERE product_no IS NOT NULL AND TRIM(product_no) <> '' "
+        f"ORDER BY op_time ASC, rowid ASC"
+    )
+    kept = cur.execute(f"SELECT COUNT(*) FROM {table_name}").fetchall()[0][0]
+    cur.execute(f"DROP TABLE {tmp}")
+    conn.commit()
+    log.info(
+        f"表 {table_name} 已从无主键结构重建为 PRIMARY KEY ({pk_def})，"
+        f"按 product_no 去重后保留 {kept} 条（旧表已删除）"
+    )
+
+
 class SingleInstanceLock:
     """单机单实例文件锁。拿不到锁立即失败（非阻塞），避免两个拉取者并发出库。"""
 
