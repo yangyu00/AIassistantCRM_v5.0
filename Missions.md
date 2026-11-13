@@ -197,3 +197,104 @@ op_time 直接取自文件第 1 列，代码不做日期改写。当前样例 `F
   生产上 F09609 约 103 列（约 50 组），解析逻辑与列数无关。
 - **op_time 偏移量**：任务1 = T-2、任务2 = T-1（已确认）；任务3 按样例推断为 T-2，待生产数据核实。
   过期清理比较的是 op_time，因此保留天数实际覆盖的文件日期要多出对应的偏移天数。
+
+---
+
+## 维表 SQLite 化（第一阶段：写入侧）
+
+> 现状：`main.py` startup 定时比对 `excel2consts/*.xlsx` 的 mtime，改写 `src/consts.py` 再 reload 热更新。
+> 目标：改为写本地 SQLite，用 `version` 字段维护版本，在线业务按版本读取，摆脱「改源码 + reload」。
+> **本阶段只做第一步**：独立进程检测注册文件是否更新 → 按配置抽列写库。
+> `main.py`、`src/consts.py`、`services/`、在线业务读取逻辑**一律未改**，旧热更新链路仍原样运行。
+> 假设维表 xlsx 仍放在 `excel2consts/` 目录下（仓库未提交 xlsx，仅有 `io_samples/` 下的同名样例）。
+
+### 新增文件（均在 `excel2consts/`，未改动项目其余文件）
+
+| 文件 | 作用 |
+|---|---|
+| `registry.json` | 注册表：库路径、轮询间隔、文件↔表名↔主键↔字段映射 |
+| `dim_config.py` | 加载并校验 `registry.json`，相对路径解析到 `excel2consts/` |
+| `dim_importer.py` | 读 xlsx 抽列、建表、指纹比对、整表替换与 version 递增 |
+| `dim_watcher.py` | 独立进程主程序：单实例锁、定时轮询、日志、参数解析 |
+| `__init__.py` | 使 `python -m excel2consts.dim_watcher` 可用 |
+
+运行时产物也在 `excel2consts/` 下：`sqlite_db/`、`state/dim_watcher.lock`、`log/dim_watcher.log`。
+
+### 运行方式（项目根目录）
+
+```bash
+python -m excel2consts.dim_watcher                 # 常驻轮询，默认 60s
+python -m excel2consts.dim_watcher --once         # 只检测一轮后退出（便于 crontab / 验证）
+python -m excel2consts.dim_watcher --once --force # 忽略指纹强制重导并递增 version
+python -m excel2consts.dim_watcher --config /path/to/registry.json --interval 300
+```
+
+生产建议 systemd/nohup 起一个常驻进程，与 `tasks/` 三个任务并列；单机单实例，靠
+`state/dim_watcher.lock`（`fcntl` 非阻塞锁）互斥。`--force` 通常只配合 `--once` 使用。
+
+### 可配置项（`registry.json`）
+
+| 配置 | 含义 |
+|---|---|
+| `database` | SQLite 库路径，默认 `excel2consts/sqlite_db/dimensions.db` |
+| `poll_interval_seconds` | 轮询间隔（秒），可被 `--interval` 覆盖 |
+| `version_column` | 版本列名，默认 `version` |
+| `meta_table` | 版本元数据表名，默认 `dim_meta` |
+| `tables[].source` | 注册文件名 → 对应**英文表名** `tables[].table` |
+| `tables[].sheet` / `header_row` | 工作表（序号或名称）、表头行号（1-based） |
+| `tables[].primary_key` | 主键列（数组，支持联合主键），必须来自 `columns[].column` |
+| `columns[].source` → `columns[].column` | **Excel 表头 → SQLite 列名**的映射 |
+| `columns[].column_index` | 可选，按列序号（1-based）取列；同名表头（如卖点维表有两个「备注」）时更稳妥。与 `source` 同时给出时优先用序号 |
+| `columns[].type` | `TEXT` / `INTEGER` / `REAL`，默认 `TEXT`（与旧逻辑一致，全部按字符串读） |
+| `columns[].default` / `strip` / `optional` | 空值兜底、是否去首尾空白、缺列时是否允许跳过 |
+
+当前注册两张表（列名沿用 `src/consts.py` 中变量名，便于后续切换）：
+
+| 注册文件 | 表名 | 主键 | 抽取字段（Excel 表头 → 列名） |
+|---|---|---|---|
+| `卖点维表.xlsx` | `product_selling_point_match` | `business_id` | 业务ID→business_id、产品名称→product_name、生成话术→selling_point、标签ID→label_id、兜底话术→fallback_script、匹配结果2→match_result、产品大类→product_category、产品小类→product_subcategory |
+| `标签转换维表.xlsx` | `label_name_mapping` | `label_id` | 标签ID→label_id、营销助手显示名字→display_name、标签管理平台标签名→platform_label_name |
+
+**加字段、改主键、加表只需改 `registry.json`，不用改 Python 代码。**
+配置加载时会校验表名/列名合法性、主键必须来自列定义且不能重复或设为 optional、
+列名不与版本列冲突、表名不重复；
+已有表的结构与配置不一致会直接报错并提示删库重建，不会静默写错列。
+
+### 表结构与 version 语义
+
+- 每张表 = 配置列 + `version INTEGER NOT NULL` + `PRIMARY KEY (主键列)`；主键列额外 `NOT NULL`。
+- 每次检测到文件变更：**单事务内 `DELETE` 整表 → 写入全量行（每行带同一个新 version）→ 更新元数据**，
+  对应旧逻辑「合成 dict 后整体替换」，不会残留已删除的行。
+- `version` 从 1 起，每次成功导入 +1；`dim_meta` 记录每个表的
+  `version / source_file / sha256 / file_size / file_mtime / row_count / updated_at`。
+  数据表只保留**当前版本**，历史版本暂不落库（后续如需回溯，可改为按 version 追加）。
+- 主键为空的行跳过，重复主键后写覆盖先写（与旧 `dict(zip(keys, values))` 语义一致），计数写进日志。
+
+### 变更检测
+
+- 用 **sha256 内容指纹**判断，不只比 mtime（避免「另存为但 mtime 相同」或「touch 一下」误判）。
+  指纹未变 → 直接 SKIP，version 不变。
+- 指纹存 `dim_meta`，进程重启不会重复导入；**导入失败不更新指纹**，下一轮自动重试。
+- 注册文件不存在 → 告警跳过，不退出进程（维表可能稍后才放进来）。
+- 缺必需表头列 → 报错跳过本轮、不写库、不更新指纹，下轮重试；`optional: true` 的列缺失时填空串。
+- xlsx 正在被 Excel 写入导致读取失败时同样按失败处理，下轮重试。
+
+### 本阶段未做（避免牵动在线业务）
+
+- **不动 `main.py` / `src/consts.py`**：在线业务仍读 `consts` 里的 dict，旧 startup 热更新照常跑，
+  两套链路目前并存，本进程只负责把维表数据写进 SQLite。
+- 未实现旧脚本里的复杂话术加工（`cut_in_str2tuple` 解析切入/挽留话术、`匹配结果2` 分组、
+  动态列 `标签0…标签26`）。本阶段只做固定表头的**列映射直取**；需要加工时再以可配置的
+  transform 规则扩展，避免一上来引入难以排查的转换 bug。
+- 未做在线业务按 version 读取、未做版本回滚/历史版本查询、未接入 `tasks/config.py` 的 `.env`
+  （本模块只依赖 `registry.json`，自包含）。
+
+### 依赖与注意事项
+
+- 只需 `openpyxl`（读 xlsx），不引入 pandas / yapf；标准库完成 SQLite、指纹、日志与文件锁。
+- `fcntl` 文件锁为 Linux 单机单实例设计，与项目部署环境一致。
+- 表结构变更（增删列、改主键）需人工删除 `excel2consts/sqlite_db/dimensions.db` 后重建，
+  本阶段不做表结构迁移。
+- 试跑：仓库 `io_samples/` 下有 `卖点维表.xlsx` / `标签转换维表.xlsx` 样例，
+  复制到 `excel2consts/` 后执行 `python -m excel2consts.dim_watcher --once` 即可。
+

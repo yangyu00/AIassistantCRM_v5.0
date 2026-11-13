@@ -1,0 +1,37 @@
+{
+  "database": "sqlite_db/dimensions.db",
+  "poll_interval_seconds": 600,
+  "version_column": "version",
+  "meta_table": "dim_meta",
+  "tables": [
+    {
+      "table": "product_selling_point_match",
+      "source": "卖点维表.xlsx",
+      "sheet": 0,
+      "header_row": 1,
+      "primary_key": ["business_id"],
+      "columns": [
+        {"source": "业务ID", "column": "business_id", "type": "TEXT"},
+        {"source": "产品名称", "column": "product_name", "type": "TEXT"},
+        {"source": "生成话术", "column": "selling_point", "type": "TEXT"},
+        {"source": "标签ID", "column": "label_id", "type": "TEXT"},
+        {"source": "兜底话术", "column": "fallback_script", "type": "TEXT"},
+        {"source": "匹配结果2", "column": "match_result", "type": "TEXT", "optional": true},
+        {"source": "产品大类", "column": "product_category", "type": "TEXT", "optional": true},
+        {"source": "产品小类", "column": "product_subcategory", "type": "TEXT", "optional": true}
+      ]
+    },
+    {
+      "table": "label_name_mapping",
+      "source": "标签转换维表.xlsx",
+      "sheet": "标签名称--标签ID",
+      "header_row": 1,
+      "primary_key": ["label_id"],
+      "columns": [
+        {"source": "标签ID", "column": "label_id", "type": "TEXT"},
+        {"source": "营销助手显示名字", "column": "display_name", "type": "TEXT"},
+        {"source": "标签管理平台标签名", "column": "platform_label_name", "type": "TEXT", "optional": true}
+      ]
+    }
+  ]
+}
