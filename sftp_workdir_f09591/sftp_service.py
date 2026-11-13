@@ -20,10 +20,10 @@ CONFIG = {
     'SFTP_REMOTE_PATH': "/ftpdata2/data_reverse/wangsi/aifile",
     'BATCH_SIZE': 5000,
     'FILE_PREFIXES': "F09591",
-    'DATA_EXPIRE_DAYS': 50,  # 数据库数据保留天数
+    'DATA_EXPIRE_DAYS': 3,  # 数据库数据保留天数
     'TABLE_NAME_PREFIX': f"data_F09591",
     'NUM_TABLES': 128,
-    'LOCAL_FILE_EXPIRE_DAYS': 50,  # 本地AVL文件保留天数
+    'LOCAL_FILE_EXPIRE_DAYS': 3,  # 本地AVL文件保留天数
     # --- 新增路径配置 ---
     'LOCAL_DIR_NAME': "files",  # 本地文件下载目录名
     'DB_DIR_NAME': "sqlite_db"  # 本地数据库存储目录名
@@ -323,6 +323,8 @@ def main():
     parser.add_argument('--date', type=str, help='指定处理日期 (格式: YYYYMMDD)，不传则默认为当天')
     # 新增参数：强制重新入库
     parser.add_argument('--force-reload', action='store_true', help='本地文件存在时，不重新下载，但强制重新入库')
+    # 新增参数：强制清除过期数据
+    parser.add_argument('--perform-cleanup', action='store_true', help='清除过期数据')
 
     args = parser.parse_args()
 
@@ -331,17 +333,15 @@ def main():
         try:
             target_date = datetime.strptime(args.date, '%Y%m%d')
             # 指定日期时，默认不执行清理，除非显式指定了 force-reload
-            perform_cleanup = False
             print(f"MODE:: 指定日期模式 [{args.date}] - 不执行清理", flush=True)
         except ValueError:
             print("ERROR:: 日期格式错误，请使用 YYYYMMDD 格式", flush=True)
             sys.exit(1)
     else:
         target_date = datetime.now()
-        perform_cleanup = True
         print(f"MODE:: 默认模式 [当天] - 执行清理", flush=True)
 
-    run_process(target_date, perform_cleanup, args.force_reload)
+    run_process(target_date, args.perform_cleanup, args.force_reload)
 
 
 if __name__ == '__main__':

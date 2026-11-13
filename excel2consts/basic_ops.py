@@ -2,6 +2,7 @@ import ast
 import re
 from pathlib import Path
 
+
 def __assign_node(file_path, node_name, node_value):
     # 读取源代码
     with file_path.open('r', encoding='utf-8') as file:
