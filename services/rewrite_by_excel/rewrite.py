@@ -15,10 +15,10 @@ class ProductInfoRewrite(ProductInfoRaw):
         self.output_script = self.__get_output_script()
 
     def __get_selling_point(self):
-        if self.product_id not in consts.product_selling_point_match_dict:
+        if self.product_id not in self.product_selling_point_match_dict:
             return ""
 
-        old_text = consts.product_selling_point_match_dict[self.product_id][1]
+        old_text = self.product_selling_point_match_dict[self.product_id][1]
         # 将“1、资费：”后的字符标红，若“2、价格”未换行，增加换行符
         pattern = re.compile(r'\d、.*?：', re.DOTALL)
         extract = pattern.findall(old_text)

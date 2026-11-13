@@ -85,16 +85,34 @@ def load_registry(path=None):
         _need(all(not next(c for c in columns if c["column"] == k)["optional"] for k in pk),
               f"{name}: 主键列不能设为 optional")
 
-        # 在线业务读取侧用的 {key: value} 映射声明（本次只有 label_name_mapping 用到）。
+        # 在线业务读取侧的映射声明。
+        #   value : 单列  -> {key: 单值}        如 label_name_mapping
+        #   values: 多列  -> {key: (值1, 值2…)} 如 product_selling_point_match
         lookup = t.get("lookup")
         if lookup is not None:
             _need(isinstance(lookup, dict), f"{name}: lookup 需为对象")
-            key, value = lookup.get("key"), lookup.get("value")
+            key = lookup.get("key")
             _need(isinstance(key, str) and _NAME_RE.match(key), f"{name}: lookup.key 非法")
-            _need(isinstance(value, str) and _NAME_RE.match(value), f"{name}: lookup.value 非法")
-            _need(key in seen_cols and value in seen_cols,
-                  f"{name}: lookup 的 key/value 必须来自 columns 中的列名")
-            lookup = {"key": key, "value": value}
+            _need(key in seen_cols, f"{name}: lookup.key 必须来自 columns 中的列名")
+
+            single, multi = lookup.get("value"), lookup.get("values")
+            _need((single is None) != (multi is None),
+                  f"{name}: lookup 需且只能提供 value 或 values 之一")
+            if single is not None:
+                _need(isinstance(single, str) and _NAME_RE.match(single),
+                      f"{name}: lookup.value 非法")
+                _need(single in seen_cols and single != key,
+                      f"{name}: lookup.value 必须来自 columns 且不等于 key")
+                lookup = {"key": key, "value": single, "values": None}
+            else:
+                _need(isinstance(multi, list) and multi,
+                      f"{name}: lookup.values 需为非空数组")
+                _need(all(isinstance(v, str) and _NAME_RE.match(v) for v in multi),
+                      f"{name}: lookup.values 含非法列名")
+                _need(len(set(multi)) == len(multi), f"{name}: lookup.values 含重复列")
+                _need(all(v in seen_cols and v != key for v in multi),
+                      f"{name}: lookup.values 必须来自 columns 且不等于 key")
+                lookup = {"key": key, "value": None, "values": list(multi)}
 
         specs.append({
             "table": name,

@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from IOP.get_custinfo import get_custom_info_in_global
 from config import ImmutableYamlConfig
+from excel2consts.dim_reader import load_product_selling_point
 from services.product_info_raw import ProductInfoRaw as ProductInfoRaw
 from services.rewrite_by_excel.rewrite import ProductInfoRewrite as ProductInfoByExcel
 from services.rewrite_by_spec_f09554.rewrite import ProductInfoRewrite as ProductInfoBySpec9554
@@ -128,6 +129,8 @@ async def marketAssistant(args: Args):
         custom_label_info = {}
 
     # 2. 建立产品对象列表
+    # 维表路由判断：一次请求只读一次，循环内复用
+    product_selling_point_match_dict = load_product_selling_point()
     product_obj_list = []
     for one_product_obj in args.productId:
         # 1. 特殊业务
@@ -151,7 +154,7 @@ async def marketAssistant(args: Args):
             continue
 
         # 4. 维表中业务
-        if one_product_obj.id in consts.product_selling_point_match_dict.keys():
+        if one_product_obj.id in product_selling_point_match_dict:
             product_obj_list.append(ProductInfoByExcel(one_product_obj.id, custom_label_info))
             continue
 

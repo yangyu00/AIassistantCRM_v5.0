@@ -2,9 +2,12 @@
 """维表 SQLite 读取侧（在线业务用）。
 
 只读打开 SQLite，不创建库、不写库；库/表/列未就绪时返回空 dict，
-让业务沿用原有降级路径（标签名保持上游给的名字）。
+让业务沿用原有降级路径。
 
 数据库路径、表名、key/value 列都来自 registry.json，不硬编码。
+lookup 支持两种形状（由 registry 声明）：
+  value : 单列  -> {key: 单值}
+  values: 多列  -> {key: (值1, 值2, ...)}  顺序即 values 声明顺序
 """
 import sqlite3
 
@@ -20,9 +23,10 @@ def _warn_once(msg):
 
 
 def load_lookup(table_name, cfg=None):
-    """把 registry 中声明了 lookup 的维表读成 {key: value}。
+    """读取注册表的 lookup 映射。
 
-    :param table_name: 注册表名，如 "label_name_mapping"
+    :param table_name: 注册表名，如 "label_name_mapping" /
+                       "product_selling_point_match"
     :return: dict；库不存在、表不存在、未声明 lookup 或查询失败时返回 {}
     """
     try:
@@ -36,7 +40,7 @@ def load_lookup(table_name, cfg=None):
         _warn_once(f"dim_reader: 未注册的表 {table_name}")
         return {}
     if not spec.get("lookup"):
-        _warn_once(f"dim_reader: 表 {table_name} 未声明 lookup（key/value 列）")
+        _warn_once(f"dim_reader: 表 {table_name} 未声明 lookup")
         return {}
 
     db = cfg["database"]
@@ -44,13 +48,18 @@ def load_lookup(table_name, cfg=None):
         _warn_once(f"dim_reader: 维表库不存在 {db}，{table_name} 暂用空映射")
         return {}
 
-    key_col, val_col = spec["lookup"]["key"], spec["lookup"]["value"]
+    lk = spec["lookup"]
+    key_col = lk["key"]
+    value_cols = [lk["value"]] if lk["values"] is None else lk["values"]
+    multi = lk["values"] is not None
+    select_cols = ", ".join([key_col] + value_cols)
+
     try:
         # mode=ro：在线业务绝不创建/写入维表库
         conn = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)
         try:
             rows = conn.execute(
-                f"SELECT {key_col}, {val_col} FROM {table_name}"
+                f"SELECT {select_cols} FROM {table_name}"
             ).fetchall()
         finally:
             conn.close()
@@ -58,4 +67,18 @@ def load_lookup(table_name, cfg=None):
         _warn_once(f"dim_reader: 读取 {table_name} 失败（{e}），暂用空映射")
         return {}
 
-    return {str(k): v for k, v in rows}
+    def clean(v):
+        return "" if v is None else v
+
+    if multi:
+        return {str(row[0]): tuple(clean(v) for v in row[1:]) for row in rows}
+    return {str(row[0]): clean(row[1]) for row in rows}
+
+
+def load_product_selling_point(cfg=None):
+    """卖点维表：{business_id: (product_name, selling_point, label_id)}。
+
+    形状与旧 consts.product_selling_point_match_dict 完全一致，
+    因此业务侧的 [0] / [1] / [2].split("\\n") 无需改动。
+    """
+    return load_lookup("product_selling_point_match", cfg=cfg)

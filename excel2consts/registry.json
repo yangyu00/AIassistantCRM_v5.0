@@ -10,6 +10,10 @@
       "sheet": 0,
       "header_row": 1,
       "primary_key": ["business_id"],
+      "lookup": {
+        "key": "business_id",
+        "values": ["product_name", "selling_point", "label_id"]
+      },
       "columns": [
         {"source": "业务ID", "column": "business_id", "type": "TEXT"},
         {"source": "产品名称", "column": "product_name", "type": "TEXT"},

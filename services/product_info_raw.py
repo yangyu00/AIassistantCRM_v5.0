@@ -1,11 +1,12 @@
-from src import consts
-from excel2consts.dim_reader import load_lookup
+from excel2consts.dim_reader import load_lookup, load_product_selling_point
 
 
 class ProductInfoRaw(object):
     def __init__(self, product_id, custom_label_info):
         self.product_id = product_id
         self.custom_label_info = custom_label_info
+        # 一次请求内只读一次，父类与子类（rewrite_by_excel）共用同一份
+        self.product_selling_point_match_dict = load_product_selling_point()
         self.product_name = self.__get_product_name()
         self.queried_label_ids = self.__get_queried_label_ids()
         self.queried_label_nvs = self.__get_queried_label_nvs()
@@ -13,15 +14,15 @@ class ProductInfoRaw(object):
         self.output_script = "无"
 
     def __get_product_name(self):
-        if self.product_id not in consts.product_selling_point_match_dict:
+        if self.product_id not in self.product_selling_point_match_dict:
             return None
-        return consts.product_selling_point_match_dict[self.product_id][0]
+        return self.product_selling_point_match_dict[self.product_id][0]
 
     def __get_queried_label_ids(self):
-        if self.product_id not in consts.product_selling_point_match_dict:
+        if self.product_id not in self.product_selling_point_match_dict:
             return []
 
-        return consts.product_selling_point_match_dict[self.product_id][2].split("\n")
+        return self.product_selling_point_match_dict[self.product_id][2].split("\n")
 
     def __get_queried_label_nvs(self):
         queried_label_nvs = []

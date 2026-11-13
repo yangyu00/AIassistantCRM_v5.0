@@ -357,16 +357,17 @@ if self.queried_label_ids[i] in label_name_mapping:
 - `main.py` startup 仍会定时调用 `excel2consts/labelName1_to_labelName2.py` 重写
   `src/consts.py` 并 `importlib.reload(consts)`；这一步**没动**。
 - 但 `consts.label_name_mapping` 现在**已无人读取**，变成死数据；旧热更新是否跑、
-  跑几次都不再影响辅助画像的标签名。等后续把 `product_selling_point_match_dict` /
-  `cut_in_script_dict` 也迁完，再整体拆掉 startup 里的旧链路，避免中途出现半新半旧。
+  跑几次都不再影响辅助画像的标签名。`product_selling_point_match_dict` 已在第 2 步迁完；
+  等 `cut_in_script_dict` 也迁完，再整体拆掉 startup 里的旧链路，避免中途出现半新半旧。
 - 新的生效路径：`dim_watcher` 独立进程 → `excel2consts/sqlite_db/dimensions.db`
   → `load_lookup()` → `ProductInfoRaw`。**部署时两个进程都要起**。
 
 ### 本步未做
 
-- 未替换 `product_selling_point_match_dict`、`cut_in_script_dict`（`services/` 下还有
-  `rewrite_by_excel/rewrite.py` 等多处引用），留待后续逐步迁移。
-- 未删除 `excel2consts/labelName1_to_labelName2.py` 等旧转换脚本，未改 `main.py`。
+- 本步未替换 `product_selling_point_match_dict`、`cut_in_script_dict`；前者已在
+  第 2 步完成，后者仍留在 `consts`（`rewrite_by_excel/rewrite.py` 多处引用）。
+- 本步未删除 `excel2consts/labelName1_to_labelName2.py` 等旧转换脚本，未改 `main.py`
+  （第 2 步为替换路由判断才改了 `main.py`）。
 - 未实现话术加工（`cut_in_str2tuple`、动态 `标签0…标签26` 分组），库里仍存原始列值。
 - 未做版本回滚、历史版本查询、基于 version 的灰度切换。
 
@@ -380,5 +381,141 @@ if self.queried_label_ids[i] in label_name_mapping:
   下一次请求即读到新名字；反过来改 `consts.label_name_mapping` 已完全不影响结果。
 - `mode=ro` 验证：删库后调用 `load_lookup` 不会创建任何文件。
 - `import main` 正常，其余 services 模块行为不变；改动仅限本节列出的 5 个文件。
+
+---
+
+## 维表 SQLite 化（第二阶段·第 2 步：替换 product_selling_point_match_dict）
+
+> 本步把卖点维表相关的读取全部改为查库。**`cut_in_script_dict` 仍留在 `consts`**，
+> 留待第 3 步；旧转换脚本与 `main.py` startup 热更新链路仍未删除。
+
+### 字段口径核对（结论：判断基本正确，两处需精确化）
+
+| 判断 | 核对结果 |
+|---|---|
+| 用到 `business_id` / `product_name` / `selling_point` / `label_id` | ✅ 对。`business_id` 是**主键/查找键**，其余 3 列组成 value 三元组 `(product_name, selling_point, label_id)`，对应旧 dict 的 `[0]` `[1]` `[2]` |
+| `selling_point` 涉及添加 HTML 标签的格式转换 | ✅ 确实存在，但**属于业务侧展示逻辑，不在写库侧**。见下文 |
+| `label_id` 根据换行拆分成列表 | ✅ 对，但**拆分应继续留在业务侧**，读取侧返回原始含换行字符串。见下文 |
+
+另外补一处容易漏的：`main.py` 里 `in consts.product_selling_point_match_dict.keys()`
+是**「维表中业务」路由判断**，本步也一并改为查库。
+
+### 关于 HTML 格式转换（重要）
+
+转换代码在 `services/rewrite_by_excel/rewrite.py::__get_selling_point()`：
+用正则 `\d、.*?：` 找「1、资费：」「2、价格：」等编号段，把首段包进
+`<strong>` + `<span style="color:red;">`，后续段落逐段 `<strong>` 拼接并补换行；
+匹配不到编号时只加 `【卖点】\n` 前缀。输出再经 `__strong_text()` 把
+`【辅助画像】/【切入话术】/【卖点】/【挽留话术】` 包成 `<strong>`。
+
+**本步的处理：库里继续存原始「生成话术」文本，转换逻辑一行未改，只换数据源。**
+理由：
+
+- 这是纯字符串 → HTML 的**运行时展示格式化**，不是维表数据本身的属性；
+- 若把格式化后的 HTML 写进库，等于把前端样式固化进数据层，以后改配色/标签要重导全表；
+- 保持业务侧原样，才能做到新旧输出**逐字一致**，也符合「逐步替换、不出难查 bug」的前提。
+
+⚠️ 别和另一处混淆：`excel2consts/product_selling_point_match.py::cut_in_str2tuple()`
+对**兜底话术**做的 `<strong><span style="color: blue;">` 包装属于
+`cut_in_script_dict`，是第 3 步的事，本步不涉及。
+
+### 关于 label_id 换行拆分
+
+样例里 `标签ID` 确实是多行单元格，如
+`026de6be…\n71527bf3…`。旧逻辑是 `[2].split("\n")`，本步**原样保留**这一行：
+
+```python
+return self.product_selling_point_match_dict[self.product_id][2].split("\n")
+```
+
+读取侧只返回 `label_id` 原始字符串（库里已按 `strip()` 存，与旧生成器
+`label_id.strip()` 一致），不提前拆、不过滤空串、不额外 strip 每一项。
+连续换行产生的空串旧逻辑不过滤，新逻辑也不过滤，保证 `queried_label_ids`
+逐字一致——否则会静默改变 `__get_queried_label_nvs` 与辅助画像。
+
+### 配置扩展：lookup 支持单值 / 多值
+
+`registry.json` 的 `product_selling_point_match` 新增：
+
+```json
+"lookup": {
+  "key": "business_id",
+  "values": ["product_name", "selling_point", "label_id"]
+}
+```
+
+`dim_config.py` 的 `lookup` 校验扩展为两种形状，互斥且必填其一：
+
+| 声明 | 返回形状 | 用途 |
+|---|---|---|
+| `"value": "display_name"` | `{key: 单值}` | `label_name_mapping`（第 1 步，不变） |
+| `"values": [列1, 列2, …]` | `{key: (值1, 值2, …)}` | `product_selling_point_match`（本步） |
+
+`values` 的顺序即元组顺序，也就是旧 dict 的 `[0]/[1]/[2]`。
+校验包括：列名合法、必须来自 `columns`、不等于 key、不可重复。
+**换列名或调顺序只改 `registry.json`，Python 代码不动。**
+
+`dim_reader.py` 的 `load_lookup()` 统一支持两种形状，并新增语义化包装
+`load_product_selling_point()`；返回 dict 与旧 `consts.product_selling_point_match_dict`
+**完全同形**，所以业务侧 `[0]` / `[1]` / `[2].split("\n")` 一行都不用改。
+
+### 改动文件
+
+| 文件 | 改动 |
+|---|---|
+| `services/product_info_raw.py` | `__init__` 里加载一次并存为 `self.product_selling_point_match_dict`；`__get_product_name` / `__get_queried_label_ids` 换数据源；删掉已无用的 `from src import consts` |
+| `services/rewrite_by_excel/rewrite.py` | `__get_selling_point` 两处换为 `self.product_selling_point_match_dict`；**HTML 转换逻辑逐字未改**；`consts` import 保留（`cut_in_script_dict` 仍在用） |
+| `main.py` | 引入 `load_product_selling_point()`；在 `marketAssistant` 循环**外**加载一次供路由判断复用；`from src import consts` 保留（startup 仍需 `importlib.reload(consts)`） |
+| `excel2consts/registry.json` | 卖点表新增多值 `lookup` |
+| `excel2consts/dim_config.py` | 扩展 `lookup` 校验 |
+| `excel2consts/dim_reader.py` | 支持单值/多值，新增 `load_product_selling_point()` |
+| `Missions.md` | 追加本节、修正第 1 步的「后续待迁」措辞 |
+
+`dim_watcher.py` / `dim_importer.py` 未改动，写入侧行为不变。
+
+### 读取次数与降级
+
+- **不做进程级缓存**（沿用第 1 步约定）：每次 `load_product_selling_point()` 读一次全表
+  （当前 1361 行），天然读到 `dim_watcher` 写入的最新版本，无缓存失效或脏读。
+  一次请求最多 2 次全表读：`main.py` 路由判断 1 次 + 每个 `ProductInfoRaw` 实例 1 次；
+  `ProductInfoByExcel` 通过 `self` 复用父类那份，不再重复读。本地 SQLite 开销可忽略，
+  后续若要省连接可基于**各表独立的 version** 加缓存。
+- 降级语义与第 1 步一致：库/表不存在、未声明 lookup、查询异常、`registry.json` 损坏
+  → 返回 `{}`。此时 `product_name` 为 `None`、`queried_label_ids` 为 `[]`、卖点为空，
+  与旧「key 不在 dict 里」完全一致，**不会让 API 500**。
+- 仍为 `mode=ro` 只读，在线业务不创建/不写维表库。
+
+### 与旧 consts 的行为差异（已确认无业务影响）
+
+旧生成器对 `业务ID` 为空的行会生成 `line{i+2}` 这样的占位 key；新库导入时
+`dim_importer` 按主键为空直接跳过（样例中 187 行）。这些占位 key 不对应任何真实
+`product_id`，业务请求不会命中，故不影响结果。
+另外旧生成器用 `dict(zip(...))` 让重复业务 ID 后者覆盖前者，新库
+`PRIMARY KEY (business_id)` + 整表替换同样是后写覆盖（样例中 98 行重复），语义一致。
+
+### 两套链路并存的现状
+
+- `consts.product_selling_point_match_dict` 与 `consts.label_name_mapping` **均已无人读取**，
+  成为死数据；`consts.cut_in_script_dict` 仍被 `rewrite_by_excel/rewrite.py` 读取。
+- `main.py` startup 仍定时重写 `src/consts.py` 并 `importlib.reload(consts)`，本步未动。
+  等第 3 步把 `cut_in_script_dict` 迁完，再整体删除旧脚本与 startup 逻辑。
+- 生效路径：`dim_watcher` → `sqlite_db/dimensions.db` → `load_product_selling_point()`
+  → `ProductInfoRaw` / `ProductInfoByExcel` / `main.py` 路由。**部署时两个进程都要起。**
+
+### 本步未做
+
+- 未替换 `cut_in_script_dict`（含 `cut_in_str2tuple` 话术加工、动态 `标签0…标签26` 分组）。
+- 未删除旧转换脚本、未改 startup 热更新、未删 `src/consts.py` 中的变量。
+- 未做版本回滚、历史版本查询、基于 version 的缓存或灰度切换。
+
+### 验证要点
+
+- 用 `io_samples/卖点维表.xlsx` 跑 `dim_watcher --once` 建库，按旧生成器逻辑复刻
+  `consts` 版 dict 作基准，对多个真实 `business_id` 逐字比对
+  `product_name` / `queried_label_ids` / `selling_point`（含 HTML）/ `output_script`。
+- 覆盖多段编号话术、无编号话术、`label_id` 多行、以及不在维表中的 `product_id`。
+- `consts.product_selling_point_match_dict` 改成任意值后结果不变，确认已成死数据。
+- 维表 version 递增后在线业务**无需 reload** 即生效；库不存在时降级且 `import main` 正常。
+
 
 
