@@ -15,23 +15,19 @@ import sqlite3
 import traceback
 
 from .base_task import BaseSftpTask
-from sftp_workdir_f09554.sftp_service import CONFIG as _SRC_CONFIG
+from .config import TASKS
+
+_CONF = TASKS["f09554_opp"]
 
 
 class OppTask(BaseSftpTask):
     TASK_NAME = "f09554_opp"
-    FILE_PREFIXES = list(_SRC_CONFIG["FILE_PREFIXES"])
-    SFTP = {
-        "host": _SRC_CONFIG["SFTP_HOST"],
-        "port": _SRC_CONFIG["SFTP_PORT"],
-        "username": _SRC_CONFIG["SFTP_USERNAME"],
-        "password": _SRC_CONFIG["SFTP_PASSWORD"],
-        "remote_path": _SRC_CONFIG["SFTP_REMOTE_PATH"],
-    }
-    DATA_EXPIRE_DAYS = _SRC_CONFIG["DATA_EXPIRE_DAYS"]
-    LOCAL_FILE_EXPIRE_DAYS = _SRC_CONFIG["LOCAL_FILE_EXPIRE_DAYS"]
-    BATCH_SIZE = _SRC_CONFIG["BATCH_SIZE"]
-    POLL_INTERVAL_SECONDS = 600
+    FILE_PREFIXES = _CONF["FILE_PREFIXES"]
+    SFTP = _CONF["SFTP"]
+    DATA_EXPIRE_DAYS = _CONF["DATA_EXPIRE_DAYS"]
+    LOCAL_FILE_EXPIRE_DAYS = _CONF["LOCAL_FILE_EXPIRE_DAYS"]
+    BATCH_SIZE = _CONF["BATCH_SIZE"]
+    POLL_INTERVAL_SECONDS = _CONF["POLL_INTERVAL_SECONDS"]
 
     DB_SCHEMA = [
         ("op_time", "TEXT"),

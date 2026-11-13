@@ -22,7 +22,9 @@ import traceback
 from typing import List
 
 from .base_task import BaseSftpTask
-from sftp_workdir_f09591.sftp_service import CONFIG as _SRC_CONFIG
+from .config import TASKS
+
+_CONF = TASKS["f09591_loss"]
 
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
@@ -38,20 +40,14 @@ def _strip_eol(line: str) -> str:
 
 class LossTask(BaseSftpTask):
     TASK_NAME = "f09591_loss"
-    FILE_PREFIXES = [_SRC_CONFIG["FILE_PREFIXES"]]
-    SFTP = {
-        "host": _SRC_CONFIG["SFTP_HOST"],
-        "port": _SRC_CONFIG["SFTP_PORT"],
-        "username": _SRC_CONFIG["SFTP_USERNAME"],
-        "password": _SRC_CONFIG["SFTP_PASSWORD"],
-        "remote_path": _SRC_CONFIG["SFTP_REMOTE_PATH"],
-    }
-    DATA_EXPIRE_DAYS = _SRC_CONFIG["DATA_EXPIRE_DAYS"]
-    LOCAL_FILE_EXPIRE_DAYS = _SRC_CONFIG["LOCAL_FILE_EXPIRE_DAYS"]
-    BATCH_SIZE = _SRC_CONFIG["BATCH_SIZE"]
-    NUM_TABLES = _SRC_CONFIG["NUM_TABLES"]
-    TABLE_PREFIX = _SRC_CONFIG["TABLE_NAME_PREFIX"]
-    POLL_INTERVAL_SECONDS = 1800
+    FILE_PREFIXES = _CONF["FILE_PREFIXES"]
+    SFTP = _CONF["SFTP"]
+    DATA_EXPIRE_DAYS = _CONF["DATA_EXPIRE_DAYS"]
+    LOCAL_FILE_EXPIRE_DAYS = _CONF["LOCAL_FILE_EXPIRE_DAYS"]
+    BATCH_SIZE = _CONF["BATCH_SIZE"]
+    NUM_TABLES = _CONF["NUM_TABLES"]
+    TABLE_PREFIX = _CONF["TABLE_NAME_PREFIX"]
+    POLL_INTERVAL_SECONDS = _CONF["POLL_INTERVAL_SECONDS"]
 
     DB_SCHEMA = [
         ("op_time", "TEXT"),

@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
-"""任务3：诊断 AVL 定时拉取与入库 —— 独立进程版。
+"""任务3：诊断 AVL 定时拉取与入库。
 
-对应原 Missions.md「任务3」，前缀 F09609，**拆分后约 3 亿条**，宽表结构 + 分表 + 续行。
-从 ``sftp_workdir_f09609/sftp_service.py`` 抽取，规则与原实现完全一致：
+前缀 F09609，拆分后约 3 亿条，宽表结构 + 分表 + 续行：
 
 【文件结构】
   远程文件 ``F09609{YYYYMMDD}000000.AVL``，UTF-8，制表符分隔。
@@ -32,10 +31,10 @@
   * 表建 ``PRIMARY KEY (product_no, product_id)``，入库用 ``INSERT OR REPLACE``，
     重跑/补导同一文件时天然幂等，不会产生重复行。
 
-运行：
-    常驻轮询：  python tasks/task_f09609_diag.py
-    补跑某天：  python tasks/task_f09609_diag.py --date 20261110
-    强制重导：  python tasks/task_f09609_diag.py --date 20261110 --force-reload
+运行（项目根目录）：
+    python -m tasks.task_f09609_diag
+    python -m tasks.task_f09609_diag --date 20261110
+    python -m tasks.task_f09609_diag --date 20261110 --force-reload
 """
 import os
 import re
@@ -46,8 +45,9 @@ import traceback
 from typing import List
 
 from .base_task import BaseSftpTask
+from .config import TASKS
 
-from sftp_workdir_f09609.sftp_service import CONFIG as _SRC_CONFIG
+_CONF = TASKS["f09609_diag"]
 
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
@@ -55,20 +55,14 @@ DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
 
 class DiagTask(BaseSftpTask):
     TASK_NAME = "f09609_diag"
-    FILE_PREFIXES = [_SRC_CONFIG["FILE_PREFIXES"]]                # ["F09609"]
-    SFTP = {
-        "host": _SRC_CONFIG["SFTP_HOST"],
-        "port": _SRC_CONFIG["SFTP_PORT"],
-        "username": _SRC_CONFIG["SFTP_USERNAME"],
-        "password": _SRC_CONFIG["SFTP_PASSWORD"],
-        "remote_path": _SRC_CONFIG["SFTP_REMOTE_PATH"],
-    }
-    DATA_EXPIRE_DAYS = _SRC_CONFIG["DATA_EXPIRE_DAYS"]            # 50
-    LOCAL_FILE_EXPIRE_DAYS = _SRC_CONFIG["LOCAL_FILE_EXPIRE_DAYS"]  # 50
-    BATCH_SIZE = _SRC_CONFIG["BATCH_SIZE"]                        # 5000
-    NUM_TABLES = _SRC_CONFIG["NUM_TABLES"]                        # 128
-    TABLE_PREFIX = _SRC_CONFIG["TABLE_NAME_PREFIX"]               # data_F09609
-    POLL_INTERVAL_SECONDS = 3600                                 # 60 分钟一轮（量最大）
+    FILE_PREFIXES = _CONF["FILE_PREFIXES"]
+    SFTP = _CONF["SFTP"]
+    DATA_EXPIRE_DAYS = _CONF["DATA_EXPIRE_DAYS"]
+    LOCAL_FILE_EXPIRE_DAYS = _CONF["LOCAL_FILE_EXPIRE_DAYS"]
+    BATCH_SIZE = _CONF["BATCH_SIZE"]
+    NUM_TABLES = _CONF["NUM_TABLES"]
+    TABLE_PREFIX = _CONF["TABLE_NAME_PREFIX"]
+    POLL_INTERVAL_SECONDS = _CONF["POLL_INTERVAL_SECONDS"]
 
     DB_SCHEMA = [
         ("op_time", "TEXT"),

@@ -1,25 +1,17 @@
 # -*- coding: utf-8 -*-
-"""定时任务公共基类。
+"""定时任务公共基类：封装 SFTP 拉取、断点续传、单实例锁、日志与轮询循环。
 
-把原 ``main.py`` startup 里托管的 3 个 SFTP 拉取任务抽成**独立进程**后，
-三个任务高度同构（连 SFTP、找当天 AVL、下载、解析入库、清理、休眠），
-故把公共能力收敛到这里，具体任务只需覆写「库表结构 / 解析入库 / 配置」三处。
+子类只需覆写「库表结构 / 解析入库 / 配置」三处，配置由 tasks/config.py 提供。
+单机单实例，不做分布式与高可用。
 
-设计要点（单机单实例，刻意不做分布式/高可用）：
 1. 断点续传：每个任务在本地维护一个 ``.fetched`` 清单文件，记录「已成功入库」的
-   远程文件名。每轮轮询先跳过清单里的文件，入库成功后追加，避免重复拉取与重复入库。
-2. 跨进程互斥：与仍可能存在的 ``main.py`` startup 线程 / 其它副本之间，用
-   ``.lock`` 文件 + ``portalocker``（缺失时退化为 ``fcntl``）做单机排他锁，
-   保证同一时刻只有一个拉取者在跑，不会把同一个 AVL 下载入库两次。
-3. 独立日志：每个任务一套自己的 INFO/ERROR 日志，落到 ``tasks/log/``，
-   与在线业务日志分开，便于单独排障与调优。
-4. 全量只认「当天 + 前一天」：远程按 ``{前缀}{YYYYMMDD}000000.AVL`` 命名，
-   每天只会有当天一个文件；补跑昨天用 ``--date`` 显式指定。
-
-本模块不修改任何原始代码，仅被 tasks/ 下的新脚本引用。
+   远程文件名。每轮轮询先跳过清单里的文件，入库成功后追加。
+2. 跨进程互斥：``.lock`` 文件 + ``portalocker``（缺失时退化为 ``fcntl``）做单机
+   排他锁，保证同一时刻只有一个拉取者在跑。
+3. 独立日志：每个任务一套 INFO/ERROR 日志，落到 ``tasks/log/``。
+4. 跨天兜底：每轮同时检查「昨天 + 今天」两天的文件名；补跑用 ``--date`` 指定。
 """
 import os
-import re
 import sys
 import json
 import time
@@ -39,77 +31,6 @@ except Exception:  # pragma: no cover
 
 # 远程文件名：{前缀}{YYYYMMDD}000000.AVL
 REMOTE_NAME_TMPL = "{prefix}{date}000000.AVL"
-DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
-
-
-def ensure_table_with_pk(conn, table_name: str, schema, pk_columns, log,
-                         drop_indexes=()):
-    """确保表存在且以 ``pk_columns`` 为主键；旧的无主键表会自动重建。
-
-    SQLite 不支持 ``ALTER TABLE ... ADD PRIMARY KEY``，所以从「追加模式」切到
-    「product_no 主键 + INSERT OR REPLACE」时，已经存在的旧库必须重建，否则
-    REPLACE 没有唯一约束可冲突，等价于普通 INSERT，仍会产生重复行。
-
-    重建在单个事务内完成，失败则整体回滚，旧表原样保留：
-      1. 旧表 rename 成 ``{table}__nopk_tmp``
-      2. 建带 PRIMARY KEY 的新表
-      3. ``INSERT OR REPLACE ... SELECT ... ORDER BY op_time ASC, rowid ASC``
-         —— 同一 product_no 只保留 op_time 最新（相同则保留后写入）的一条；
-         顺带过滤掉 product_no 为空的记录（新表该列为 NOT NULL）
-      4. DROP 临时旧表（挂在它上面的旧索引一并消失）
-
-    :param conn: sqlite3.Connection
-    :param schema: [(列名, 列类型), ...]
-    :param pk_columns: 主键列元组，如 ("product_no",)
-    :param drop_indexes: 需要清理的历史遗留索引名（主键已自带索引，无需再建）
-    """
-    cur = conn.cursor()
-    cols_def = ", ".join(f"{c} {t}" for c, t in schema)
-    col_names = ", ".join(c for c, _ in schema)
-    pk_def = ", ".join(pk_columns)
-
-    # 必须用 fetchall 把结果读尽：只 fetchone 会让 SELECT statement 保持 active，
-    # 其持有的 schema 读锁会导致后续 ALTER/DROP 报 "database table is locked"。
-    exists = cur.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table_name,)
-    ).fetchall()
-    if not exists:
-        cur.execute(f"CREATE TABLE {table_name} ({cols_def}, PRIMARY KEY ({pk_def}))")
-        conn.commit()
-        log.info(f"建表 {table_name}（PRIMARY KEY ({pk_def})）")
-        return
-
-    info = cur.execute(f"PRAGMA table_info({table_name})").fetchall()
-    pk_cols = [r[1] for r in sorted((r for r in info if r[5] > 0), key=lambda r: r[5])]
-    if pk_cols == list(pk_columns):
-        # 结构已正确，只清理历史遗留的冗余复合索引
-        for idx in drop_indexes:
-            cur.execute(f"DROP INDEX IF EXISTS {idx}")
-        conn.commit()
-        return
-
-    tmp = f"{table_name}__nopk_tmp"
-    # 显式事务：DDL 与 INSERT 一起原子提交。若依赖 Python sqlite3 的隐式事务，
-    # DDL 会自动提交、INSERT 才开启事务，DROP 旧表时容易撞上 "database table is locked"。
-    cur.execute("BEGIN IMMEDIATE")
-    cur.execute(f"DROP TABLE IF EXISTS {tmp}")
-    for idx in drop_indexes:
-        cur.execute(f"DROP INDEX IF EXISTS {idx}")
-    cur.execute(f"ALTER TABLE {table_name} RENAME TO {tmp}")
-    cur.execute(f"CREATE TABLE {table_name} ({cols_def}, PRIMARY KEY ({pk_def}))")
-    cur.execute(
-        f"INSERT OR REPLACE INTO {table_name} ({col_names}) "
-        f"SELECT {col_names} FROM {tmp} "
-        f"WHERE product_no IS NOT NULL AND TRIM(product_no) <> '' "
-        f"ORDER BY op_time ASC, rowid ASC"
-    )
-    kept = cur.execute(f"SELECT COUNT(*) FROM {table_name}").fetchall()[0][0]
-    cur.execute(f"DROP TABLE {tmp}")
-    conn.commit()
-    log.info(
-        f"表 {table_name} 已从无主键结构重建为 PRIMARY KEY ({pk_def})，"
-        f"按 product_no 去重后保留 {kept} 条（旧表已删除）"
-    )
 
 
 class SingleInstanceLock:

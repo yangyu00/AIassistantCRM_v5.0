@@ -4,7 +4,7 @@
 
 ## 通用规则
 
-1. **远程文件**：SFTP `134.80.199.252:22`，用户 `wangsi`，目录 `/ftpdata2/data_reverse/wangsi/aifile`。
+1. **远程文件**：连接参数见 `.env` 的 `SFTP_*`。
    每天生成 `{业务前缀}{YYYYMMDD}000000.AVL`，制表符分隔，UTF-8。
 2. **不重复拉取**：每个任务维护 `tasks/state/{任务名}.fetched`，记录已成功入库的远程文件名；
    每轮先跳过清单里的文件，**入库成功后才登记**。本地已存在同名 `.AVL` 也跳过。
@@ -13,8 +13,8 @@
    > ⚠️ **文件名日期 ≠ 数据日期（op_time）**：`{YYYYMMDD}` 是文件生成日，`op_time` 是业务数据日，各任务偏移量见下文。
    > 补跑时 `--date` 填**文件名日期**：补 op_time=2026-11-08 的数据，任务1 用 `--date 20261110`，任务2 用 `--date 20261109`。
 5. **单实例锁**：`tasks/state/{任务名}.lock`（portalocker/fcntl 非阻塞锁）。
-6. **轮询间隔**（`POLL_INTERVAL_SECONDS`）：任务1 = 10 分钟；任务2 = 30 分钟；任务3 = 60 分钟。
-7. **本地文件**：`tasks/files/{任务名}/`，按 `LOCAL_FILE_EXPIRE_DAYS` 天清理。
+6. **轮询间隔**：由 `.env` 的 `TASK{1,2,3}_POLL_INTERVAL_SECONDS` 控制（默认 600 / 1800 / 3600 秒）。
+7. **本地文件**：`tasks/files/{任务名}/`，按 `.env` 的 `TASK{1,2,3}_LOCAL_FILE_EXPIRE_DAYS` 天清理。
 8. **日志**：`tasks/log/{任务名}_INFO|ERROR_日期.log`，每天轮转，保留 7 天。
 9. **运行方式**（在项目根目录执行，用 `-m` 保证包内相对导入生效）：
    ```bash
@@ -23,6 +23,33 @@
    python -m tasks.task_f09609_diag --date 20261110 --force-reload
    ```
    生产建议用 systemd/nohup 各起一个常驻进程；单机单实例。
+
+---
+
+## 配置
+
+- 三个任务的配置统一由 `tasks/config.py` 读取并解析项目根目录 `.env`，脚本从 `TASKS[...]` 取值。
+- **不沿用项目总的 `config.yaml` / `config.py`**，也不再依赖各 `sftp_workdir_*/sftp_service.py` 里的 `CONFIG`；tasks 独立维护一份。
+- 优先级：**系统环境变量 > `.env`**；设置 `TASKS_ENV_FILE` 可指向其他 `.env` 路径。
+  `.env` 支持 `#` 注释、行内注释、`export`、`${VAR}` 插值、单/双引号；缺必需键会在启动时报错，不会静默连错服务器。
+- 分组：SFTP 公共 5 项（`SFTP_HOST/PORT/USERNAME/PASSWORD/REMOTE_PATH`），
+  每个任务一组 `TASK{1,2,3}_*`（前缀列表、批次大小、库/本地文件保留天数、轮询间隔），
+  任务2/3 另有 `NUM_TABLES`、`TABLE_NAME_PREFIX`。
+
+  默认值如下（表中键名省略前缀 `TASK1_` / `TASK2_` / `TASK3_`，分表键同理）：
+
+  | 键 | 任务1 | 任务2 | 任务3 |
+  |---|---|---|---|
+  | `FILE_PREFIXES` | F09554,F09555,F09556 | F09591 | F09609 |
+  | `BATCH_SIZE` | 10000 | 5000 | 5000 |
+  | `DATA_EXPIRE_DAYS` | 30 | **3** | 50 |
+  | `LOCAL_FILE_EXPIRE_DAYS` | 7 | **3** | 50 |
+  | `POLL_INTERVAL_SECONDS` | 600 | 1800 | 3600 |
+  | `NUM_TABLES` / `TABLE_NAME_PREFIX` | — | 128 / `data_F09591` | 128 / `data_F09609` |
+
+  > 任务2 保留天数沿用原 `sftp_service.py` CONFIG 的 **3 天**；此前文档写的 50 天有误，按代码实际值迁移。需要 50 天改 `.env` 一行即可。
+- `.env` 含 SFTP 明文密码：仓库公开时建议加入 `.gitignore`，或部署时改用系统环境变量注入（不提交 `.env`）。
+- 本方案取代原待办「统一迁到 `config.yaml`」：不并入项目总配置，避免 tasks 与在线业务的配置耦合。
 
 ---
 
@@ -73,7 +100,7 @@
 - 库表：每个前缀一个库 `tasks/sqlite_db/f09554_opp/{F09554,F09555,F09556}.db`，
   表名 `data_{前缀}`，主键 `PRIMARY KEY (product_no)`；与在线查询
   `PRODUCT_TABLE_MAP`（202608041615335173/172/174）对应。
-- 保留：库数据 30 天，本地 AVL 7 天。
+- 保留天数、批次大小、轮询间隔见 `.env`（`TASK1_*`）。
 - 量级：每个 AVL 每天不到 1 万条，单库单表即可；覆盖后每库行数 ≤ 去重后的手机号数。
 
 # 任务2 控损 AVL 入库（F09591）
@@ -115,7 +142,7 @@
 - 单库 `tasks/sqlite_db/f09591_loss/F09591.db`，128 张表 `data_F09591_0 … data_F09591_127`。
 - 路由：`表号 = zlib.crc32(product_no) % 128`，与在线查询 `data_query.get_latest_record` 一致。
 - 每张分表主键 `PRIMARY KEY (product_no)`，入库 `INSERT OR REPLACE`。
-- 保留：库数据 50 天，本地 AVL 50 天。
+- 保留天数、批次大小、轮询间隔见 `.env`（`TASK2_*`）。
 - 量级：每个 AVL 约 7000 万逻辑记录；按 `product_no` 覆盖后实际行数取决于去重后的手机号数。
   PRAGMA 用 `synchronous = NORMAL`。
 
@@ -152,16 +179,16 @@ op_time 直接取自文件第 1 列，代码不做日期改写。当前样例 `F
 - 单库 `tasks/sqlite_db/f09609_diag/F09609.db`，128 张表 `data_F09609_0 … data_F09609_127`。
 - 路由同任务2：`zlib.crc32(product_no) % 128`，与 `data_query.get_record` 一致。
 - 主键 `PRIMARY KEY (product_no, product_id)`，入库 `INSERT OR REPLACE`。
-- 保留：库数据 50 天，本地 AVL 50 天。
+- 保留天数、批次大小、轮询间隔见 `.env`（`TASK3_*`）。
 - 量级：拆分后每天约 3 亿条 → 每表日均约 234 万条；`synchronous = NORMAL`。
-  若单机入库速度不够，可增大 `BATCH_SIZE` 或调低轮询频率。
+  若单机入库速度不够，可增大 `.env` 的 `TASK3_BATCH_SIZE` 或调低 `TASK3_POLL_INTERVAL_SECONDS`。
 
 ---
 
 ## 补充/待确认事项
 
-- 三个任务的 SFTP 账号密码、过期天数等从原 `sftp_service.py` 的 `CONFIG` 读取，
-  后续可统一迁到 `config.yaml`。
+- **配置已外置**：三个任务改由 `tasks/config.py` 读取根目录 `.env`，
+  不再依赖各 `sftp_workdir_*/sftp_service.py` 的 `CONFIG`；详见「配置」小节。
 - 样本文件 `io_samples/*.AVL` 中：F09591/F09609 每条逻辑记录有 2 条物理记录、多组产品时列数为 9（3 + 3 组）；
   生产上 F09609 约 103 列（约 50 组），解析逻辑与列数无关。
 - **op_time 偏移量**：任务1 = T-2、任务2 = T-1（已确认）；任务3 按样例推断为 T-2，待生产数据核实。
