@@ -1,7 +1,7 @@
 import re
 
 from services.product_info_raw import ProductInfoRaw
-from src import consts
+from excel2consts.dim_reader import load_cut_in_script
 
 from src.log_util import my_log
 
@@ -9,6 +9,8 @@ from src.log_util import my_log
 class ProductInfoRewrite(ProductInfoRaw):
     def __init__(self, product_id, custom_label_info):
         super().__init__(product_id, custom_label_info)
+        # 读取侧重建与旧 consts.cut_in_script_dict 同形的 dict，本实例复用一次
+        self.cut_in_script_dict = load_cut_in_script()
         self.selling_point = self.__get_selling_point()
         self.cut_in_statement = self.__get_cut_in_statement()
         self.retain_statement = self.__get_retain_statement()
@@ -48,12 +50,12 @@ class ProductInfoRewrite(ProductInfoRaw):
         return fusion_text
 
     def __get_cut_in_statement(self):
-        if (self.product_id not in consts.cut_in_script_dict.keys()
-                or not isinstance(consts.cut_in_script_dict[self.product_id], dict)
-                or not consts.cut_in_script_dict[self.product_id]):
+        if (self.product_id not in self.cut_in_script_dict.keys()
+                or not isinstance(self.cut_in_script_dict[self.product_id], dict)
+                or not self.cut_in_script_dict[self.product_id]):
             return ""
 
-        id_sequence_obj = consts.cut_in_script_dict[self.product_id]
+        id_sequence_obj = self.cut_in_script_dict[self.product_id]
 
         fallback_script = ""
 
@@ -77,12 +79,12 @@ class ProductInfoRewrite(ProductInfoRaw):
         return fallback_script
 
     def __get_retain_statement(self):
-        if (self.product_id not in consts.cut_in_script_dict.keys()
-                or not isinstance(consts.cut_in_script_dict[self.product_id], dict)
-                or not consts.cut_in_script_dict[self.product_id]):
+        if (self.product_id not in self.cut_in_script_dict.keys()
+                or not isinstance(self.cut_in_script_dict[self.product_id], dict)
+                or not self.cut_in_script_dict[self.product_id]):
             return ""
 
-        id_sequence_obj = consts.cut_in_script_dict[self.product_id]
+        id_sequence_obj = self.cut_in_script_dict[self.product_id]
 
         fallback_script = ""
 

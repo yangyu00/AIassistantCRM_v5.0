@@ -76,6 +76,31 @@ def load_registry(path=None):
                 "optional": bool(c.get("optional", False)),
             })
 
+        # 动态列：把 Excel 里「标签0…标签N」这类编号列按声明展开成普通列，
+        # 库里存每列的原始文本，拆解加工留给读取侧（dim_transform）。
+        dyn = t.get("dynamic_columns")
+        dyn_cols = []
+        if dyn is not None:
+            _need(isinstance(dyn, dict), f"{name}: dynamic_columns 需为对象")
+            sp, cp = dyn.get("source_prefix"), dyn.get("column_prefix")
+            _need(isinstance(sp, str) and sp, f"{name}: dynamic_columns.source_prefix 非法")
+            _need(isinstance(cp, str) and _NAME_RE.match(cp),
+                  f"{name}: dynamic_columns.column_prefix 非法")
+            start, count = int(dyn.get("start", 0)), int(dyn.get("count", 0))
+            _need(0 <= start <= 10000, f"{name}: dynamic_columns.start 非法")
+            _need(0 < count <= 200, f"{name}: dynamic_columns.count 需为 1..200")
+            for g in range(start, start + count):
+                col = f"{cp}{g}"
+                _need(_NAME_RE.match(col) and col != version_column,
+                      f"{name}: 动态列名非法 {col}")
+                _need(col not in seen_cols, f"{name}: 动态列名与已有列冲突 {col}")
+                seen_cols.add(col)
+                columns.append({
+                    "source": f"{sp}{g}", "column_index": None, "column": col,
+                    "type": "TEXT", "default": "", "strip": True, "optional": True,
+                })
+                dyn_cols.append(col)
+
         pk = t.get("primary_key")
         _need(isinstance(pk, list) and pk, f"{name}: primary_key 必须是非空数组")
         _need(all(isinstance(x, str) and _NAME_RE.match(x) for x in pk),
@@ -114,6 +139,35 @@ def load_registry(path=None):
                       f"{name}: lookup.values 必须来自 columns 且不等于 key")
                 lookup = {"key": key, "value": None, "values": list(multi)}
 
+        # cut_in_script：声明读取侧重建 {business_id: {标签ID: [切入, 挽留]}}
+        # 所需的原始列角色。库里不存加工结果，只存下列原始列。
+        ci = t.get("cut_in_script")
+        if ci is not None:
+            _need(isinstance(ci, dict), f"{name}: cut_in_script 需为对象")
+            for role in ("key", "fallback", "groups"):
+                v = ci.get(role)
+                _need(isinstance(v, str) and _NAME_RE.match(v) and v in seen_cols,
+                      f"{name}: cut_in_script.{role} 必须来自 columns 中的列名")
+            raw_tags = ci.get("tags")
+            if raw_tags == "dynamic_columns":
+                _need(dyn_cols, f"{name}: cut_in_script.tags 引用了 dynamic_columns，但未声明")
+                tag_cols = list(dyn_cols)
+            else:
+                _need(isinstance(raw_tags, list) and raw_tags,
+                      f"{name}: cut_in_script.tags 需为列名数组或 \"dynamic_columns\"")
+                _need(all(isinstance(v, str) and _NAME_RE.match(v) and v in seen_cols
+                          for v in raw_tags),
+                      f"{name}: cut_in_script.tags 含未声明列名")
+                _need(len(set(raw_tags)) == len(raw_tags),
+                      f"{name}: cut_in_script.tags 含重复列")
+                tag_cols = list(raw_tags)
+            fk = ci.get("fallback_key", "兜底话术")
+            _need(isinstance(fk, str) and fk, f"{name}: cut_in_script.fallback_key 不能为空")
+            ci = {
+                "key": ci["key"], "fallback": ci["fallback"], "groups": ci["groups"],
+                "tags": tag_cols, "fallback_key": fk,
+            }
+
         specs.append({
             "table": name,
             "source": _resolve(src),
@@ -121,7 +175,9 @@ def load_registry(path=None):
             "header_row": header_row,
             "primary_key": list(pk),
             "columns": columns,
+            "dynamic_columns": dyn_cols,
             "lookup": lookup,
+            "cut_in_script": ci,
         })
 
     return {
