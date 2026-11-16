@@ -115,8 +115,106 @@ TASKS = {
     "f09609_diag": _sharded_task("TASK3"),
 }
 
+# ---------------------------------------------------------------------------
+# SQLite 表结构与在线查询声明
+#
+# 写入侧（3 个 task_*.py 建表）与读取侧（services/data_query.py 组装 dict）
+# 共用这里的列顺序；库目录、文件前缀、分表数取自对应 TASKS[...]，
+# 因此 .env 一处改动同时作用于读写两侧，不再各维护一份。
+# ---------------------------------------------------------------------------
+
+DB_SCHEMAS = {
+    "f09554_opp": [
+        ("op_time", "TEXT"),
+        ("call_time", "TEXT"),
+        ("product_no", "TEXT NOT NULL"),
+        ("type_dl", "VARCHAR(50)"),
+        ("type_xl", "VARCHAR(50)"),
+        ("content_abstract", "TEXT"),
+        ("cust_demand", "TEXT"),
+        ("rec_strategy", "TEXT"),
+        ("reject_reason", "TEXT"),
+        ("reason_note", "TEXT"),
+        ("refer_strategy", "TEXT"),
+        ("city_id", "INTEGER"),
+    ],
+    "f09591_loss": [
+        ("op_time", "TEXT"),
+        ("user_id", "TEXT"),
+        ("product_no", "TEXT NOT NULL"),
+        ("city_id", "TEXT"),
+        ("strategy_name", "TEXT"),
+    ],
+    "f09609_diag": [
+        ("op_time", "TEXT"),
+        ("user_id", "TEXT"),
+        ("product_no", "TEXT NOT NULL"),
+        ("product_id", "TEXT NOT NULL"),
+        ("strategy_script", "TEXT"),
+    ],
+}
+
+# key 与 TASKS 一致；在线查询按任务名派发。
+#   mode = by_product : 一个 product_id 对应一个前缀，库文件 {前缀}.db、表名 data_{前缀}
+#   mode = sharded    : 按 crc32(product_no) % NUM_TABLES 分表，单库 {FILE_PREFIXES[0]}.db
+#   where             : 查询条件列，值由 services/data_query.py 按列名从入参取
+#   order_by          : 排序；None 表示不排序（仍 LIMIT 1）
+#   table_map / product_ids : 供 main.py 做业务路由判断，避免 ID 散落在代码里
+QUERY_SPECS = {
+    "f09554_opp": {
+        "mode": "by_product",
+        "table_map": {
+            "202608041615335173": "F09554",  # 号卡业务
+            "202608041615335172": "F09555",  # 套餐业务
+            "202608041615335174": "F09556",  # 宽带业务
+        },
+        "where": ["product_no"],
+        "order_by": "op_time DESC",
+    },
+    "f09591_loss": {
+        "mode": "sharded",
+        "product_ids": ["202609180955095402"],  # 控损专用
+        "where": ["product_no"],
+        "order_by": "op_time DESC",
+    },
+    "f09609_diag": {
+        "mode": "sharded",
+        "where": ["product_no", "product_id"],
+        "order_by": None,
+    },
+}
+
+
+def _validate_specs():
+    """配置漂移在启动时暴露，避免读写两侧悄悄用错表/列。"""
+    if set(DB_SCHEMAS) != set(TASKS) or set(QUERY_SPECS) != set(TASKS):
+        raise ValueError("DB_SCHEMAS / QUERY_SPECS 的 key 必须与 TASKS 完全一致")
+    for name, spec in QUERY_SPECS.items():
+        conf = TASKS[name]
+        cols = [c[0] for c in DB_SCHEMAS[name]]
+        for col in spec["where"]:
+            if col not in cols:
+                raise ValueError(f"{name}: QUERY.where 列 {col} 不在 DB_SCHEMA 中")
+        if spec["mode"] == "by_product":
+            prefixes = set(conf["FILE_PREFIXES"])
+            for pid, prefix in spec["table_map"].items():
+                if prefix not in prefixes:
+                    raise ValueError(f"{name}: table_map[{pid}] 的 {prefix} 不在 FILE_PREFIXES 中")
+        elif spec["mode"] == "sharded":
+            if "NUM_TABLES" not in conf or "TABLE_NAME_PREFIX" not in conf:
+                raise ValueError(f"{name}: sharded 模式需要 NUM_TABLES / TABLE_NAME_PREFIX")
+        else:
+            raise ValueError(f"{name}: 不支持的 QUERY.mode {spec['mode']}")
+
+
+_validate_specs()
+
+for _name, _spec in QUERY_SPECS.items():
+    TASKS[_name]["DB_SCHEMA"] = DB_SCHEMAS[_name]
+    TASKS[_name]["QUERY"] = _spec
+
 # 各任务写入 SQLite 的目录，与 base_task 子类的 DB_DIR 约定一致。
-# 在线查询 data_query.py 也读这里，保证读写路径只有一处定义。
+# 在线查询 services/data_query.py 也读这里，保证读写路径只有一处定义。
 DB_ROOT = PROJECT_ROOT / "tasks" / "sqlite_db"
 
 

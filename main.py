@@ -12,9 +12,7 @@ from services.rewrite_by_excel.rewrite import ProductInfoRewrite as ProductInfoB
 from services.rewrite_by_spec_f09554.rewrite import ProductInfoRewrite as ProductInfoBySpec9554
 from services.rewrite_by_spec_f09591.rewrite import ProductInfoRewrite as ProductInfoBySpec9591
 from services.rewrite_by_spec_f09609.rewrite import ProductInfoRewrite as ProductInfoBySpec9609
-from sftp_workdir_f09554 import data_query as data_query_f09554
-from sftp_workdir_f09591 import data_query as data_query_f09591
-from sftp_workdir_f09609 import data_query as data_query_f09609
+from services import data_query
 from src.call_stat import record_call
 from src.exceptions import telnumError, productIdError, register_errors_handlers
 from src.log_util import my_log
@@ -85,21 +83,21 @@ async def marketAssistant(args: Args):
     product_obj_list = []
     for one_product_obj in args.productId:
         # 1. 特殊业务
-        # 号卡业务、套餐业务、宽带业务
-        if one_product_obj.id in ["202608041615335173", "202608041615335172", "202608041615335174"]:
-            record = await data_query_f09554.get_latest_record(args.telnum, one_product_obj.id)
+        # 号卡业务、套餐业务、宽带业务（ID 与库表映射见 tasks/config.py）
+        if one_product_obj.id in data_query.F09554_PRODUCT_IDS:
+            record = await data_query.get_f09554_latest(args.telnum, one_product_obj.id)
             product_obj_list.append(ProductInfoBySpec9554(one_product_obj.id, custom_label_info, record))
             continue
 
         # 2. 数据库中业务(控损专用)
-        if one_product_obj.id in ["202609180955095402"]:
-            record = await data_query_f09591.get_latest_record(args.telnum)
+        if one_product_obj.id in data_query.F09591_PRODUCT_IDS:
+            record = await data_query.get_f09591_latest(args.telnum)
             if record:
                 product_obj_list.append(ProductInfoBySpec9591(one_product_obj.id, custom_label_info, record))
                 continue
 
         # 数据库中业务(客户诊断)
-        record = await data_query_f09609.get_record(args.telnum, one_product_obj.id)
+        record = await data_query.get_f09609_record(args.telnum, one_product_obj.id)
         if record:
             product_obj_list.append(ProductInfoBySpec9609(one_product_obj.id, custom_label_info, record))
             continue

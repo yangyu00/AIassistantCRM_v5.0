@@ -29,20 +29,7 @@ class OppTask(BaseSftpTask):
     BATCH_SIZE = _CONF["BATCH_SIZE"]
     POLL_INTERVAL_SECONDS = _CONF["POLL_INTERVAL_SECONDS"]
 
-    DB_SCHEMA = [
-        ("op_time", "TEXT"),
-        ("call_time", "TEXT"),
-        ("product_no", "TEXT NOT NULL"),
-        ("type_dl", "VARCHAR(50)"),
-        ("type_xl", "VARCHAR(50)"),
-        ("content_abstract", "TEXT"),
-        ("cust_demand", "TEXT"),
-        ("rec_strategy", "TEXT"),
-        ("reject_reason", "TEXT"),
-        ("reason_note", "TEXT"),
-        ("refer_strategy", "TEXT"),
-        ("city_id", "INTEGER"),
-    ]
+    DB_SCHEMA = _CONF["DB_SCHEMA"]
     DB_COLUMNS = [c[0] for c in DB_SCHEMA]
 
     def __init__(self):

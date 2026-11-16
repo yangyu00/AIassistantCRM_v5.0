@@ -49,13 +49,7 @@ class LossTask(BaseSftpTask):
     TABLE_PREFIX = _CONF["TABLE_NAME_PREFIX"]
     POLL_INTERVAL_SECONDS = _CONF["POLL_INTERVAL_SECONDS"]
 
-    DB_SCHEMA = [
-        ("op_time", "TEXT"),
-        ("user_id", "TEXT"),
-        ("product_no", "TEXT NOT NULL"),
-        ("city_id", "TEXT"),
-        ("strategy_name", "TEXT"),
-    ]
+    DB_SCHEMA = _CONF["DB_SCHEMA"]
     DB_COLUMNS = [c[0] for c in DB_SCHEMA]
 
     def __init__(self):

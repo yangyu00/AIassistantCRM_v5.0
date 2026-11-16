@@ -8,6 +8,7 @@
 每个任务有独立的轮询、日志（tasks/log/）、入库清单（tasks/state/*.fetched）、
 单实例锁（tasks/state/*.lock）与 sqlite 库目录（tasks/sqlite_db/{任务名}/）。
 
-配置由 tasks/config.py 解析根目录 .env；在线查询 data_query.py 复用同一份配置
-与 db_dir() 指向的库目录。在线业务 main.py 不参与数据更新。
+配置由 tasks/config.py 解析根目录 .env；DB_SCHEMAS / QUERY_SPECS 同时供写入侧建表
+与 services/data_query.py 只读查询使用，库目录由 db_dir() 统一指向。
+在线业务 main.py 不参与数据更新。
 """

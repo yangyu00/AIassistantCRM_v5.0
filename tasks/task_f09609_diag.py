@@ -26,8 +26,8 @@
 【展开与分表】
   * 从第 4 列起，每两列 (product_id, strategy_script) 生成一条记录；
   * product_id 为空（空白）的组跳过，不入库；
-  * 路由键同样 = ``zlib.crc32(product_no) % 128``（空则用 "NULL"），
-    与在线查询 ``data_query.get_record`` 的分表算法一致；
+  * 路由键同样 = ``zlib.crc32(product_no) % NUM_TABLES``（空则用 "NULL"），
+    与 ``services/data_query.py`` 按 QUERY_SPECS 派发的分表算法一致；
   * 表建 ``PRIMARY KEY (product_no, product_id)``，入库用 ``INSERT OR REPLACE``，
     重跑/补导同一文件时天然幂等，不会产生重复行。
 
@@ -64,13 +64,7 @@ class DiagTask(BaseSftpTask):
     TABLE_PREFIX = _CONF["TABLE_NAME_PREFIX"]
     POLL_INTERVAL_SECONDS = _CONF["POLL_INTERVAL_SECONDS"]
 
-    DB_SCHEMA = [
-        ("op_time", "TEXT"),
-        ("user_id", "TEXT"),
-        ("product_no", "TEXT NOT NULL"),
-        ("product_id", "TEXT NOT NULL"),
-        ("strategy_script", "TEXT"),
-    ]
+    DB_SCHEMA = _CONF["DB_SCHEMA"]
     DB_COLUMNS = [c[0] for c in DB_SCHEMA]
 
     def __init__(self):

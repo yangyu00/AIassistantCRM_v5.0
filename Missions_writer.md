@@ -1,7 +1,8 @@
 # 定时数据更新任务说明（SFTP AVL 拉取 → SQLite 入库）
 
 > 3 个任务各自独立进程运行，代码在 `tasks/`；在线业务（FastAPI）只读 SQLite。
-> 三个 `sftp_workdir_*` 目录现只保留在线查询用的 `data_query.py`。
+> 原随 `main.py` 启动的拉取实现与三个分散的 `sftp_workdir_*/data_query.py` 均已删除；
+> 在线查询统一由 `services/data_query.py` 按 `tasks/config.py` 的配置派发。
 
 > 在线业务（FastAPI）的读取与重组逻辑见 `Missions_reader.md`。
 
@@ -33,8 +34,16 @@
 
 - 三个任务的配置统一由 `tasks/config.py` 读取并解析项目根目录 `.env`，脚本从 `TASKS[...]` 取值。
 - **不沿用项目总的 `config.yaml` / `config.py`**；配置只在 `tasks/config.py` 一处定义。
-- 在线查询 `sftp_workdir_*/data_query.py` 复用同一份 `TASKS[...]`，库目录由 `db_dir(任务名)`
+- 在线查询 `services/data_query.py` 复用同一份 `TASKS[...]`，库目录由 `db_dir(任务名)`
   统一指向 `tasks/sqlite_db/{任务名}/`，与三个任务脚本的写入路径一致，读写不再各算一套。
+- `tasks/config.py` 里还有两张与 `TASKS` 同 key 的静态表，**写入侧建表与读取侧查询共用**：
+  - `DB_SCHEMAS[任务名]`：`(列名, 类型)` 列表，即建表列定义，也是 `SELECT *` 结果的 `dict` 组装顺序；
+    三个任务脚本的 `DB_SCHEMA` 直接引用它，不再各写一份。
+  - `QUERY_SPECS[任务名]`：在线查询声明（`mode` / `where` / `order_by` / `table_map` / `product_ids`），
+    详见 `Missions_reader.md`。
+  - 二者在 `config.py` 导入时校验：`where` 列必须存在于 `DB_SCHEMAS`、
+    `table_map` 的前缀必须存在于 `FILE_PREFIXES`、`sharded` 模式必须有 `NUM_TABLES` / `TABLE_NAME_PREFIX`，
+    漂移会在启动时抛 `ValueError`。
 - 优先级：**系统环境变量 > `.env`**；设置 `TASKS_ENV_FILE` 可指向其他 `.env` 路径。
   `.env` 支持 `#` 注释、行内注释、`export`、`${VAR}` 插值、单/双引号；缺必需键会在启动时报错，不会静默连错服务器。
 - 分组：SFTP 公共 5 项（`SFTP_HOST/PORT/USERNAME/PASSWORD/REMOTE_PATH`），
@@ -66,7 +75,8 @@
 - 主键自带索引，不再额外建 `(product_no, op_time)` 索引。
 - `REPLACE` 是后写覆盖先写。批量补跑历史文件按文件名日期**升序**执行（先旧后新）；
   常驻轮询按「昨天 → 今天」跑，天然符合。
-- 在线查询 `data_query.py` 表名、列名、分表路由键不变，库路径见「配置」小节。
+- 在线查询的表名、列名、分表路由键由 `services/data_query.py` 从同一份 `TASKS[...]` /
+  `DB_SCHEMAS` / `QUERY_SPECS` 派生，库路径见「配置」小节。
 
 ---
 
@@ -103,8 +113,8 @@
 
 - 列数不足补空串，超出截断；`product_no` 为空的记录跳过。
 - 库表：每个前缀一个库 `tasks/sqlite_db/f09554_opp/{F09554,F09555,F09556}.db`，
-  表名 `data_{前缀}`，主键 `PRIMARY KEY (product_no)`；与在线查询
-  `PRODUCT_TABLE_MAP`（202608041615335173/172/174）对应。
+  表名 `data_{前缀}`，主键 `PRIMARY KEY (product_no)`；与在线查询的
+  `QUERY_SPECS["f09554_opp"]["table_map"]`（202608041615335173/172/174 → 前缀）对应。
 - 保留天数、批次大小、轮询间隔见 `.env`（`TASK1_*`）。
 - 量级：每个 AVL 每天不到 1 万条，单库单表即可；覆盖后每库行数 ≤ 去重后的手机号数。
 
@@ -145,7 +155,8 @@
 ## 库表与分表
 
 - 单库 `tasks/sqlite_db/f09591_loss/F09591.db`，128 张表 `data_F09591_0 … data_F09591_127`。
-- 路由：`表号 = zlib.crc32(product_no) % 128`，与在线查询 `data_query.get_latest_record` 一致。
+- 路由：`表号 = zlib.crc32(product_no) % NUM_TABLES`，与 `services/data_query.py` 的
+  `QUERY_SPECS["f09591_loss"]`（sharded 模式）一致。
 - 每张分表主键 `PRIMARY KEY (product_no)`，入库 `INSERT OR REPLACE`。
 - 保留天数、批次大小、轮询间隔见 `.env`（`TASK2_*`）。
 - 量级：每个 AVL 约 7000 万逻辑记录；按 `product_no` 覆盖后实际行数取决于去重后的手机号数。
@@ -182,7 +193,8 @@ op_time 直接取自文件第 1 列，代码不做日期改写。当前样例 `F
 ## 库表与分表
 
 - 单库 `tasks/sqlite_db/f09609_diag/F09609.db`，128 张表 `data_F09609_0 … data_F09609_127`。
-- 路由同任务2：`zlib.crc32(product_no) % 128`，与 `data_query.get_record` 一致。
+- 路由同任务2：`zlib.crc32(product_no) % NUM_TABLES`，与 `services/data_query.py` 的
+  `QUERY_SPECS["f09609_diag"]`（sharded 模式）一致。
 - 主键 `PRIMARY KEY (product_no, product_id)`，入库 `INSERT OR REPLACE`。
 - 保留天数、批次大小、轮询间隔见 `.env`（`TASK3_*`）。
 - 量级：拆分后每天约 3 亿条 → 每表日均约 234 万条；`synchronous = NORMAL`。
