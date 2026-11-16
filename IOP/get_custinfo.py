@@ -1,22 +1,17 @@
 from src.log_util import my_log
-from IOP.get_token import TOKENS, token2global
+from IOP.get_token import TOKENS, ensure_token, token_valid
 from IOP.http_session import global_config, session_context
 import aiohttp
 import asyncio
-import datetime
 import time
 
 
 async def get_custom_info_in_global(tel):
-    if TOKENS.access_token is None or datetime.datetime.now() > TOKENS.deadline:
-        await token2global()
-        for _ in range(3):
-            if TOKENS.access_token is None or datetime.datetime.now() > TOKENS.deadline:
-                await token2global()
-            else:
-                break
+    # A2：原「循环外 1 次 + 循环内最多 3 次」重试整体收敛到 ensure_token() 单飞
+    # 入口，重试次数与无退避语义不变（D1 未改）；并发请求不再各自刷新 token。
+    await ensure_token()
 
-    if TOKENS.access_token is None or datetime.datetime.now() > TOKENS.deadline:
+    if not token_valid():
         # 统一降级为空 dict：返回 None 不会触发 main.py 的 except，会一路传到
         # ProductInfoRaw 并抛 TypeError，反而让最该降级的场景返回 500。
         my_log.error("IOP token 不可用：刷新后仍无有效 access_token，本次标签查询降级为空标签")

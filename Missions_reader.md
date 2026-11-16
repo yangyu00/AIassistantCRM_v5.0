@@ -46,6 +46,8 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 
 `IOP/get_custinfo.py::get_custom_info_in_global(tel)` 一次请求只调用一次，结果在
 `productId` 循环内复用。返回 `{ITEMCODE: [ITEMNAME, ITEMVALUE], ...}`。
+入口处先 `await ensure_token()`（A2 单飞，见后续小节），再发标签查询；
+token 刷新对同一批并发请求只发生一次。
 
 ### 返回契约与降级
 
@@ -108,17 +110,18 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 | `sock_read` | `2` | 读响应超时 |
 
 `client_timeout()` 对缺键用同名默认值兜底，部署沿用旧 `config.yaml` 也不会启动失败。
-`total` 调大放宽慢上游、调小更快降级；**注意与重试的乘积**：`get_custinfo.py` 的
+`total` 调大放宽慢上游、调小更快降级；**注意与重试的乘积**：`ensure_token()` 里的
 token 刷新仍是「循环外 1 次 + 循环内最多 3 次、无退避」（D1 未改），
-因此 token 端点持续无响应时，单次业务请求会串行等 4 次超时。每次由
+因此 token 端点持续无响应时，一轮刷新会串行等 4 次超时。每次由
 `sock_read` 与 `total` 中**先到者**触发：默认 `sock_read=2` 先到，实测约 8 秒，
 上界 `4 × total = 12` 秒。要压低这个窗口，调小 `sock_read` / `total`，
-或后续单独处理 D1 的重试次数与退避。
+或后续单独处理 D1 的重试次数与退避。**A2 单飞后这笔代价由同一批并发请求
+共同承担一次**，不再每个请求各付 4 次（见下一小节）。
 
-**本轮同时实现 C2**：共享 `ClientSession` 见下一小节。仍未越界的是
-A2 单飞锁（`TOKENS` 仍无并发保护）、D1 重试次数/退避、D3 token 响应状态码校验、
-F2 `IOPClient` 类。`test_local/test_iop.py` 仍用 `requests`，它是独立调试脚本、
-不在服务链路，保留原样。
+C2（共享 `ClientSession`）与 A2（token 单飞）均已实现，分见后续两小节。
+仍未越界的是 D1 重试次数/退避、D3 token 响应状态码校验、F2 `IOPClient` 类。
+`test_local/test_iop.py` 仍用 `requests`，它是独立调试脚本、不在服务链路，
+保留原样。
 
 ### 共享 ClientSession（C2）
 
@@ -148,6 +151,50 @@ headers，共用同一份 `skip_auto_headers=("Content-Type",)`。该参数只�
 显式传入的 `charset=gbk` / `Accept-Encoding` 不受影响、原样发出（E4）。
 实测 5 次请求共享 session 的连接池只有 1 条活跃连接，改动前每次新建 session
 对应 5 条 TCP 连接。`config.yaml` 不新增配置项，复用 `IOP.timeout`。
+
+### Token 单飞（A2）
+
+原先 `get_custinfo.py` 每次请求各自判定 `TOKENS` 是否过期、各自调
+`token2global()` 刷新：N 个请求同时判定过期 → **N 份 token 请求并发打认证服务**，
+彼此覆盖 `access_token` / `deadline`（惊群）。叠加 C1 的 4 次重试后，上游持续
+失败时最坏是 `4 × N` 次请求、日志刷屏、延迟互相叠加。
+
+现在把「确保 token 有效」收敛成 `IOP/get_token.py::ensure_token()` 一个入口，
+`get_custinfo.py` 只调它一次：
+
+| 步骤 | 动作 |
+|---|---|
+| 1 快速路径 | `token_valid()` 为真直接返回，**连锁都不碰**（token 有效期内零开销） |
+| 2 记代次 | 等锁前记下 `_REFRESH_GEN` |
+| 3 拿锁 | `async with _get_refresh_lock()` |
+| 4 二次检查 | `token_valid()` 为真（别人刷成功）**或** `_REFRESH_GEN` 已变（本批并发已有人刷过一轮）→ 直接返回，复用结果 |
+| 5 锁内刷新 | 只有第一个请求执行「1 次 + 最多 3 次、成功即 break、无退避」，`finally` 里 `_REFRESH_GEN += 1` |
+| 6 降级 | 仍无有效 token 时由 `get_custinfo.py` 按 B1 统一返回 `{}` |
+
+`token2global()` 保留为**单次刷新原语**，只在单飞锁内被调用；业务侧不要直接
+调它，否则绕开保护。`token_valid()` 用 `access_token is not None and now <= deadline`
+短路，保护 `deadline` 初始为 `None`（A3 未改，不改 `Tokens.__init__`）。
+
+**代次为什么必要**：只做「锁 + 二次检查」时，刷新**失败**后 token 仍无效，
+每个等待者拿锁后都会再刷一轮 4 次——把「并发打爆上游」变成「串行 4N 次」，
+延迟更糟。代次让失败结果也被同一批并发共享：等待者看到代次变化就直接返回，
+全部一起降级 `{}`。10 并发下 `token2global()` 真实调用次数：
+
+| 场景 | 改动前 | 改动后 |
+|---|---|---|
+| 刷新成功 | 10（每请求 1 次） | **1** |
+| 刷新失败 | 40（每请求 4 次） | **4** |
+
+**跨 event loop**：`asyncio.Lock` 一旦发生争用就绑定创建它的 loop，跨 loop 会抛
+`RuntimeError`（与 C2 共享 session 同一个坑）。故 `_get_refresh_lock()` 按当前
+`asyncio.get_running_loop()` 懒创建/重建，不在模块级放裸锁；生产单 loop 下始终
+是同一把锁，TestClient / 独立脚本多次 `asyncio.run()` 也不会炸。不需要 lifespan
+接线，不改 `main.py`。
+
+**D1 仍是 1+3 次、无退避**，只是整体搬进锁内，重试语义逐字不变。失败冷却
+（一轮失败后 N 秒内不再刷）属于 D1 的节流范畴，本轮未做：持续失败 + 持续新请求
+时，每个**新批次**仍会各开一轮 4 次刷新；同一批并发不再重复。
+`config.yaml` 不新增配置项。
 
 ### 上游既定约定（不可改动）
 
@@ -475,6 +522,7 @@ curl "http://host:8989/api/callStat?month=2026-11"
 | 调用量库 | 启动时读库失败 | 只告警、基数按 0 恢复，服务照常启动；库恢复后下次重启从真实值继续 |
 | IOP | token / 标签查询超时、连接失败 | 就地记 ERROR、token 侧清空 `access_token`、最终降级 `{}`；不阻塞其它并发请求 |
 | IOP | 未经 lifespan（共享 session 未初始化） | `session_context()` 降级为本次请求临时 session，只告警一次；结果正确、不泄漏连接，但失去连接复用 |
+| IOP | token 刷新失败（含超时） | `ensure_token()` 一轮最多 4 次后不再抛异常，同一批并发共享失败结果并一起降级 `{}`；API 不 500 |
 | 写入侧 | 注册 xlsx 缺失 | `dim_watcher` 告警跳过，库保留上次成功版本 |
 
 **维表侧出任何问题都不会让 API 500**：产品名为 `None`、`queried_label_ids` 为 `[]`、
@@ -516,6 +564,8 @@ curl "http://host:8989/api/callStat?month=2026-11"
   原样发出。
 - **A1 不再阻塞事件循环**：把 IOP 请求打桩成 50ms 延迟，10 个并发
   `token2global()` 总耗时应接近 50ms（改动前用同步 `requests.post` 会串行成 ~500ms）。
+  注意 `token2global()` 现在是单次刷新原语，业务侧入口是 `ensure_token()`；
+  测并发刷新次数应打桩 `token2global` 后跑 `ensure_token()`。
 - **C1 超时收口**：让 token / 标签查询抛 `asyncio.TimeoutError`，应看到
   `IOP token 请求失败` 或 `IOP 标签查询网络失败` 的 ERROR 日志、返回 `{}`，
   且 API 不 500；token 侧 `access_token` 被清空。
@@ -530,9 +580,26 @@ curl "http://host:8989/api/callStat?month=2026-11"
 - **C2 降级**：不把 `TestClient` 当上下文管理器时 `get_session()` 为 `None`，
   首次请求打一条「降级为临时 session」WARNING（每进程只一次），结果仍正确、
   API 不 500，临时 session 用后即关闭。
+- **A2 单飞（成功）**：打桩 `token2global` 让首次即写入有效 token，10 个并发
+  `ensure_token()` 的刷新调用次数应为 **1**（改动前 10 个请求各刷 1 次 = 10）。
+  token 已有效时直接调 `ensure_token()` 应为 **0** 次刷新，不进锁。
+- **A2 单飞（失败共享）**：打桩 `token2global` 始终不写 token，10 个并发
+  `get_custom_info_in_global()` 的刷新调用次数应为 **4**（改动前 10 × 4 = 40），
+  10 个结果全为 `{}`、API 不 500；「IOP token 不可用」日志只出现与并发批次数
+  相当的次数，不是每请求一条刷屏。
+- **A2 跨 loop**：连续两次 `asyncio.run()` 各跑一批带争用的 `ensure_token()`，
+  不应抛 `is bound to a different event loop`（`_get_refresh_lock()` 按当前 loop
+  懒创建/重建）；同一 loop 内多次调用返回的是同一把锁。
+- **A2 未改 D1**：`ensure_token()` 里仍是「1 次 + `for _ in range(3)`」、
+  成功即 break、无 `asyncio.sleep` 退避；一轮失败仍串行等 4 次超时，
+  但**同一批并发只付一次**，不再是 N × 4 次。
 
 ## 未实现
 
 - 基于 `version` 的进程级缓存、版本回滚、历史版本查询、灰度切换。
 - 加工规则的完全配置化：当前 `cut_in_str2tuple` 与分组规则写在 `dim_transform.py`，
   `registry.json` 只声明列角色与列顺序。
+- IOP 侧：D1 重试次数/退避与**失败冷却**（一轮刷新失败后短时间内不再发起新一轮）、
+  D3 token 响应状态码校验、A3 `Tokens.deadline` 初始化为过去时间、
+  F2 `IOPClient` 类。A2 只解决「同一批并发重复刷新」，不解决「持续失败下
+  不同批次各自刷新」。
