@@ -18,7 +18,6 @@ TOKENS = Tokens()
 # 配置在 import 时读一次，避免每次 token 刷新都重新打开并解析 config.yaml。
 global_config = ImmutableYamlConfig()
 
-# C1：config.yaml 缺少 IOP.timeout 段时的兜底值（秒）。
 _DEFAULT_TIMEOUT = {'total': 3.0, 'connect': 1.0, 'sock_read': 2.0}
 
 
