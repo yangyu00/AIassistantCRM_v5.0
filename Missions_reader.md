@@ -137,8 +137,8 @@ D3 之后 `IOP token 请求失败` 统一带 `status=` 与具体原因（状态�
 C2（共享 `ClientSession`）、A2（token 单飞）、D1（重试/退避/冷却）、
 D3（token 响应校验）、D2（有效期换算）均已实现，分见后续五个小节。
 仍未越界的是 A3 `deadline` 初始化；F2 `IOPClient` 类已明确不做（见文末
-「未实现」）。`test_local/test_iop.py` 仍用 `requests`，它是独立调试脚本、
-不在服务链路，保留原样。
+「未实现」）。`test_local/test_iop.py` 已不再复制请求实现，改为复用生产模块的
+离线自检脚本，见「离线调试脚本（F1）」小节。
 
 ### 共享 ClientSession（C2）
 
@@ -405,6 +405,44 @@ D3 只改变「怎么判断响应成败」，D2 只改变「拿到 token 后 dea
 `skip_auto_headers=("Content-Type",)`。它只跳过自动生成的头，标签查询显式传入
 的 `charset=gbk` / `Accept-Encoding` 仍原样发出，实测两种请求的上游请求头与
 改动前逐一一致。这不是新约定，是把库切换与会话共用带来的副作用消掉。
+
+### 离线调试脚本（F1）
+
+`test_local/test_iop.py` 原先是**复制版**：自己定义 `Tokens`、拼两个端点的 URL、
+headers、`post_data`、`grant_type` 表单串，还直接 `int(expires_in) - 360`；
+模块级代码一执行就向 `config.yaml` 里的真实生产地址连发两次 `requests.post`，
+并写死真实手机号 `18866816199`。生产侧改动必然漏它，且哪天误跑就直连生产。
+
+现在改为**复用生产模块的离线自检脚本**，只调
+`IOP.get_custinfo.get_custom_info_in_global()`，不再持有任何请求实现：
+
+| 项 | 做法 |
+|---|---|
+| 请求实现 | 不复制。URL / headers / post_data / Tokens / 有效期换算全部走生产模块 |
+| HTTP | `_FakeSession` 按 URL 区分两个端点并返回本地假响应 |
+| 硬 guard | 三个 `session_context` 引用都打桩；`IOP.http_session.session_context` 另置为抛异常的兜底，任何漏网的真实会话立刻失败而不是联网 |
+| 配置 | `global_config` 也换成假值（`127.0.0.1:0` + `fake_id` / `fake_secret`），连拼出来的 URL 都不含生产地址或凭据 |
+| 数据 | 占位手机号 `13900000000`、占位 token；`my_log` 换成内存收集器，脚本自身不写任何日志行 |
+| 执行时机 | 只有 `if __name__ == "__main__"` 才跑；顶层不 import 生产模块，`import test_local.test_iop` 零副作用、不发请求、不触发 `src/log_util.py` 初始化 |
+
+需要说明：运行 `main()` 时才会 import 生产模块，`src/log_util.py` 会按既有行为
+在项目根创建 `log/` 目录与当日两个**空**日志文件；这是模块级初始化，不是脚本
+写的日志。自检前后 `.log` 文件内容无增量。
+
+运行（项目根目录）：
+
+```bash
+python -m test_local.test_iop
+```
+
+也可直接 `python test_local/test_iop.py`，脚本会自行把根目录加入 `sys.path`。
+四个场景依次验证：正常路径、`expires_in=300`（D2）、token 502（D3）、
+标签查询 502，覆盖成功返回与三类降级；每个场景开头清掉生产模块的 token /
+冷却 / 代次全局状态，避免串场。末尾断言所有捕获到的 URL 都以
+`http://127.0.0.1:0/` 开头，即**没有任何请求漏到外部**。
+
+**本脚本不做联网调试**。需要对真实或测试环境发一次请求时用 curl 等外部工具，
+不要把它改回模块级直接请求——`config.yaml` 里的 IOP 地址是生产地址。
 
 ## 业务库读取（`services/data_query.py`）
 
@@ -833,6 +871,12 @@ curl "http://host:8989/api/callStat?month=2026-11"
   `600/360/60/86400`；非法值同样回落。`expires_in="abc"` 时
   `TOKENS.access_token` 照常写入、日志出现一条
   `IOP token expires_in 异常 | 非数字('abc')` 的 INFO，且不含 token 值。
+- **F1 离线脚本**：`python -m test_local.test_iop` 应输出 `离线自检通过：4/4`；
+  把 `socket.socket.connect` 打桩成抛异常后运行仍应通过（证明零网络）。
+  `import test_local.test_iop` 不应有 stdout、不应发请求、不应连带
+  import 生产模块；运行前后 `.log` 文件内容无增量。
+  脚本里不应再出现 `requests.post`、`grant_type=client_credentials`、
+  `qryCustInfoByChannel`、`18866816199` 或 `int(expires_in) - 360`。
 
 ## 未实现
 
@@ -849,3 +893,9 @@ curl "http://host:8989/api/callStat?month=2026-11"
 - D1 已配好次数/退避/冷却，D2 已覆盖有效期换算，D3 已覆盖响应状态码与
   结构校验；但**冷却是进程内状态**：多实例部署时各实例各自冷却，
   不做跨进程共享。
+- F1 已处理：`test_local/test_iop.py` 改为复用生产模块的离线自检脚本，
+  见「离线调试脚本（F1）」小节。剩余独立清理项：F3（把该自检脚本扩成
+  正式的 IOP 单元测试）、F4（URL 模板 / `method` / `grant_type` /
+  `version` / `type` 等常量仍散在代码里，可再收敛一处）。
+  另：根目录 `test_online.py` 的请求体里仍写有 `18866816199`，
+  属在线接口测试脚本，不在本次 IOP 调试脚本清理范围内。
