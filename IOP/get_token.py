@@ -14,10 +14,13 @@ class Tokens:
 
 TOKENS = Tokens()
 
+# 配置在 import 时读一次，避免每次 token 刷新都重新打开并解析 config.yaml。
+global_config = ImmutableYamlConfig()
+
 
 async def token2global():
-    global_config = ImmutableYamlConfig()
-
+    # 上游仅提供 http 明文 token 端点；client_id / client_secret 以表单串提交，
+    # 凭据存放于 config.yaml。均为上游与部署环境的既定要求，不可改动。
     token_url = 'http://{host}:{port}/openapi/restOauth2Server/access_token'.format(
         host=global_config['IOP']['TOKEN']['host'], port=global_config['IOP']['TOKEN']['port'])
 

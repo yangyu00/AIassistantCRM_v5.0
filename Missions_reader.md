@@ -24,7 +24,8 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 
 ## 请求处理与路由（`main.py::marketAssistant`）
 
-1. `IOP.get_custinfo` 取用户标签 `custom_label_info`，异常时置 `{}`。
+1. `IOP.get_custinfo` 取用户标签 `custom_label_info`；函数内所有失败分支统一返回
+   `{}`，调用点另有 `try/except` 兜底。详见「用户标签获取（IOP）」。
 2. 按 `productId` 列表逐个建对象，命中即 `continue`（顺序不可调换）：
 
 | 顺序 | 条件（ID 来自配置） | 数据源 | 业务对象 |
@@ -40,6 +41,56 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 `QUERY_SPECS["loss_control"]["product_ids"]` 派生。
 
 3. 输出：`product_name` 非空 → `code: "0"` 带话术；为空 → `code: "2"`、产品名与话术为空。
+
+## 用户标签获取（IOP）
+
+`IOP/get_custinfo.py::get_custom_info_in_global(tel)` 一次请求只调用一次，结果在
+`productId` 循环内复用。返回 `{ITEMCODE: [ITEMNAME, ITEMVALUE], ...}`。
+
+### 返回契约与降级
+
+**所有失败分支统一返回空 dict `{}`**，不再返回 `None`。原因是 `main.py` 的
+`try/except` 只包住函数调用本身，`None` 不抛异常、不会触发 `except`，会一路传到
+`ProductInfoRaw::__get_queried_label_nvs` 并抛 `TypeError`（只要该业务在维表里有
+标签项），使"token 拿不到"这个最该降级的场景反而返回 500。空 dict 则让下游
+按「无标签」正常产出话术。
+
+失败分支包括：token 不可用、响应 JSON 解析失败、非 200、`res_code != 0`、
+响应非 dict、缺少或非列表的 `BUSIINFO`。缺 `ITEMCODE` / 非 dict 的单条记录跳过，
+不拖累整批。`res_code` 按 `str(...)` 比较，兼容上游返回字符串 `"0"` 或数字 `0`。
+
+### 日志字段
+
+每条查询必留一条日志（成功 `INFO`、失败 `ERROR`），字段统一为 `key=value`：
+
+| 字段 | 说明 |
+|---|---|
+| `status` | HTTP 状态码 |
+| `res_code` / `res_desc` | 仅失败分支记录，取上游响应 |
+| `busi_info` / `labels` | 上游条数 / 成功入库的标签条数 |
+| `cost` | 单次查询耗时（毫秒） |
+| `error` | 仅响应解析失败时记录异常信息 |
+
+日志**不含手机号、不含 access_token**。响应解析仍用 `json(content_type=None)`——
+上游返回的 Content-Type 不规范，不做类型校验。
+
+### 配置读取
+
+`global_config = ImmutableYamlConfig()` 提到模块级，只在 import 时读一次；
+`IOP/get_token.py` 同样处理。`ImmutableYamlConfig` 是单例且返回只读配置，
+但每次调用其构造函数都会重新 `open` + `yaml.load` 并重建字典，原先每请求至少
+一次磁盘 I/O + yaml 解析（token 刷新时再多一次）。现在请求路径为 0 次。
+运行期修改 `config.yaml` 不会热生效，需重启进程。
+
+### 上游既定约定（不可改动）
+
+代码里对应位置已加注释锁定，后续优化不要"顺手修好"：
+
+- `access_token` 必须放在 URL 查询串，上游不接受 `Authorization` 头。
+- 两个端点只提供 `http` 明文；`client_id` / `client_secret` 以表单串提交，
+  凭据存放于 `config.yaml`。
+- 请求头必须声明 `Content-Type: application/json; charset=gbk` 并显式携带
+  `Accept-Encoding: gzip, deflate`，即使与实际序列化编码不一致也照发。
 
 ## 业务库读取（`services/data_query.py`）
 
