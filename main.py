@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel, Field, field_validator
 
 from IOP.get_custinfo import get_custom_info_in_global
+from IOP.http_session import init_session, close_session
 from config import ImmutableYamlConfig
 from excel2consts.dim_reader import load_product_selling_point
 from services.product_info_raw import ProductInfoRaw as ProductInfoRaw
@@ -22,17 +23,20 @@ from src.log_util import my_log
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """启动时从库恢复当天调用量基数，关闭时补齐不足阈值的尾部增量。
+    """启动时恢复调用量基数并创建 IOP 共享 ClientSession，关闭时收尾。
 
-    uvicorn 的 SIGTERM 退出路径不经过 atexit，由 yield 之后显式 flush；
-    src.call_stat 仍注册 atexit 作为非 ASGI 运行方式的兜底，两处幂等。
-    startup 里不做任何定时任务，只做一次恢复。
+    IOP 会话必须在同一个 event loop 内创建/关闭，故挂在 lifespan 而非模块级
+    或 atexit（atexit 拿不到运行中的 loop）。uvicorn 的 SIGTERM 退出路径不经过
+    atexit，由 yield 之后显式收尾；src.call_stat 仍注册 atexit 作为非 ASGI
+    运行方式的兜底，两处幂等。startup 里不做任何定时任务，只做一次性初始化。
     """
     base = call_stat.startup()
     my_log.info(f"调用量统计已恢复：当天已累计 {base} 次（重启后继续计数）")
+    await init_session()
     try:
         yield
     finally:
+        await close_session()
         call_stat.flush()
 
 

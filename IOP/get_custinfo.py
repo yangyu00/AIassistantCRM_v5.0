@@ -1,14 +1,10 @@
-from config import ImmutableYamlConfig
 from src.log_util import my_log
-from IOP.get_token import TOKENS, token2global, client_timeout
+from IOP.get_token import TOKENS, token2global
+from IOP.http_session import global_config, session_context
 import aiohttp
 import asyncio
 import datetime
 import time
-
-# 配置在 import 时读一次即可：ImmutableYamlConfig 是单例且返回只读配置，
-# 避免每次请求都重新打开并解析 config.yaml。
-global_config = ImmutableYamlConfig()
 
 
 async def get_custom_info_in_global(tel):
@@ -45,8 +41,11 @@ async def get_custom_info_in_global(tel):
     }
 
     start = time.perf_counter()
+    # C2：复用应用级共享 session（lifespan 创建/关闭），不再每次新建。
+    # C1：session 已带 ClientTimeout；连接/读超时与网络异常就地收口，
+    # 不让异常穿透到 main.py（那样 IOP 侧会没有日志）。
     try:
-        async with aiohttp.ClientSession(timeout=client_timeout()) as client:
+        async with session_context() as client:
             async with client.post(url, json=post_data, headers=headers) as response:
                 status_code = response.status
                 try:

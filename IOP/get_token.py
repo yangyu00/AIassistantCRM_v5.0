@@ -2,9 +2,12 @@
 
 import asyncio
 import aiohttp
-from config import ImmutableYamlConfig
 from src.log_util import my_log
 import datetime
+
+# client_timeout / global_config / session_context 统一由 http_session 提供；
+# 此处转出 client_timeout 以保持既有 `from IOP.get_token import client_timeout` 可用。
+from IOP.http_session import global_config, client_timeout, session_context
 
 
 class Tokens:
@@ -14,25 +17,6 @@ class Tokens:
 
 
 TOKENS = Tokens()
-
-# 配置在 import 时读一次，避免每次 token 刷新都重新打开并解析 config.yaml。
-global_config = ImmutableYamlConfig()
-
-_DEFAULT_TIMEOUT = {'total': 3.0, 'connect': 1.0, 'sock_read': 2.0}
-
-
-def client_timeout() -> aiohttp.ClientTimeout:
-    """IOP 两个端点共用的 HTTP 超时。
-
-    从模块级 global_config 读取 IOP.timeout，缺键用 _DEFAULT_TIMEOUT 兜底，
-    部署沿用旧 config.yaml 也不会启动失败。配置只读，本函数无磁盘 I/O。
-    """
-    cfg = global_config['IOP'].get('timeout', {}) or {}
-    return aiohttp.ClientTimeout(
-        total=float(cfg.get('total', _DEFAULT_TIMEOUT['total'])),
-        connect=float(cfg.get('connect', _DEFAULT_TIMEOUT['connect'])),
-        sock_read=float(cfg.get('sock_read', _DEFAULT_TIMEOUT['sock_read'])),
-    )
 
 
 async def token2global():
@@ -45,10 +29,11 @@ async def token2global():
             f"&client_id={global_config['IOP']['TOKEN']['id']}"
             f"&client_secret={global_config['IOP']['TOKEN']['secret']}")
 
+    # C2：复用应用级共享 session（lifespan 创建/关闭），不再每次新建。
+    # session 已带 timeout 与 skip_auto_headers，故这里只发请求、不再构造参数；
+    # 超时/网络异常就地收口，不让异常穿透到 main.py（否则 IOP 侧没有日志）。
     try:
-        async with aiohttp.ClientSession(
-                timeout=client_timeout(),
-                skip_auto_headers=("Content-Type",)) as client:
+        async with session_context() as client:
             async with client.post(token_url, data=body) as response:
                 res_data = await response.json(content_type=None)
     except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as e:

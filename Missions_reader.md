@@ -79,10 +79,11 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 
 ### 配置读取
 
-`global_config = ImmutableYamlConfig()` 提到模块级，只在 import 时读一次；
-`IOP/get_token.py` 同样处理。`ImmutableYamlConfig` 是单例且返回只读配置，
-但每次调用其构造函数都会重新 `open` + `yaml.load` 并重建字典，原先每请求至少
-一次磁盘 I/O + yaml 解析（token 刷新时再多一次）。现在请求路径为 0 次。
+`global_config = ImmutableYamlConfig()` 只在 `IOP/http_session.py` 里读一次，
+`get_token.py` / `get_custinfo.py` 直接复用同一个只读对象。`ImmutableYamlConfig`
+是单例且返回只读配置，但每次调用其构造函数都会重新 `open` + `yaml.load` 并
+重建字典，原先每请求至少一次磁盘 I/O + yaml 解析（token 刷新时再多一次）。
+现在请求路径为 0 次，IOP 侧 import 阶段的读盘也由两次收敛为一次。
 运行期修改 `config.yaml` 不会热生效，需重启进程。`client_timeout()` 复用同一份
 模块级只读配置，构造 `aiohttp.ClientTimeout`，无磁盘 I/O。
 
@@ -94,9 +95,9 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 
 | 位置 | 改动 |
 |---|---|
-| `get_token.py` | `requests.post` → `aiohttp.ClientSession(...).post(...)`；服务链路不再混用 `requests` / `aiohttp` |
-| `get_token.py` / `get_custinfo.py` | `ClientSession(timeout=client_timeout())`，connect / sock_read / total 三层超时 |
-| 两处 | 超时与网络异常（`aiohttp.ClientError` / `asyncio.TimeoutError`）就地捕获、记日志、降级；token 侧还清空 `access_token`，让既有重试继续 |
+| `get_token.py` | `requests.post` → `aiohttp` 异步请求；服务链路不再混用 `requests` / `aiohttp` |
+| `IOP/http_session.py` | 统一构造 `ClientSession(timeout=client_timeout(), skip_auto_headers=...)`，connect / sock_read / total 三层超时；两处调用点只取 `session_context()`（见 C2 小节） |
+| 两处调用点 | 超时与网络异常（`aiohttp.ClientError` / `asyncio.TimeoutError`）就地捕获、记日志、降级；token 侧还清空 `access_token`，让既有重试继续 |
 
 配置在 `config.yaml` 的 `IOP.timeout`（秒），两个端点共用一组：
 
@@ -114,10 +115,39 @@ token 刷新仍是「循环外 1 次 + 循环内最多 3 次、无退避」（D1
 上界 `4 × total = 12` 秒。要压低这个窗口，调小 `sock_read` / `total`，
 或后续单独处理 D1 的重试次数与退避。
 
-**未越界**：A2 单飞锁（`TOKENS` 仍无并发保护）、C2 共享 `ClientSession`
-（两次调用仍各自新建 session）、D1 重试次数/退避、D3 token 响应状态码校验、
-F2 `IOPClient` 类，均未改动。`test_local/test_iop.py` 仍用 `requests`，
-它是独立调试脚本、不在服务链路，保留原样。
+**本轮同时实现 C2**：共享 `ClientSession` 见下一小节。仍未越界的是
+A2 单飞锁（`TOKENS` 仍无并发保护）、D1 重试次数/退避、D3 token 响应状态码校验、
+F2 `IOPClient` 类。`test_local/test_iop.py` 仍用 `requests`，它是独立调试脚本、
+不在服务链路，保留原样。
+
+### 共享 ClientSession（C2）
+
+原先每次请求都 `async with aiohttp.ClientSession(...)`，无连接复用、每次重新
+TCP 握手，高并发下句柄开销明显。现在应用级只创建一个会话：
+
+| 阶段 | 动作 |
+|---|---|
+| lifespan startup | `await init_session()`：在当前 event loop 创建，带 `client_timeout()` 与 `skip_auto_headers` |
+| 运行期 | `get_token.py` / `get_custinfo.py` 统一 `async with session_context() as client`；共享 session 直接 yield，**不在此关闭** |
+| lifespan shutdown | `await close_session()`：校验与创建时同一 loop，`await session.close()` |
+
+**同 event loop**：`ClientSession` 绑定创建它的 loop，必须在同一 loop 内关闭。
+`atexit` 拿不到运行中的 loop，不能用于收尾，因此只挂 `main.py` 的 lifespan；
+uvicorn 正常关闭时 startup / shutdown 在同一 loop。`init_session()` /
+`close_session()` 都幂等，创建或关闭失败只记日志、不外抛，不阻断启动或停止。
+
+**降级路径**：未经 lifespan 时（TestClient 不进上下文、独立脚本 import 后直接
+调用），`get_session()` 为 `None`，`session_context()` 退回「本次请求一个临时
+session」，由内层 `async with` 在当前 loop 内创建并关闭，只告警一次避免刷屏。
+行为与改动前一致、不泄漏连接，但**失去连接复用**——生产必须确保走 lifespan，
+自检可用这条 WARNING 判断部署是否漏了入口。
+
+**一个 session 服务两个端点**：token 用 `data=`、标签查询用 `json=` + 显式
+headers，共用同一份 `skip_auto_headers=("Content-Type",)`。该参数只跳过
+**自动生成**的头：token 请求不带 Content-Type（等价 `requests`），标签查询
+显式传入的 `charset=gbk` / `Accept-Encoding` 不受影响、原样发出（E4）。
+实测 5 次请求共享 session 的连接池只有 1 条活跃连接，改动前每次新建 session
+对应 5 条 TCP 连接。`config.yaml` 不新增配置项，复用 `IOP.timeout`。
 
 ### 上游既定约定（不可改动）
 
@@ -129,11 +159,12 @@ F2 `IOPClient` 类，均未改动。`test_local/test_iop.py` 仍用 `requests`�
 - 请求头必须声明 `Content-Type: application/json; charset=gbk` 并显式携带
   `Accept-Encoding: gzip, deflate`，即使与实际序列化编码不一致也照发。
 
-本轮把 token 请求换成 `aiohttp` 后，上述各项逐字保留。额外一处等价处理：
-`requests` 对字符串 `data=` 不加 `Content-Type`，而 `aiohttp` 默认会补
-`text/plain; charset=utf-8`，所以 token 的 `ClientSession` 用了
-`skip_auto_headers=("Content-Type",)`，保证上游收到的请求头与原来完全一致。
-这不是新约定，是把库切换带来的副作用消掉。
+换成 `aiohttp`、再收敛为共享 `ClientSession` 后，上述各项逐字保留。额外一处
+等价处理：`requests` 对字符串 `data=` 不加 `Content-Type`，而 `aiohttp` 默认会补
+`text/plain; charset=utf-8`，所以共享 session 统一带
+`skip_auto_headers=("Content-Type",)`。它只跳过自动生成的头，标签查询显式传入
+的 `charset=gbk` / `Accept-Encoding` 仍原样发出，实测两种请求的上游请求头与
+改动前逐一一致。这不是新约定，是把库切换与会话共用带来的副作用消掉。
 
 ## 业务库读取（`services/data_query.py`）
 
@@ -443,6 +474,7 @@ curl "http://host:8989/api/callStat?month=2026-11"
 | 调用量库 | `log/call_sum.db` 写入失败 | 保留 `_PENDING` 增量并告警、下轮重试；`_DAY_TOTAL` 仍准确，不影响请求 |
 | 调用量库 | 启动时读库失败 | 只告警、基数按 0 恢复，服务照常启动；库恢复后下次重启从真实值继续 |
 | IOP | token / 标签查询超时、连接失败 | 就地记 ERROR、token 侧清空 `access_token`、最终降级 `{}`；不阻塞其它并发请求 |
+| IOP | 未经 lifespan（共享 session 未初始化） | `session_context()` 降级为本次请求临时 session，只告警一次；结果正确、不泄漏连接，但失去连接复用 |
 | 写入侧 | 注册 xlsx 缺失 | `dim_watcher` 告警跳过，库保留上次成功版本 |
 
 **维表侧出任何问题都不会让 API 500**：产品名为 `None`、`queried_label_ids` 为 `[]`、
@@ -476,8 +508,12 @@ curl "http://host:8989/api/callStat?month=2026-11"
 - 起 uvicorn 打几个不足阈值的请求后 `kill -TERM`：日志出现
   `Application shutdown complete.`，且 `call_sum.db` 里含这几条尾部增量
   （验证 lifespan shutdown，而非只依赖 `atexit`）。
-- `client_timeout()` 读出的 `total` / `connect` / `sock_read` 与 `config.yaml`
-  的 `IOP.timeout` 一致；删掉该段后回落到 3 / 1 / 2，不抛异常。
+- `client_timeout()` 定义于 `IOP/http_session.py`，读出的 `total` / `connect` /
+  `sock_read` 与 `config.yaml` 的 `IOP.timeout` 一致；删掉该段后回落到 3 / 1 / 2，
+  不抛异常。共享 session 与降级临时 session 都带 `timeout` 与
+  `skip_auto_headers=("Content-Type",)`：token 的 `data=` 请求头与改动前 `requests`
+  一致（不带 `Content-Type`），标签查询显式 `charset=gbk` / `Accept-Encoding`
+  原样发出。
 - **A1 不再阻塞事件循环**：把 IOP 请求打桩成 50ms 延迟，10 个并发
   `token2global()` 总耗时应接近 50ms（改动前用同步 `requests.post` 会串行成 ~500ms）。
 - **C1 超时收口**：让 token / 标签查询抛 `asyncio.TimeoutError`，应看到
@@ -485,9 +521,15 @@ curl "http://host:8989/api/callStat?month=2026-11"
   且 API 不 500；token 侧 `access_token` 被清空。
   把 `config.yaml` 的 IOP host/port 临时指向一个「accept 后不回数据」的本地端口
   可实测：默认 4 次 `sock_read=2` 触发约 8 秒，5 条 ERROR 日志，API 仍 200。
-- 两次 `ClientSession` 构造都带 `timeout`；token 的 session 额外带
-  `skip_auto_headers=("Content-Type",)`，其 `data=` 请求头与改动前 `requests` 一致
-  （不带 `Content-Type`）。
+- **C2 生命周期**：`TestClient(app)` 作为上下文进入时
+  `IOP.http_session.get_session()` 非 `None` 且 `closed=False`，退出后为 `None`
+  （已 `close()`）；startup 日志含「IOP 共享 ClientSession 已创建」、
+  shutdown 日志含「已关闭」，二者在同一 event loop。
+- **C2 连接复用**：起本地 HTTP server 连打 5 次标签查询，服务端 accept 次数
+  应为 1（keep-alive 复用）；每次新建 session 的旧实现为 5。
+- **C2 降级**：不把 `TestClient` 当上下文管理器时 `get_session()` 为 `None`，
+  首次请求打一条「降级为临时 session」WARNING（每进程只一次），结果仍正确、
+  API 不 500，临时 session 用后即关闭。
 
 ## 未实现
 
