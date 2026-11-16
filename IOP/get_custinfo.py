@@ -45,8 +45,6 @@ async def get_custom_info_in_global(tel):
     }
 
     start = time.perf_counter()
-    # C1：标签查询同样配置 ClientTimeout；连接/读超时与网络异常就地收口，
-    # 不再拖到默认超时或让异常穿透到 main.py（那样 IOP 侧会没有日志）。
     try:
         async with aiohttp.ClientSession(timeout=client_timeout()) as client:
             async with client.post(url, json=post_data, headers=headers) as response:

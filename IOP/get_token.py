@@ -46,11 +46,6 @@ async def token2global():
             f"&client_id={global_config['IOP']['TOKEN']['id']}"
             f"&client_secret={global_config['IOP']['TOKEN']['secret']}")
 
-    # A1：改用 aiohttp 异步请求，不再用同步 requests.post 阻塞整个事件循环。
-    # skip_auto_headers：requests 对字符串 data 不加 Content-Type，aiohttp 默认会
-    # 补 text/plain；显式跳过以保持上游收到的请求头与原来完全一致（E3）。
-    # C1：超时/网络异常就地收口，不穿透到上层；清空 token 让 get_custinfo 的
-    # 既有重试继续，最终由 B1 统一降级为 {}。
     try:
         async with aiohttp.ClientSession(
                 timeout=client_timeout(),
