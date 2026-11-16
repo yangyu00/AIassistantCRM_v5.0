@@ -46,9 +46,9 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 
 `IOP/get_custinfo.py::get_custom_info_in_global(tel)` 一次请求只调用一次，结果在
 `productId` 循环内复用。返回 `{ITEMCODE: [ITEMNAME, ITEMVALUE], ...}`。
-入口处先 `await ensure_token()`（A2 单飞 + D1 重试/退避/冷却，见后续两节），
-再发标签查询；token 刷新对同一批并发请求只发生一次，持续失败时冷却期内的
-请求直接降级、不再打认证服务。
+入口处先 `await ensure_token()`（A2 单飞 + D1 重试/退避/冷却 + D3 响应校验，
+见后续三节），再发标签查询；token 刷新对同一批并发请求只发生一次，
+持续失败时冷却期内的请求直接降级、不再打认证服务。
 
 ### 返回契约与降级
 
@@ -58,10 +58,14 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 标签项），使"token 拿不到"这个最该降级的场景反而返回 500。空 dict 则让下游
 按「无标签」正常产出话术。
 
-失败分支包括：token 不可用、token 请求超时/网络异常、标签查询连接或读超时、
+失败分支包括：token 不可用、token 请求超时/网络异常、**token 响应非 200 /
+解析失败 / 结构异常 / 缺字段 / 上游 `error`**（D3，见后）、标签查询连接或读超时、
 响应 JSON 解析失败、非 200、`res_code != 0`、响应非 dict、缺少或非列表的
 `BUSIINFO`。缺 `ITEMCODE` / 非 dict 的单条记录跳过，不拖累整批。
 `res_code` 按 `str(...)` 比较，兼容上游返回字符串 `"0"` 或数字 `0`。
+
+token 侧任一失败都会清空 `TOKENS` 并记 ERROR，由 D1 按配置重试/退避/冷却，
+最终仍无有效 token 时统一返回 `{}`；**不会沿用可能已过期的旧 access_token**。
 
 ### 日志字段
 
@@ -79,6 +83,12 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 上游返回的 Content-Type 不规范，不做类型校验。新增两类网络失败日志：
 `IOP token 请求失败` 与 `IOP 标签查询网络失败`，都带 `error` 与 `cost`，
 保证超时时 IOP 侧仍留痕（否则异常会穿透到 `main.py` 的 `except`，只剩一条笼统日志）。
+
+D3 之后 `IOP token 请求失败` 统一带 `status=` 与具体原因（状态码非 200 /
+响应解析失败 / 响应结构异常 / `access_token` 为空 / 上游返回错误 / 缺少
+`access_token` 且无 `error` / 网络异常）。网络异常发生在建连阶段时
+`status=None`。前缀沿用 C1/B2，只是把原先笼统的 `error=` 与 `str(res_data)`
+换成结构化字段。
 
 ### 配置读取
 
@@ -122,10 +132,11 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 **A2 单飞 + D1 冷却后这笔代价由同一批并发请求共同承担一次，冷却期内的新批次
 直接降级、完全不等待**，不再每个请求或每个新批次各付一轮。
 
-C2（共享 `ClientSession`）、A2（token 单飞）、D1（重试/退避/冷却）均已实现，
-分见后续三小节。仍未越界的是 D3 token 响应状态码校验、A3 `deadline` 初始化、
-F2 `IOPClient` 类。`test_local/test_iop.py` 仍用 `requests`，它是独立调试脚本、
-不在服务链路，保留原样。
+C2（共享 `ClientSession`）、A2（token 单飞）、D1（重试/退避/冷却）、
+D3（token 响应校验）均已实现，分见后续四小节。仍未越界的是
+D2 `expires_in` 有效期保护、A3 `deadline` 初始化、F2 `IOPClient` 类。
+`test_local/test_iop.py` 仍用 `requests`，它是独立调试脚本、不在服务链路，
+保留原样。
 
 ### 共享 ClientSession（C2）
 
@@ -237,8 +248,8 @@ headers，共用同一份 `skip_auto_headers=("Content-Type",)`。该参数只�
 5. `finally` 里 `_REFRESH_GEN += 1`，与 A2 代次共享
 
 `token2global()` 仍是单次刷新原语，C1 的超时收口与 B2 的
-`IOP token 请求失败` 日志**逐字保留**；D1 新增的是「第几次 / 退避多久 /
-本轮汇总 / 冷却」这四类信息。
+`IOP token 请求失败` 日志**前缀沿用**（D3 给它补了 `status=` 与具体原因，
+见下一小节）；D1 新增的是「第几次 / 退避多久 / 本轮汇总 / 冷却」这四类信息。
 
 **日志级别**：`src/log_util.py` 只落盘 `INFO` / `ERROR` 两个级别，
 `WARNING` 既没有文件 sink 也没有控制台 sink，**写了也看不到**。因此重试用
@@ -265,6 +276,49 @@ ERROR（与 `token2global` 的失败日志同文件、语义也确实是一次�
 
 `config.yaml` 只新增 `IOP.retry` 一段；`IOP.timeout`、URL、凭据、请求头等均未动。
 
+### Token 响应校验（D3）
+
+改动前 `token2global()` 只判 `'access_token' in res_data` / `elif 'error' in res_data`
+两种结构，**完全没读 `response.status`**，三条隐患叠在一起：
+
+| 上游响应 | 改动前行为 |
+|---|---|
+| 502 / 网关错误页（body 是合法 JSON，如 `{"res_code":"1"}`） | 既无 `access_token` 也无 `error`，**什么都不做**，静默保留旧 token |
+| HTML 错误页 / 空 body | `response.json()` 抛异常，被外层 `except ValueError` 兜住，但日志只有笼统的 `error=`，无 status、无原因 |
+| `res_data` 为 `None` / list | `'access_token' in None` 抛 `TypeError` 穿透到 `main.py` 的 `except`，IOP 侧无日志 |
+| 上游返回 `error` | `my_log.error(str(res_data))` 打整个 dict，无 status、非结构化 |
+
+最危险的是第一条：旧 `access_token` 可能已被吊销或即将过期，刷新失败却继续沿用，
+且 D1 的循环因为 `token_valid()` 为真会提前 break，把失败伪装成成功。
+
+现在所有失败分支统一走 `_fail_token(status_code, reason)`：
+
+1. **先查状态码**：`status_code = response.status`，非 200 直接失败、不读 body。
+   502 / 网关页即使 body 是合法 JSON 也不再进入「按字段判断」的路径。
+2. **解析就地收口**：`response.json(content_type=None)` 的
+   `aiohttp.ClientError` / `ValueError` 内层捕获，带 status 与异常类型。
+3. **结构校验**：`res_data` 非 dict（list / 字符串 / None）直接失败。
+4. **字段校验**：`access_token` 为空值也判失败；上游 `error` 改成结构化
+   `error=` / `error_description=`；**既无 `access_token` 也无 `error` 明确报
+   「响应缺少 access_token 且无 error 字段」**。
+5. **统一清空**：`_fail_token()` 同时把 `access_token` 与 `deadline` 置 `None`
+   并记 ERROR。`token_valid()` 靠 `access_token is not None` 短路，清一个就够，
+   两个都清是为了不残留过期的 deadline。
+6. **网络异常**：C1 的 `ClientError` / `TimeoutError` 收口保留，改调
+   `_fail_token()`，日志带 `status=None`（建连阶段还没拿到响应）。
+
+日志前缀仍是 `IOP token 请求失败`，只新增 `status=` 与具体原因；项目只落盘
+INFO / ERROR，故用 ERROR（见上文「日志级别」）。
+
+**未越界**：`expires_in` 的类型保护与有效期下限仍是 D2。若上游返回合法
+`access_token` 但 `expires_in` 是非法字符串，`int(expires_in)` 仍会抛
+`ValueError` 穿透到 `main.py` 的 `except`（B1 降级 `{}`，但 IOP 侧无日志，
+D1 的 `finally` 只保证代次 +1）。这是**已有的既有行为**，D3 没有改变它，
+留待 D2 处理，别把两种失败混为一谈。
+
+`token2global()` 仍是单次刷新原语，只在 A2 单飞锁内被调用；D3 只改响应
+校验，不改请求形状、不改重试次数、不改冷却，也不新增配置项。
+
 ### 上游既定约定（不可改动）
 
 代码里对应位置已加注释锁定，后续优化不要"顺手修好"：
@@ -275,8 +329,9 @@ ERROR（与 `token2global` 的失败日志同文件、语义也确实是一次�
 - 请求头必须声明 `Content-Type: application/json; charset=gbk` 并显式携带
   `Accept-Encoding: gzip, deflate`，即使与实际序列化编码不一致也照发。
 
-换成 `aiohttp`、收敛为共享 `ClientSession`、再加 D1 重试/退避/冷却后，上述各项
-逐字保留——D1 只改变「发几次、间隔多久」，不改变单次请求的形状。额外一处
+换成 `aiohttp`、收敛为共享 `ClientSession`、再加 D1 重试/退避/冷却与 D3 响应
+校验后，上述各项逐字保留——D1 只改变「发几次、间隔多久」，D3 只改变
+「怎么判断响应成败」，都不改变单次请求的形状。额外一处
 等价处理：`requests` 对字符串 `data=` 不加 `Content-Type`，而 `aiohttp` 默认会补
 `text/plain; charset=utf-8`，所以共享 session 统一带
 `skip_auto_headers=("Content-Type",)`。它只跳过自动生成的头，标签查询显式传入
@@ -594,6 +649,7 @@ curl "http://host:8989/api/callStat?month=2026-11"
 | IOP | 未经 lifespan（共享 session 未初始化） | `session_context()` 降级为本次请求临时 session，只告警一次；结果正确、不泄漏连接，但失去连接复用 |
 | IOP | token 刷新失败（含超时） | `ensure_token()` 单轮最多 `IOP.retry.max_attempts` 次（默认 4）、失败间指数退避，一轮全失败进入 `cooldown` 冷却；不抛异常，同一批并发共享失败结果并一起降级 `{}`；API 不 500 |
 | IOP | 处于失败冷却期 | `ensure_token()` 在拿锁前直接短路，**不打认证服务、不等超时**；所有请求立即降级 `{}`；一个冷却周期只打一条 INFO 提示 |
+| IOP | token 响应非 200 / 解析失败 / 结构异常 / 缺字段 / 上游 `error`（D3） | `token2global()` 统一清空 `TOKENS` 并记带 `status=` 的 ERROR；由 D1 重试/退避/冷却，最终降级 `{}`；**不沿用旧 token** |
 | 写入侧 | 注册 xlsx 缺失 | `dim_watcher` 告警跳过，库保留上次成功版本 |
 
 **维表侧出任何问题都不会让 API 500**：产品名为 `None`、`queried_label_ids` 为 `[]`、
@@ -638,8 +694,9 @@ curl "http://host:8989/api/callStat?month=2026-11"
   注意 `token2global()` 现在是单次刷新原语，业务侧入口是 `ensure_token()`；
   测并发刷新次数应打桩 `token2global` 后跑 `ensure_token()`。
 - **C1 超时收口**：让 token / 标签查询抛 `asyncio.TimeoutError`，应看到
-  `IOP token 请求失败` 或 `IOP 标签查询网络失败` 的 ERROR 日志、返回 `{}`，
-  且 API 不 500；token 侧 `access_token` 被清空。
+  `IOP token 请求失败`（D3 后带 `status=None`）或 `IOP 标签查询网络失败` 的
+  ERROR 日志、返回 `{}`，且 API 不 500；token 侧 `access_token` 与 `deadline`
+  都被清空。
   把 `config.yaml` 的 IOP host/port 临时指向一个「accept 后不回数据」的本地端口
   可实测：默认 4 次 `sock_read=2` + 3 次退避（1.4 秒）约 9.4 秒，
   日志含 4 条 `IOP token 请求失败`、3 条 `IOP token 刷新重试`、
@@ -678,13 +735,29 @@ curl "http://host:8989/api/callStat?month=2026-11"
 - **D1 配置容错**：删掉 `IOP.retry` 整段应回落到
   `4 / 0.2 / 2 / 2 / 5` 且不抛异常；`max_attempts: 0`、负数、
   字符串、NaN、`factor < 1` 等非法值同样回落；`max_attempts > 20` 截到 20。
+- **D3 失败分支全覆盖**：给 `token2global()` 打桩依次返回 7 类响应——
+  `status=502` + 合法 JSON、HTML 错误页（`json()` 抛 `ValueError`）、
+  `res_data` 为 list / `None` / 字符串、`{"access_token": ""}`、
+  `{"error": "invalid_client"}`、`{"res_code": "1"}`（既无 token 也无 error）——
+  每次都应返回 `None`、`TOKENS.access_token` 与 `deadline` 均为 `None`、
+  记一条带 `status=` 与具体原因的 ERROR，且不抛异常。
+- **D3 不再保留旧值**：先写入一个有效 token，再让它收到
+  `200 + {"res_code": "1"}`；改动前旧 `access_token` 仍在且 `token_valid()`
+  为真（失败被伪装成成功），改动后应立刻变为 `False`。
+- **D3 成功路径**：`200 + {"access_token": "tk", "expires_in": 600}` →
+  `token_valid()` 为真、deadline 约为 240 秒后、无 ERROR 日志；
+  日志里不出现 `access_token` 的值。
+- **D3 端到端**：本地 IOP server 的 token 端点固定返回 502，起 uvicorn 打
+  6 个并发业务请求；应全部 200，ERROR 日志含
+  `status=502 | HTTP 状态码非 200`，且冷却期内再发一批不再打认证服务。
 
 ## 未实现
 
 - 基于 `version` 的进程级缓存、版本回滚、历史版本查询、灰度切换。
 - 加工规则的完全配置化：当前 `cut_in_str2tuple` 与分组规则写在 `dim_transform.py`，
   `registry.json` 只声明列角色与列顺序。
-- IOP 侧：D2 `expires_in - 360` 的有效期下限与类型保护、
-  D3 token 响应状态码校验、A3 `Tokens.deadline` 初始化为过去时间、
-  F2 `IOPClient` 类。D1 已配好次数/退避/冷却，但**冷却是进程内状态**：
-  多实例部署时各实例各自冷却，不做跨进程共享。
+- IOP 侧：D2 `expires_in - 360` 的有效期下限与类型保护（当前若
+  `expires_in` 非法，`int()` 抛 `ValueError` 会穿透到 `main.py` 的 `except`，
+  B1 降级 `{}` 但 IOP 侧无日志）、A3 `Tokens.deadline` 初始化为过去时间、
+  F2 `IOPClient` 类。D1 已配好次数/退避/冷却，D3 已覆盖响应状态码与结构校验；
+  但**冷却是进程内状态**：多实例部署时各实例各自冷却，不做跨进程共享。

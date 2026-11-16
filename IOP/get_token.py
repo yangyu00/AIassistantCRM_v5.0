@@ -171,10 +171,23 @@ async def ensure_token():
 # ---------------------------------------------------------------------------
 
 
+def _fail_token(status_code, reason):
+    """D3：所有失败分支统一清空 TOKENS 并记 ERROR，绝不静默保留可能已过期的旧值。
+
+    日志前缀沿用 C1/B2 的 `IOP token 请求失败`，只新增 status 与具体原因；
+    项目只落盘 INFO / ERROR，故用 ERROR（见 Missions_reader.md 的日志级别说明）。
+    """
+    TOKENS.access_token = None
+    TOKENS.deadline = None
+    my_log.error(f"IOP token 请求失败 | status={status_code} | {reason}")
+
+
 async def token2global():
     """单次刷新 token 并写入 TOKENS。
 
     只由 ensure_token() 在单飞锁内调用；业务侧请勿直接调用，否则绕开 A2 保护。
+    D3：先查状态码，再校验响应结构；所有失败分支统一走 _fail_token()，
+    不再让「既无 access_token 也无 error」的响应静默保留旧 token。
     """
     # 上游仅提供 http 明文 token 端点；client_id / client_secret 以表单串提交，
     # 凭据存放于 config.yaml。均为上游与部署环境的既定要求，不可改动。
@@ -186,21 +199,50 @@ async def token2global():
             f"&client_secret={global_config['IOP']['TOKEN']['secret']}")
 
     # C2：复用应用级共享 session（lifespan 创建/关闭），不再每次新建。
-    # session 已带 timeout 与 skip_auto_headers，故这里只发请求、不再构造参数；
-    # 超时/网络异常就地收口，不让异常穿透到 main.py（否则 IOP 侧没有日志）。
+    # session 已带 timeout 与 skip_auto_headers，故这里只发请求、不再构造参数。
+    status_code = None
     try:
         async with session_context() as client:
             async with client.post(token_url, data=body) as response:
-                res_data = await response.json(content_type=None)
-    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as e:
-        TOKENS.access_token = None
-        my_log.error(f"IOP token 请求失败 | error={type(e).__name__}: {e}")
+                status_code = response.status
+                # D3：先查状态码。502 / 网关错误页即使 body 是合法 JSON，
+                # 也不该进入「按字段判断」的路径；不读 body 直接失败。
+                if status_code != 200:
+                    _fail_token(status_code, "HTTP 状态码非 200")
+                    return
+                try:
+                    # 上游返回的 Content-Type 不规范，沿用原有约定不做类型校验
+                    res_data = await response.json(content_type=None)
+                except (aiohttp.ClientError, ValueError) as e:
+                    _fail_token(status_code, f"响应解析失败 | error={type(e).__name__}: {e}")
+                    return
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        # C1：超时/网络异常就地收口，不让异常穿透到 main.py（否则 IOP 侧没有日志）
+        _fail_token(status_code, f"error={type(e).__name__}: {e}")
+        return
+
+    # D3：res_data 可能是 list / 字符串 / None（HTML 错误页被强行解析时也可能如此）
+    if not isinstance(res_data, dict):
+        _fail_token(status_code, f"响应结构异常 | type={type(res_data).__name__}")
         return
 
     if 'access_token' in res_data:
+        access_token = res_data['access_token']
+        if not access_token:
+            _fail_token(status_code, "access_token 为空")
+            return
+        # D2 未改：expires_in 的类型保护与有效期下限留待 D2，
+        # 这里保持原先的 int(expires_in) - 360 逐字不动。
         expires_in = res_data.get('expires_in', 600)
         TOKENS.deadline = datetime.datetime.now() + datetime.timedelta(seconds=(int(expires_in) - 360))
-        TOKENS.access_token = res_data['access_token']
-    elif 'error' in res_data:
-        TOKENS.access_token = None
-        my_log.error(str(res_data))
+        TOKENS.access_token = access_token
+        return
+
+    if 'error' in res_data:
+        _fail_token(status_code, f"上游返回错误 | error={res_data.get('error')} | "
+                                f"error_description={res_data.get('error_description', '')}")
+        return
+
+    # D3：既无 access_token 也无 error（如网关返回的业务错误 JSON）。
+    # 改动前这里什么都不做，旧的、可能已过期的 access_token 会被继续沿用。
+    _fail_token(status_code, "响应缺少 access_token 且无 error 字段")
