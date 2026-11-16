@@ -1,5 +1,6 @@
 import datetime
 import re
+from contextlib import asynccontextmanager
 from typing import List, Optional
 
 import uvicorn
@@ -19,10 +20,26 @@ from src import call_stat
 from src.exceptions import telnumError, productIdError, register_errors_handlers
 from src.log_util import my_log
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """启动时从库恢复当天调用量基数，关闭时补齐不足阈值的尾部增量。
+
+    uvicorn 的 SIGTERM 退出路径不经过 atexit，由 yield 之后显式 flush；
+    src.call_stat 仍注册 atexit 作为非 ASGI 运行方式的兜底，两处幂等。
+    startup 里不做任何定时任务，只做一次恢复。
+    """
+    base = call_stat.startup()
+    my_log.info(f"调用量统计已恢复：当天已累计 {base} 次（重启后继续计数）")
+    try:
+        yield
+    finally:
+        call_stat.flush()
+
+
 # 数据更新（SFTP 拉取 → SQLite 入库）由 tasks/ 下的 3 个独立进程负责；
 # 维表更新由 excel2consts.dim_watcher 独立进程负责；
 # 本进程对业务库与维表一律只读 SQLite，唯一写入是调用量统计（log/call_sum.db）。
-app = FastAPI()
+app = FastAPI(lifespan=lifespan)
 register_errors_handlers(app)
 global_config = ImmutableYamlConfig()
 
@@ -38,16 +55,6 @@ async def count_call_middleware(request, call_next):
     finally:
         call_stat.record_call()
     return response
-
-
-@app.on_event("shutdown")
-def flush_call_stat_on_shutdown():
-    """uvicorn 正常关闭时补齐不足阈值的调用量尾部。
-
-    uvicorn 的 SIGTERM 退出路径不经过 atexit，必须在这里显式 flush；
-    src.call_stat 仍注册 atexit 作为其它运行方式的兜底，两处都幂等。
-    """
-    call_stat.flush()
 
 
 class ProductIds(BaseModel):
@@ -162,7 +169,7 @@ def _is_valid_month(value: str) -> bool:
 async def call_stat_query(date: Optional[str] = None, month: Optional[str] = None):
     """查询调用量：date=YYYY-MM-DD 返回单日；month=YYYY-MM 返回该月每天。
 
-    两个参数必须且只能提供一个。返回值已叠加内存中尚未落库的增量。
+    两个参数必须且只能提供一个。返回完整累计调用量（含尚未落库的部分）。
     """
     if (date is None) == (month is None):
         return {"res_code": 1,

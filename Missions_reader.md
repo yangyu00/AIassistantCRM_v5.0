@@ -1,8 +1,9 @@
 # 在线业务读取与重组说明（FastAPI）
 
 > 写入侧（SFTP 拉取 3 个进程、维表写入 1 个进程）见 `Missions_writer.md`。
-> 在线 API（`python main.py`）不含 startup 定时任务；业务库与维表一律只读 SQLite，
-> 唯一的写入是调用量统计（本地 `log/call_sum.db`，见「调用量统计」）。
+> 在线 API（`python main.py`）无任何定时任务，只有一个 `lifespan` 生命周期钩子
+> （启动时恢复调用量基数、关闭时落库，见「调用量统计」）；
+> 业务库与维表一律只读 SQLite，唯一写入是调用量统计（本地 `log/call_sum.db`）。
 > 三个任务的业务命名与配置键前缀见 `Missions_writer.md` 的「任务命名」。
 
 ## 架构与数据流向
@@ -256,23 +257,58 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 导出也不再走脚本：`scripts/export_call_csv.py` 已删除，改由下面的 GET 接口直接查。
 `scripts/show_top_10.py` 是查业务库的独立调试脚本，与本模块无关，保留。
 
-### 缓冲写入
+### 缓冲写入与进程生命周期
 
-`main.py` 的 HTTP middleware 每次请求（无论成功失败）调用 `call_stat.record_call()`，
-但不再每次都开连接写一次库：
+`main.py` 用 FastAPI `lifespan` 管理统计模块的生命周期（`app = FastAPI(lifespan=lifespan)`，
+不使用已弃用的 `@app.on_event`）：
 
-1. 未落库的增量按日期暂存在进程内全局字典 `_PENDING[YYYY-MM-DD]`，用 `RLock` 保护。
-2. 某日期累计到 `flush_threshold` 次才把这段增量一次性
+| 阶段 | 动作 |
+|---|---|
+| startup（`yield` 之前） | `call_stat.startup()`：确保 `call_sum` 表存在，从库读回当天已落库值作为基数；日志打印「调用量统计已恢复：当天已累计 N 次」。只做一次恢复，不注册任何定时任务 |
+| 运行期 | middleware 每次请求调 `call_stat.record_call()`，纯内存 +1 |
+| shutdown（`yield` 之后） | `call_stat.flush()` 补齐不足阈值的尾部增量 |
+
+`uvicorn` 的 SIGTERM 退出路径不经过 `atexit`，所以必须由 lifespan 的 `finally`
+显式 flush；`src.call_stat` 仍注册 `atexit` 作为非 ASGI 运行方式的兜底，两处幂等。
+`app.router.on_startup` / `on_shutdown` 均为空，钩子挂在 `router.lifespan_context`。
+
+进程内两个全局字典（`RLock` 保护）：
+
+| 变量 | 含义 |
+|---|---|
+| `_DAY_TOTAL[YYYY-MM-DD]` | 当天**完整累计调用量** = 库里已落库 + 本进程所有请求（无论是否已落库）。请求路径只改这个变量，**不读库** |
+| `_PENDING[YYYY-MM-DD]` | 其中「尚未落库」的增量 |
+
+流程：
+
+1. 每次请求 `_DAY_TOTAL[today] += 1`、`_PENDING[today] += 1`；返回值直接来自
+   `_DAY_TOTAL`，热路径完全不碰 SQLite（除非恰好触发 flush）。
+2. 某日期 `_PENDING` 累计到 `flush_threshold` 才把这段增量一次性
    `UPDATE call_sum SET call_count = call_count + ?`（当天首次则 `INSERT`），随后清零。
+   `_DAY_TOTAL` 不受落库影响——它记的是完整累计，落库与否都不变。
 3. **跨天残留**：旧日期不足阈值就翻天时，后续请求会顺带重试落库，
    不会把今天的调用记到昨天，也不会丢掉昨天的尾部。
-4. **进程退出**：`main.py` 的 FastAPI `shutdown` 钩子调用 `flush()`——uvicorn 的
-   SIGTERM 退出路径不经过 `atexit`，必须显式补齐；`src.call_stat` 仍注册 `atexit`
-   作为其它运行方式的兜底，两处都幂等。
-5. **写库失败**：保留 `_PENDING` 增量并打印告警，下一轮重试，异常不抛给正在处理的请求。
+4. **写库失败**：保留 `_PENDING` 增量并打印告警，下一轮重试；`_DAY_TOTAL` 仍准确，
+   异常不抛给正在处理的请求。库不可读时 `_read_day` 降级为 0，不阻断服务启动。
 
-代价：进程被强杀或崩溃时最多丢失「不足阈值」的那一段（默认 99 次以内），
-正常关闭不丢。阈值调小提高精度、调大减少写库次数。
+### 重启后继续计数
+
+**不会重新计数，也不会从 0 开始。** 三层保证：
+
+1. 表以 `date` 为主键，落库是 `UPDATE call_sum SET call_count = call_count + delta`
+   的**累加**，不是覆盖；库里存的一直是该日期的累计总量。
+2. `startup()` 从库读回当天已落库值作为 `_DAY_TOTAL` 基数；即使 lifespan 没执行
+   （例如 TestClient 不进上下文、直接 import 后手工调用），首次 `record_call()`
+   也会由 `_ensure_day()` 懒加载恢复，行为一致。
+3. `get_call_count(今天)` 直接返回 `_DAY_TOTAL`；查历史日期（重启后不在内存）走
+   「读库 + `_PENDING`」。
+
+例：库里当天已落库 100 次 → 重启后 startup 恢复基数 100 → 第 1 次请求后
+`GET /api/callStat?date=今天` 返回 101，不是 1。
+
+唯一缺口是**强杀/崩溃**：不足阈值、还没来得及落库的那一段会丢（默认 99 次以内），
+重启后从上一次成功落库的值继续，数字仍连续，只是少算这一段；**不会归零**。
+正常关闭（SIGTERM / lifespan shutdown）不丢。阈值调小可缩小该窗口。
 
 ### 配置（`config.yaml`）
 
@@ -291,7 +327,8 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 | `date=2026-11-16` | `YYYY-MM-DD` | `{"date": "2026-11-16", "callCount": 123}` |
 | `month=2026-11` | `YYYY-MM` | `{"month": "2026-11", "days": [{"date": "2026-11-01", "callCount": 0}, ...]}` |
 
-- 单日与月查询都叠加 `_PENDING`，**当天尚未落库的部分也算在内**。
+- 单日与月查询都读到完整累计，**当天尚未落库的部分也算在内**：本进程有活动的
+  日期直接用 `_DAY_TOTAL`，历史日期用「库 + `_PENDING`」。
 - 月查询按 `calendar.monthrange` 补齐整月每一天，无记录的日期补 `0`，前端可直接画折线。
 - 该 GET 请求自身也经过 middleware 计数（保持「每次访问都计数」的原语义），
   但计数发生在 middleware 的 `finally` 阶段，所以**本次返回的 `callCount` 不含本次请求**；
@@ -309,7 +346,8 @@ curl "http://host:8989/api/callStat?month=2026-11"
 |---|---|---|
 | 维表 | 库/表/列不存在、`registry.json` 异常、查询失败 | `dim_reader` 返回 `{}`，业务按「无维表」降级 |
 | 业务库 | 库文件不存在、`product_id` 未映射、未注册任务名、查询异常 | `services/data_query.py` 返回 `{}`，对应 spec 子类走空记录分支 |
-| 调用量库 | `log/call_sum.db` 写入失败 | 保留内存增量并告警，下轮重试；不影响请求，业务照常返回 |
+| 调用量库 | `log/call_sum.db` 写入失败 | 保留 `_PENDING` 增量并告警、下轮重试；`_DAY_TOTAL` 仍准确，不影响请求 |
+| 调用量库 | 启动时读库失败 | 只告警、基数按 0 恢复，服务照常启动；库恢复后下次重启从真实值继续 |
 | 写入侧 | 注册 xlsx 缺失 | `dim_watcher` 告警跳过，库保留上次成功版本 |
 
 **维表侧出任何问题都不会让 API 500**：产品名为 `None`、`queried_label_ids` 为 `[]`、
@@ -331,13 +369,18 @@ curl "http://host:8989/api/callStat?month=2026-11"
 - `QUERY_MODES` 恰为三种；`_resolve()` 对三个任务分别解析出
   `{库名}.db` + `data_{库名}`、`F09591.db` + `data_F09591_N`、`F09609.db` + `data_F09609_N`。
   把 `mode` 改成多库多表等非法值，import `tasks.config` 应抛 `ValueError`。
+- `app.router.on_startup` / `on_shutdown` 均为 0，`router.lifespan_context` 已设置
+  （确认走 lifespan 而非 `on_event`）；startup 日志有「调用量统计已恢复」。
 - 把 `call_stat.flush_threshold` 设为 3：连续 3 次请求后才写一次 `call_sum.db`；
   第 1、2 次时 `GET /api/callStat?date=今天` 的 `callCount` 已含内存增量；
   `call_stat.flush()` 后 `_PENDING` 为空；GET 不传/传两个参数、`date=2026-1-6`、
   `month=2026-13` 均返回 `res_code: 1`。
+- **重启继续计数**：库里当天先落库到 N，停掉进程再用新进程启动同一目录，
+  首次 `GET ...?date=今天` 应返回 N（不是 0），再发一次请求返回 N+1，
+  shutdown 后库里为 N+1。
 - 起 uvicorn 打几个不足阈值的请求后 `kill -TERM`：日志出现
   `Application shutdown complete.`，且 `call_sum.db` 里含这几条尾部增量
-  （验证 shutdown 钩子，而非只依赖 `atexit`）。
+  （验证 lifespan shutdown，而非只依赖 `atexit`）。
 
 ## 未实现
 

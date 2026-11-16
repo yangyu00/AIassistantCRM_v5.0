@@ -259,7 +259,7 @@ op_time 直接取自文件第 1 列，代码不做日期改写。当前样例 `F
 | 维表写入 ×1 | `python -m excel2consts.dim_watcher` | xlsx → `dimensions.db` |
 | 在线 API ×1 | `python main.py` | 只读业务库与维表；另按阈值写调用量到 `log/call_sum.db`（见 `Missions_reader.md`） |
 
-**部署时 5 个进程都要起**。`main.py` 不含任何 startup 定时任务，除调用量统计外不写业务库/维表；
+**部署时 5 个进程都要起**。`main.py` 不含任何定时任务，只有一个 `lifespan` 生命周期钩子（见 `Missions_reader.md`），除调用量统计外不写业务库/维表；
 `dim_watcher` 不依赖 `.env` / `tasks/config.py` / 项目总 `config.yaml`，自包含于 `excel2consts/`。
 
 ## 文件清单（写入侧）
