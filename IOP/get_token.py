@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
-import requests
+import asyncio
+import aiohttp
 from config import ImmutableYamlConfig
 from src.log_util import my_log
 import datetime
@@ -17,6 +18,23 @@ TOKENS = Tokens()
 # 配置在 import 时读一次，避免每次 token 刷新都重新打开并解析 config.yaml。
 global_config = ImmutableYamlConfig()
 
+# C1：config.yaml 缺少 IOP.timeout 段时的兜底值（秒）。
+_DEFAULT_TIMEOUT = {'total': 3.0, 'connect': 1.0, 'sock_read': 2.0}
+
+
+def client_timeout() -> aiohttp.ClientTimeout:
+    """IOP 两个端点共用的 HTTP 超时。
+
+    从模块级 global_config 读取 IOP.timeout，缺键用 _DEFAULT_TIMEOUT 兜底，
+    部署沿用旧 config.yaml 也不会启动失败。配置只读，本函数无磁盘 I/O。
+    """
+    cfg = global_config['IOP'].get('timeout', {}) or {}
+    return aiohttp.ClientTimeout(
+        total=float(cfg.get('total', _DEFAULT_TIMEOUT['total'])),
+        connect=float(cfg.get('connect', _DEFAULT_TIMEOUT['connect'])),
+        sock_read=float(cfg.get('sock_read', _DEFAULT_TIMEOUT['sock_read'])),
+    )
+
 
 async def token2global():
     # 上游仅提供 http 明文 token 端点；client_id / client_secret 以表单串提交，
@@ -24,10 +42,25 @@ async def token2global():
     token_url = 'http://{host}:{port}/openapi/restOauth2Server/access_token'.format(
         host=global_config['IOP']['TOKEN']['host'], port=global_config['IOP']['TOKEN']['port'])
 
-    response = requests.post(token_url, data=f"grant_type=client_credentials"
-                                             f"&client_id={global_config['IOP']['TOKEN']['id']}"
-                                             f"&client_secret={global_config['IOP']['TOKEN']['secret']}")
-    res_data = response.json()
+    body = (f"grant_type=client_credentials"
+            f"&client_id={global_config['IOP']['TOKEN']['id']}"
+            f"&client_secret={global_config['IOP']['TOKEN']['secret']}")
+
+    # A1：改用 aiohttp 异步请求，不再用同步 requests.post 阻塞整个事件循环。
+    # skip_auto_headers：requests 对字符串 data 不加 Content-Type，aiohttp 默认会
+    # 补 text/plain；显式跳过以保持上游收到的请求头与原来完全一致（E3）。
+    # C1：超时/网络异常就地收口，不穿透到上层；清空 token 让 get_custinfo 的
+    # 既有重试继续，最终由 B1 统一降级为 {}。
+    try:
+        async with aiohttp.ClientSession(
+                timeout=client_timeout(),
+                skip_auto_headers=("Content-Type",)) as client:
+            async with client.post(token_url, data=body) as response:
+                res_data = await response.json(content_type=None)
+    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as e:
+        TOKENS.access_token = None
+        my_log.error(f"IOP token 请求失败 | error={type(e).__name__}: {e}")
+        return
 
     if 'access_token' in res_data:
         expires_in = res_data.get('expires_in', 600)

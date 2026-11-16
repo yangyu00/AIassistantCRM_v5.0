@@ -27,6 +27,13 @@ IOP:
     version: "1.0.1"
     type: "M"
 
+  # A1/C1：token 与标签查询两个端点共用的 HTTP 超时（秒）
+  # 缺该段时代码用默认值 total=3 / connect=1 / sock_read=2
+  timeout:
+    total: 3
+    connect: 1
+    sock_read: 2
+
 sftp:
   host: "134.80.199.252"
   username: "wangsi"

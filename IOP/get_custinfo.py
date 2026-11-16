@@ -1,7 +1,8 @@
 from config import ImmutableYamlConfig
 from src.log_util import my_log
-from IOP.get_token import TOKENS, token2global
+from IOP.get_token import TOKENS, token2global, client_timeout
 import aiohttp
+import asyncio
 import datetime
 import time
 
@@ -44,15 +45,24 @@ async def get_custom_info_in_global(tel):
     }
 
     start = time.perf_counter()
-    async with aiohttp.ClientSession() as client:
-        async with client.post(url, json=post_data, headers=headers) as response:
-            status_code = response.status
-            try:
-                # 上游返回的 Content-Type 不规范，沿用原有约定不做类型校验
-                res_data = await response.json(content_type=None)
-            except Exception as e:
-                my_log.error(f"IOP 标签查询响应解析失败 | status={status_code} | error={e}")
-                return {}
+    # C1：标签查询同样配置 ClientTimeout；连接/读超时与网络异常就地收口，
+    # 不再拖到默认超时或让异常穿透到 main.py（那样 IOP 侧会没有日志）。
+    try:
+        async with aiohttp.ClientSession(timeout=client_timeout()) as client:
+            async with client.post(url, json=post_data, headers=headers) as response:
+                status_code = response.status
+                try:
+                    # 上游返回的 Content-Type 不规范，沿用原有约定不做类型校验
+                    res_data = await response.json(content_type=None)
+                except Exception as e:
+                    my_log.error(f"IOP 标签查询响应解析失败 | status={status_code} | error={e}")
+                    return {}
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        cost_ms = (time.perf_counter() - start) * 1000
+        my_log.error(
+            f"IOP 标签查询网络失败 | error={type(e).__name__}: {e} | cost={cost_ms:.0f}ms"
+        )
+        return {}
 
     cost_ms = (time.perf_counter() - start) * 1000
 

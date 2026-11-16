@@ -55,9 +55,10 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 标签项），使"token 拿不到"这个最该降级的场景反而返回 500。空 dict 则让下游
 按「无标签」正常产出话术。
 
-失败分支包括：token 不可用、响应 JSON 解析失败、非 200、`res_code != 0`、
-响应非 dict、缺少或非列表的 `BUSIINFO`。缺 `ITEMCODE` / 非 dict 的单条记录跳过，
-不拖累整批。`res_code` 按 `str(...)` 比较，兼容上游返回字符串 `"0"` 或数字 `0`。
+失败分支包括：token 不可用、token 请求超时/网络异常、标签查询连接或读超时、
+响应 JSON 解析失败、非 200、`res_code != 0`、响应非 dict、缺少或非列表的
+`BUSIINFO`。缺 `ITEMCODE` / 非 dict 的单条记录跳过，不拖累整批。
+`res_code` 按 `str(...)` 比较，兼容上游返回字符串 `"0"` 或数字 `0`。
 
 ### 日志字段
 
@@ -69,10 +70,12 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 | `res_code` / `res_desc` | 仅失败分支记录，取上游响应 |
 | `busi_info` / `labels` | 上游条数 / 成功入库的标签条数 |
 | `cost` | 单次查询耗时（毫秒） |
-| `error` | 仅响应解析失败时记录异常信息 |
+| `error` | 响应解析失败、连接/读超时、token 请求失败时记录 `异常类型: 信息` |
 
 日志**不含手机号、不含 access_token**。响应解析仍用 `json(content_type=None)`——
-上游返回的 Content-Type 不规范，不做类型校验。
+上游返回的 Content-Type 不规范，不做类型校验。新增两类网络失败日志：
+`IOP token 请求失败` 与 `IOP 标签查询网络失败`，都带 `error` 与 `cost`，
+保证超时时 IOP 侧仍留痕（否则异常会穿透到 `main.py` 的 `except`，只剩一条笼统日志）。
 
 ### 配置读取
 
@@ -80,7 +83,41 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 `IOP/get_token.py` 同样处理。`ImmutableYamlConfig` 是单例且返回只读配置，
 但每次调用其构造函数都会重新 `open` + `yaml.load` 并重建字典，原先每请求至少
 一次磁盘 I/O + yaml 解析（token 刷新时再多一次）。现在请求路径为 0 次。
-运行期修改 `config.yaml` 不会热生效，需重启进程。
+运行期修改 `config.yaml` 不会热生效，需重启进程。`client_timeout()` 复用同一份
+模块级只读配置，构造 `aiohttp.ClientTimeout`，无磁盘 I/O。
+
+### 异步与超时（A1 / C1）
+
+原先 `IOP/get_token.py::token2global()` 虽是 `async def`，内部却用同步
+`requests.post`：一旦触发 token 刷新，**整个事件循环被卡住**，所有并发请求一起等。
+现改为 `aiohttp` 异步请求，两个 HTTP 端点（token / 标签查询）都配 `ClientTimeout`：
+
+| 位置 | 改动 |
+|---|---|
+| `get_token.py` | `requests.post` → `aiohttp.ClientSession(...).post(...)`；服务链路不再混用 `requests` / `aiohttp` |
+| `get_token.py` / `get_custinfo.py` | `ClientSession(timeout=client_timeout())`，connect / sock_read / total 三层超时 |
+| 两处 | 超时与网络异常（`aiohttp.ClientError` / `asyncio.TimeoutError`）就地捕获、记日志、降级；token 侧还清空 `access_token`，让既有重试继续 |
+
+配置在 `config.yaml` 的 `IOP.timeout`（秒），两个端点共用一组：
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `total` | `3` | 单次请求总超时 |
+| `connect` | `1` | 建连超时 |
+| `sock_read` | `2` | 读响应超时 |
+
+`client_timeout()` 对缺键用同名默认值兜底，部署沿用旧 `config.yaml` 也不会启动失败。
+`total` 调大放宽慢上游、调小更快降级；**注意与重试的乘积**：`get_custinfo.py` 的
+token 刷新仍是「循环外 1 次 + 循环内最多 3 次、无退避」（D1 未改），
+因此 token 端点持续无响应时，单次业务请求会串行等 4 次超时。每次由
+`sock_read` 与 `total` 中**先到者**触发：默认 `sock_read=2` 先到，实测约 8 秒，
+上界 `4 × total = 12` 秒。要压低这个窗口，调小 `sock_read` / `total`，
+或后续单独处理 D1 的重试次数与退避。
+
+**未越界**：A2 单飞锁（`TOKENS` 仍无并发保护）、C2 共享 `ClientSession`
+（两次调用仍各自新建 session）、D1 重试次数/退避、D3 token 响应状态码校验、
+F2 `IOPClient` 类，均未改动。`test_local/test_iop.py` 仍用 `requests`，
+它是独立调试脚本、不在服务链路，保留原样。
 
 ### 上游既定约定（不可改动）
 
@@ -91,6 +128,12 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
   凭据存放于 `config.yaml`。
 - 请求头必须声明 `Content-Type: application/json; charset=gbk` 并显式携带
   `Accept-Encoding: gzip, deflate`，即使与实际序列化编码不一致也照发。
+
+本轮把 token 请求换成 `aiohttp` 后，上述各项逐字保留。额外一处等价处理：
+`requests` 对字符串 `data=` 不加 `Content-Type`，而 `aiohttp` 默认会补
+`text/plain; charset=utf-8`，所以 token 的 `ClientSession` 用了
+`skip_auto_headers=("Content-Type",)`，保证上游收到的请求头与原来完全一致。
+这不是新约定，是把库切换带来的副作用消掉。
 
 ## 业务库读取（`services/data_query.py`）
 
@@ -399,6 +442,7 @@ curl "http://host:8989/api/callStat?month=2026-11"
 | 业务库 | 库文件不存在、`product_id` 未映射、未注册任务名、查询异常 | `services/data_query.py` 返回 `{}`，对应 spec 子类走空记录分支 |
 | 调用量库 | `log/call_sum.db` 写入失败 | 保留 `_PENDING` 增量并告警、下轮重试；`_DAY_TOTAL` 仍准确，不影响请求 |
 | 调用量库 | 启动时读库失败 | 只告警、基数按 0 恢复，服务照常启动；库恢复后下次重启从真实值继续 |
+| IOP | token / 标签查询超时、连接失败 | 就地记 ERROR、token 侧清空 `access_token`、最终降级 `{}`；不阻塞其它并发请求 |
 | 写入侧 | 注册 xlsx 缺失 | `dim_watcher` 告警跳过，库保留上次成功版本 |
 
 **维表侧出任何问题都不会让 API 500**：产品名为 `None`、`queried_label_ids` 为 `[]`、
@@ -432,6 +476,18 @@ curl "http://host:8989/api/callStat?month=2026-11"
 - 起 uvicorn 打几个不足阈值的请求后 `kill -TERM`：日志出现
   `Application shutdown complete.`，且 `call_sum.db` 里含这几条尾部增量
   （验证 lifespan shutdown，而非只依赖 `atexit`）。
+- `client_timeout()` 读出的 `total` / `connect` / `sock_read` 与 `config.yaml`
+  的 `IOP.timeout` 一致；删掉该段后回落到 3 / 1 / 2，不抛异常。
+- **A1 不再阻塞事件循环**：把 IOP 请求打桩成 50ms 延迟，10 个并发
+  `token2global()` 总耗时应接近 50ms（改动前用同步 `requests.post` 会串行成 ~500ms）。
+- **C1 超时收口**：让 token / 标签查询抛 `asyncio.TimeoutError`，应看到
+  `IOP token 请求失败` 或 `IOP 标签查询网络失败` 的 ERROR 日志、返回 `{}`，
+  且 API 不 500；token 侧 `access_token` 被清空。
+  把 `config.yaml` 的 IOP host/port 临时指向一个「accept 后不回数据」的本地端口
+  可实测：默认 4 次 `sock_read=2` 触发约 8 秒，5 条 ERROR 日志，API 仍 200。
+- 两次 `ClientSession` 构造都带 `timeout`；token 的 session 额外带
+  `skip_auto_headers=("Content-Type",)`，其 `data=` 请求头与改动前 `requests` 一致
+  （不带 `Content-Type`）。
 
 ## 未实现
 
