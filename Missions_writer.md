@@ -1,6 +1,7 @@
 # 定时数据更新任务说明（SFTP AVL 拉取 → SQLite 入库）
 
-> 3 个任务各自独立进程运行，代码在 `tasks/`；在线业务（FastAPI）只读 SQLite。
+> 3 个任务各自独立进程运行，代码在 `tasks/`；在线业务（FastAPI）对业务库与维表只读 SQLite
+> （唯一例外是调用量统计，见 `Missions_reader.md`）。
 > 原随 `main.py` 启动的拉取实现与三个分散的 `sftp_workdir_*/data_query.py` 均已删除；
 > 在线查询统一由 `services/data_query.py` 按 `tasks/config.py` 的配置派发。
 
@@ -256,9 +257,9 @@ op_time 直接取自文件第 1 列，代码不做日期改写。当前样例 `F
 |---|---|---|
 | SFTP 拉取 ×3 | `python -m tasks.task_xxx` | AVL → `tasks/sqlite_db/` |
 | 维表写入 ×1 | `python -m excel2consts.dim_watcher` | xlsx → `dimensions.db` |
-| 在线 API ×1 | `python main.py` | 只读所有 SQLite，无写库逻辑 |
+| 在线 API ×1 | `python main.py` | 只读业务库与维表；另按阈值写调用量到 `log/call_sum.db`（见 `Missions_reader.md`） |
 
-**部署时 5 个进程都要起**。`main.py` 不含任何 startup 定时任务，也不写任何库；
+**部署时 5 个进程都要起**。`main.py` 不含任何 startup 定时任务，除调用量统计外不写业务库/维表；
 `dim_watcher` 不依赖 `.env` / `tasks/config.py` / 项目总 `config.yaml`，自包含于 `excel2consts/`。
 
 ## 文件清单（写入侧）

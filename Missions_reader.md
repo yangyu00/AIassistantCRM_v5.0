@@ -1,8 +1,8 @@
 # 在线业务读取与重组说明（FastAPI）
 
 > 写入侧（SFTP 拉取 3 个进程、维表写入 1 个进程）见 `Missions_writer.md`。
-> 在线 API（`python main.py`）不写任何库、不含 startup 定时任务，
-> 所有业务数据与维表一律只读 SQLite。
+> 在线 API（`python main.py`）不含 startup 定时任务；业务库与维表一律只读 SQLite，
+> 唯一的写入是调用量统计（本地 `log/call_sum.db`，见「调用量统计」）。
 > 三个任务的业务命名与配置键前缀见 `Missions_writer.md` 的「任务命名」。
 
 ## 架构与数据流向
@@ -16,7 +16,7 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 | 进程 | 数量 | 职责 |
 |---|---|---|
 | 写入侧进程 | 4 | 3 个 SFTP 拉取 + 1 个 `dim_watcher`，见 `Missions_writer.md` |
-| 在线 API | 1 | 只读两类 SQLite 库，按路由选业务对象并拼装话术 |
+| 在线 API | 1 | 只读业务库与维表、按路由选业务对象并拼装话术；另在内存累计调用量并按阈值写入 `log/call_sum.db` |
 
 **部署时 5 个进程都要起**。库未就绪时 API 按「无业务记录 / 无维表」降级，不会 500。
 维表更新后无需重启在线进程，下一次请求即读到新值。
@@ -247,12 +247,69 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 `ProductInfoByExcel` 在此基础上追加卖点、切入、挽留三段，经 `__strong_text()`
 把四个小节标题包成 `<strong>` 后作为 `output_script`。
 
+## 调用量统计（`src/call_stat.py` + GET `/api/callStat`）
+
+### 存储
+
+`log/call_sum.db`，表 `call_sum(date TEXT PRIMARY KEY, call_count INTEGER)`，**一天一条**。
+一年不到 400 行，不做删除：`scripts/delete_before_date.py` 已删除。
+导出也不再走脚本：`scripts/export_call_csv.py` 已删除，改由下面的 GET 接口直接查。
+`scripts/show_top_10.py` 是查业务库的独立调试脚本，与本模块无关，保留。
+
+### 缓冲写入
+
+`main.py` 的 HTTP middleware 每次请求（无论成功失败）调用 `call_stat.record_call()`，
+但不再每次都开连接写一次库：
+
+1. 未落库的增量按日期暂存在进程内全局字典 `_PENDING[YYYY-MM-DD]`，用 `RLock` 保护。
+2. 某日期累计到 `flush_threshold` 次才把这段增量一次性
+   `UPDATE call_sum SET call_count = call_count + ?`（当天首次则 `INSERT`），随后清零。
+3. **跨天残留**：旧日期不足阈值就翻天时，后续请求会顺带重试落库，
+   不会把今天的调用记到昨天，也不会丢掉昨天的尾部。
+4. **进程退出**：`main.py` 的 FastAPI `shutdown` 钩子调用 `flush()`——uvicorn 的
+   SIGTERM 退出路径不经过 `atexit`，必须显式补齐；`src.call_stat` 仍注册 `atexit`
+   作为其它运行方式的兜底，两处都幂等。
+5. **写库失败**：保留 `_PENDING` 增量并打印告警，下一轮重试，异常不抛给正在处理的请求。
+
+代价：进程被强杀或崩溃时最多丢失「不足阈值」的那一段（默认 99 次以内），
+正常关闭不丢。阈值调小提高精度、调大减少写库次数。
+
+### 配置（`config.yaml`）
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `call_stat.flush_threshold` | `100` | 累计多少次调用写一次库，必须为正整数；启动时也可 `call_stat.configure(flush_threshold=N)` 覆盖 |
+| `call_stat.url` | `/api/callStat` | GET 查询路径，与 `marketAssistant.url` 同一套配置风格 |
+
+### GET 查询
+
+路径取自 `config.yaml` 的 `call_stat.url`。两个 query 参数**必须且只能提供一个**；
+校验失败返回 `{"res_code": 1, "res_desc": "...", "result": ""}`（HTTP 200，与项目其它接口一致）。
+
+| 参数 | 格式 | 返回 `result` |
+|---|---|---|
+| `date=2026-11-16` | `YYYY-MM-DD` | `{"date": "2026-11-16", "callCount": 123}` |
+| `month=2026-11` | `YYYY-MM` | `{"month": "2026-11", "days": [{"date": "2026-11-01", "callCount": 0}, ...]}` |
+
+- 单日与月查询都叠加 `_PENDING`，**当天尚未落库的部分也算在内**。
+- 月查询按 `calendar.monthrange` 补齐整月每一天，无记录的日期补 `0`，前端可直接画折线。
+- 该 GET 请求自身也经过 middleware 计数（保持「每次访问都计数」的原语义），
+  但计数发生在 middleware 的 `finally` 阶段，所以**本次返回的 `callCount` 不含本次请求**；
+  连续两次查询时，第二次会包含第一次。
+- 日期/月份用正则 + `strptime` 严格校验（`2026-1-6`、`2026-13` 会被拒绝）。
+
+```bash
+curl "http://host:8989/api/callStat?date=2026-11-16"
+curl "http://host:8989/api/callStat?month=2026-11"
+```
+
 ## 降级与容错汇总
 
 | 侧 | 触发 | 行为 |
 |---|---|---|
 | 维表 | 库/表/列不存在、`registry.json` 异常、查询失败 | `dim_reader` 返回 `{}`，业务按「无维表」降级 |
 | 业务库 | 库文件不存在、`product_id` 未映射、未注册任务名、查询异常 | `services/data_query.py` 返回 `{}`，对应 spec 子类走空记录分支 |
+| 调用量库 | `log/call_sum.db` 写入失败 | 保留内存增量并告警，下轮重试；不影响请求，业务照常返回 |
 | 写入侧 | 注册 xlsx 缺失 | `dim_watcher` 告警跳过，库保留上次成功版本 |
 
 **维表侧出任何问题都不会让 API 500**：产品名为 `None`、`queried_label_ids` 为 `[]`、
@@ -274,6 +331,13 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 - `QUERY_MODES` 恰为三种；`_resolve()` 对三个任务分别解析出
   `{库名}.db` + `data_{库名}`、`F09591.db` + `data_F09591_N`、`F09609.db` + `data_F09609_N`。
   把 `mode` 改成多库多表等非法值，import `tasks.config` 应抛 `ValueError`。
+- 把 `call_stat.flush_threshold` 设为 3：连续 3 次请求后才写一次 `call_sum.db`；
+  第 1、2 次时 `GET /api/callStat?date=今天` 的 `callCount` 已含内存增量；
+  `call_stat.flush()` 后 `_PENDING` 为空；GET 不传/传两个参数、`date=2026-1-6`、
+  `month=2026-13` 均返回 `res_code: 1`。
+- 起 uvicorn 打几个不足阈值的请求后 `kill -TERM`：日志出现
+  `Application shutdown complete.`，且 `call_sum.db` 里含这几条尾部增量
+  （验证 shutdown 钩子，而非只依赖 `atexit`）。
 
 ## 未实现
 

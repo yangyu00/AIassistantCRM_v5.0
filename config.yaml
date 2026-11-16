@@ -10,6 +10,11 @@ marketAssistant:
   users:
     - "CRM"
 
+call_stat:
+  # 当天调用量先在内存累计，达到该次数才写一次 log/call_sum.db
+  flush_threshold: 100
+  url: "/api/callStat"
+
 IOP:
   TOKEN:
     host: "134.80.220.55"

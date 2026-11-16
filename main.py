@@ -1,4 +1,6 @@
-from typing import List
+import datetime
+import re
+from typing import List, Optional
 
 import uvicorn
 from fastapi import FastAPI
@@ -13,13 +15,13 @@ from services.rewrite_by_spec_f09554.rewrite import ProductInfoRewrite as Produc
 from services.rewrite_by_spec_f09591.rewrite import ProductInfoRewrite as ProductInfoBySpec9591
 from services.rewrite_by_spec_f09609.rewrite import ProductInfoRewrite as ProductInfoBySpec9609
 from services import data_query
-from src.call_stat import record_call
+from src import call_stat
 from src.exceptions import telnumError, productIdError, register_errors_handlers
 from src.log_util import my_log
 
 # 数据更新（SFTP 拉取 → SQLite 入库）由 tasks/ 下的 3 个独立进程负责；
 # 维表更新由 excel2consts.dim_watcher 独立进程负责；
-# 本进程只处理在线查询，所有维表与业务数据一律只读 SQLite。
+# 本进程对业务库与维表一律只读 SQLite，唯一写入是调用量统计（log/call_sum.db）。
 app = FastAPI()
 register_errors_handlers(app)
 global_config = ImmutableYamlConfig()
@@ -27,12 +29,25 @@ global_config = ImmutableYamlConfig()
 
 @app.middleware("http")
 async def count_call_middleware(request, call_next):
-    """每次访问服务，当日调用量 +1（无论请求成功或失败都计数）。"""
+    """每次访问服务，当日调用量在内存 +1（无论请求成功或失败都计数）。
+
+    累计到 call_stat.flush_threshold 次才由 src.call_stat 写一次 SQLite。
+    """
     try:
         response = await call_next(request)
     finally:
-        record_call()
+        call_stat.record_call()
     return response
+
+
+@app.on_event("shutdown")
+def flush_call_stat_on_shutdown():
+    """uvicorn 正常关闭时补齐不足阈值的调用量尾部。
+
+    uvicorn 的 SIGTERM 退出路径不经过 atexit，必须在这里显式 flush；
+    src.call_stat 仍注册 atexit 作为其它运行方式的兜底，两处都幂等。
+    """
+    call_stat.flush()
 
 
 class ProductIds(BaseModel):
@@ -125,6 +140,51 @@ async def marketAssistant(args: Args):
 
     result = {"allScripts": allScripts}
     return {"res_code": 0, "res_desc": "", "result": result}
+
+
+def _is_valid_date(value: str) -> bool:
+    if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', value):
+        return False
+    try:
+        datetime.datetime.strptime(value, '%Y-%m-%d')
+        return True
+    except ValueError:
+        return False
+
+
+def _is_valid_month(value: str) -> bool:
+    if not re.fullmatch(r'\d{4}-\d{2}', value):
+        return False
+    return 1 <= int(value[5:7]) <= 12
+
+
+@app.get(str(global_config.get('call_stat', {}).get('url', '/api/callStat')))
+async def call_stat_query(date: Optional[str] = None, month: Optional[str] = None):
+    """查询调用量：date=YYYY-MM-DD 返回单日；month=YYYY-MM 返回该月每天。
+
+    两个参数必须且只能提供一个。返回值已叠加内存中尚未落库的增量。
+    """
+    if (date is None) == (month is None):
+        return {"res_code": 1,
+                "res_desc": "请且仅提供一个参数：date(YYYY-MM-DD) 或 month(YYYY-MM)",
+                "result": ""}
+
+    if date is not None:
+        if not _is_valid_date(date):
+            return {"res_code": 1,
+                    "res_desc": "date 格式不正确，应为 YYYY-MM-DD，如 2026-11-16",
+                    "result": ""}
+        return {"res_code": 0, "res_desc": "",
+                "result": {"date": date, "callCount": call_stat.get_call_count(date)}}
+
+    if not _is_valid_month(month):
+        return {"res_code": 1,
+                "res_desc": "month 格式不正确，应为 YYYY-MM，如 2026-11",
+                "result": ""}
+    return {"res_code": 0, "res_desc": "",
+            "result": {"month": month,
+                       "days": [{"date": d, "callCount": c}
+                                for d, c in call_stat.get_month_counts(month)]}}
 
 
 if __name__ == "__main__":
