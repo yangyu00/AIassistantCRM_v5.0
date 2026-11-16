@@ -34,6 +34,17 @@ IOP:
     connect: 1
     sock_read: 2
 
+  # D1：单轮 token 刷新的次数、指数退避与全失败后的冷却（秒）
+  # max_attempts 是「单轮请求总次数」，不是「重试次数」；上限 20
+  # 缺该段时代码用默认值 max_attempts=4 / backoff_base=0.2 /
+  # backoff_factor=2 / backoff_max=2 / cooldown=5
+  retry:
+    max_attempts: 4
+    backoff_base: 0.2
+    backoff_factor: 2
+    backoff_max: 2
+    cooldown: 5
+
 sftp:
   host: "134.80.199.252"
   username: "wangsi"

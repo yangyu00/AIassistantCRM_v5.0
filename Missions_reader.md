@@ -46,8 +46,9 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 
 `IOP/get_custinfo.py::get_custom_info_in_global(tel)` 一次请求只调用一次，结果在
 `productId` 循环内复用。返回 `{ITEMCODE: [ITEMNAME, ITEMVALUE], ...}`。
-入口处先 `await ensure_token()`（A2 单飞，见后续小节），再发标签查询；
-token 刷新对同一批并发请求只发生一次。
+入口处先 `await ensure_token()`（A2 单飞 + D1 重试/退避/冷却，见后续两节），
+再发标签查询；token 刷新对同一批并发请求只发生一次，持续失败时冷却期内的
+请求直接降级、不再打认证服务。
 
 ### 返回契约与降级
 
@@ -87,7 +88,9 @@ token 刷新对同一批并发请求只发生一次。
 重建字典，原先每请求至少一次磁盘 I/O + yaml 解析（token 刷新时再多一次）。
 现在请求路径为 0 次，IOP 侧 import 阶段的读盘也由两次收敛为一次。
 运行期修改 `config.yaml` 不会热生效，需重启进程。`client_timeout()` 复用同一份
-模块级只读配置，构造 `aiohttp.ClientTimeout`，无磁盘 I/O。
+模块级只读配置，构造 `aiohttp.ClientTimeout`，无磁盘 I/O；D1 的
+`RETRY = _retry_profile()` 同样在 `get_token.py` import 时读一次并归一化，
+`backoff_seconds()` 只做算术、不读盘。改 `IOP.retry.*` 需重启在线进程。
 
 ### 异步与超时（A1 / C1）
 
@@ -110,18 +113,19 @@ token 刷新对同一批并发请求只发生一次。
 | `sock_read` | `2` | 读响应超时 |
 
 `client_timeout()` 对缺键用同名默认值兜底，部署沿用旧 `config.yaml` 也不会启动失败。
-`total` 调大放宽慢上游、调小更快降级；**注意与重试的乘积**：`ensure_token()` 里的
-token 刷新仍是「循环外 1 次 + 循环内最多 3 次、无退避」（D1 未改），
-因此 token 端点持续无响应时，一轮刷新会串行等 4 次超时。每次由
-`sock_read` 与 `total` 中**先到者**触发：默认 `sock_read=2` 先到，实测约 8 秒，
-上界 `4 × total = 12` 秒。要压低这个窗口，调小 `sock_read` / `total`，
-或后续单独处理 D1 的重试次数与退避。**A2 单飞后这笔代价由同一批并发请求
-共同承担一次**，不再每个请求各付 4 次（见下一小节）。
+`total` 调大放宽慢上游、调小更快降级；**注意与重试的乘积**：`ensure_token()` 单轮
+最多发 `IOP.retry.max_attempts` 次 token 请求（默认 4），失败之间还有指数退避，
+所以 token 端点持续无响应时，一轮刷新的耗时约为
+`max_attempts × min(total, sock_read) + Σ退避`：默认 `4 × 2 + (0.2+0.4+0.8)
+= 9.4` 秒，上界 `4 × 3 + 1.4 = 13.4` 秒。要压低这个窗口，调小
+`max_attempts` / `sock_read` / `total` / 退避参数（见 D1 小节）。
+**A2 单飞 + D1 冷却后这笔代价由同一批并发请求共同承担一次，冷却期内的新批次
+直接降级、完全不等待**，不再每个请求或每个新批次各付一轮。
 
-C2（共享 `ClientSession`）与 A2（token 单飞）均已实现，分见后续两小节。
-仍未越界的是 D1 重试次数/退避、D3 token 响应状态码校验、F2 `IOPClient` 类。
-`test_local/test_iop.py` 仍用 `requests`，它是独立调试脚本、不在服务链路，
-保留原样。
+C2（共享 `ClientSession`）、A2（token 单飞）、D1（重试/退避/冷却）均已实现，
+分见后续三小节。仍未越界的是 D3 token 响应状态码校验、A3 `deadline` 初始化、
+F2 `IOPClient` 类。`test_local/test_iop.py` 仍用 `requests`，它是独立调试脚本、
+不在服务链路，保留原样。
 
 ### 共享 ClientSession（C2）
 
@@ -142,22 +146,26 @@ uvicorn 正常关闭时 startup / shutdown 在同一 loop。`init_session()` /
 **降级路径**：未经 lifespan 时（TestClient 不进上下文、独立脚本 import 后直接
 调用），`get_session()` 为 `None`，`session_context()` 退回「本次请求一个临时
 session」，由内层 `async with` 在当前 loop 内创建并关闭，只告警一次避免刷屏。
-行为与改动前一致、不泄漏连接，但**失去连接复用**——生产必须确保走 lifespan，
-自检可用这条 WARNING 判断部署是否漏了入口。
+行为与改动前一致、不泄漏连接，但**失去连接复用**——生产必须确保走 lifespan。
+该降级告警是 `WARNING`，而 `src/log_util.py` 只落盘 INFO / ERROR（见 D1 小节），
+所以判断部署是否漏了入口应直接看 `get_session()` 或 startup 的
+「IOP 共享 ClientSession 已创建」INFO 日志，不要依赖这条告警。
 
 **一个 session 服务两个端点**：token 用 `data=`、标签查询用 `json=` + 显式
 headers，共用同一份 `skip_auto_headers=("Content-Type",)`。该参数只跳过
 **自动生成**的头：token 请求不带 Content-Type（等价 `requests`），标签查询
 显式传入的 `charset=gbk` / `Accept-Encoding` 不受影响、原样发出（E4）。
 实测 5 次请求共享 session 的连接池只有 1 条活跃连接，改动前每次新建 session
-对应 5 条 TCP 连接。`config.yaml` 不新增配置项，复用 `IOP.timeout`。
+对应 5 条 TCP 连接。会话侧本身没有专属配置项，复用 `IOP.timeout`；`config.yaml`
+另有 `IOP.retry` 段供 D1 使用（见后）。
 
 ### Token 单飞（A2）
 
 原先 `get_custinfo.py` 每次请求各自判定 `TOKENS` 是否过期、各自调
 `token2global()` 刷新：N 个请求同时判定过期 → **N 份 token 请求并发打认证服务**，
-彼此覆盖 `access_token` / `deadline`（惊群）。叠加 C1 的 4 次重试后，上游持续
-失败时最坏是 `4 × N` 次请求、日志刷屏、延迟互相叠加。
+彼此覆盖 `access_token` / `deadline`（惊群）。叠加当时单轮 4 次重试后，上游持续
+失败时最坏是 `4 × N` 次请求、日志刷屏、延迟互相叠加（次数现由
+`IOP.retry.max_attempts` 配置，见 D1 小节）。
 
 现在把「确保 token 有效」收敛成 `IOP/get_token.py::ensure_token()` 一个入口，
 `get_custinfo.py` 只调它一次：
@@ -167,18 +175,21 @@ headers，共用同一份 `skip_auto_headers=("Content-Type",)`。该参数只�
 | 1 快速路径 | `token_valid()` 为真直接返回，**连锁都不碰**（token 有效期内零开销） |
 | 2 记代次 | 等锁前记下 `_REFRESH_GEN` |
 | 3 拿锁 | `async with _get_refresh_lock()` |
-| 4 二次检查 | `token_valid()` 为真（别人刷成功）**或** `_REFRESH_GEN` 已变（本批并发已有人刷过一轮）→ 直接返回，复用结果 |
-| 5 锁内刷新 | 只有第一个请求执行「1 次 + 最多 3 次、成功即 break、无退避」，`finally` 里 `_REFRESH_GEN += 1` |
+| 4 二次检查 | `token_valid()` 为真（别人刷成功）**或** `_REFRESH_GEN` 已变（本批并发已有人刷过一轮）**或**已进入冷却期 → 直接返回，复用结果 |
+| 5 锁内刷新 | 只有第一个请求执行一轮 D1 刷新（`max_attempts` 次请求、成功即返回、失败间指数退避），`finally` 里 `_REFRESH_GEN += 1` |
 | 6 降级 | 仍无有效 token 时由 `get_custinfo.py` 按 B1 统一返回 `{}` |
+
+冷却期在**拿锁之前**就短路，冷却期内的请求连锁都不碰（步骤 1 之前）。
 
 `token2global()` 保留为**单次刷新原语**，只在单飞锁内被调用；业务侧不要直接
 调它，否则绕开保护。`token_valid()` 用 `access_token is not None and now <= deadline`
 短路，保护 `deadline` 初始为 `None`（A3 未改，不改 `Tokens.__init__`）。
 
 **代次为什么必要**：只做「锁 + 二次检查」时，刷新**失败**后 token 仍无效，
-每个等待者拿锁后都会再刷一轮 4 次——把「并发打爆上游」变成「串行 4N 次」，
-延迟更糟。代次让失败结果也被同一批并发共享：等待者看到代次变化就直接返回，
-全部一起降级 `{}`。10 并发下 `token2global()` 真实调用次数：
+每个等待者拿锁后都会再刷一轮 `max_attempts` 次——把「并发打爆上游」变成
+「串行 N × max_attempts」，延迟更糟。代次让失败结果也被同一批并发共享：
+等待者看到代次变化就直接返回，全部一起降级 `{}`。默认
+`max_attempts=4` 时，10 并发下 `token2global()` 真实调用次数：
 
 | 场景 | 改动前 | 改动后 |
 |---|---|---|
@@ -191,10 +202,68 @@ headers，共用同一份 `skip_auto_headers=("Content-Type",)`。该参数只�
 是同一把锁，TestClient / 独立脚本多次 `asyncio.run()` 也不会炸。不需要 lifespan
 接线，不改 `main.py`。
 
-**D1 仍是 1+3 次、无退避**，只是整体搬进锁内，重试语义逐字不变。失败冷却
-（一轮失败后 N 秒内不再刷）属于 D1 的节流范畴，本轮未做：持续失败 + 持续新请求
-时，每个**新批次**仍会各开一轮 4 次刷新；同一批并发不再重复。
-`config.yaml` 不新增配置项。
+### 重试、退避与失败冷却（D1）
+
+原先 `ensure_token()` 里是「循环外 1 次 + `for _ in range(3)`」：想写「重试
+3 次」实际是 **4 次**连续打认证服务，**无退避**、重试之间**无日志**，只有
+`token2global()` 内每条请求各记一条 ERROR。A2 只解决「同一批并发重复刷新」，
+不解决「持续失败下不同批次各自刷新」——这一节补上。
+
+配置在 `config.yaml` 的 `IOP.retry`，import 时由 `_retry_profile()` 读一次
+（请求路径 0 次读盘，E1）。缺段、类型错误、NaN / inf / 越界一律回落默认，
+部署沿用旧 `config.yaml` 不会启动失败。
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `max_attempts` | `4` | 单轮刷新**请求总次数**（不是「重试次数」）；最小 1、上限 20 |
+| `backoff_base` | `0.2` | 第 1 次失败后的退避秒数 |
+| `backoff_factor` | `2` | 退避倍率，最小 1 |
+| `backoff_max` | `2` | 单次退避上限，`min(base × factor^(k-1), max)` |
+| `cooldown` | `5` | 一轮**全失败**后的冷却秒数，0 表示不冷却 |
+
+默认退避序列（4 次尝试之间有 3 次）：`0.2 / 0.4 / 0.8` 秒。
+
+**单轮流程**（全部在 A2 单飞锁内，只有持锁者执行）：
+
+1. INFO `IOP token 刷新开始 | max_attempts=N`
+2. 逐次 `await token2global()`；`token_valid()` 为真即记
+   `IOP token 刷新成功 | attempt=k/N | cost=...ms`、清冷却、返回
+3. 未成功且还有下一次：ERROR
+   `IOP token 刷新重试 | attempt=k/N | backoff=0.20s`，然后
+   `await asyncio.sleep(delay)`
+4. N 次全失败：ERROR
+   `IOP token 刷新失败 | attempts=N | cooldown=5.0s | cost=...ms`，
+   设置 `_COOLDOWN_UNTIL = time.monotonic() + cooldown`
+5. `finally` 里 `_REFRESH_GEN += 1`，与 A2 代次共享
+
+`token2global()` 仍是单次刷新原语，C1 的超时收口与 B2 的
+`IOP token 请求失败` 日志**逐字保留**；D1 新增的是「第几次 / 退避多久 /
+本轮汇总 / 冷却」这四类信息。
+
+**日志级别**：`src/log_util.py` 只落盘 `INFO` / `ERROR` 两个级别，
+`WARNING` 既没有文件 sink 也没有控制台 sink，**写了也看不到**。因此重试用
+ERROR（与 `token2global` 的失败日志同文件、语义也确实是一次失败尝试），
+冷却提示用 INFO。后续若想改回 WARNING，必须同时给 `log_util.py` 加 sink。
+
+**失败冷却**：截止点用 `time.monotonic()`，不受系统时间回拨影响。冷却期内
+`ensure_token()` 在**拿锁之前**直接短路，连锁都不碰：所有请求立即按 B1
+降级 `{}`，**不再打认证服务、不再等 4 次超时**。一个冷却周期只打一条
+`IOP token 处于失败冷却期 | remain=...s` INFO（`_COOLDOWN_WARNED_UNTIL`
+按截止点去重），避免每个失败请求刷屏；B1 的「IOP token 不可用」仍是每请求
+一条。冷却到期后的第一个请求开启新一轮刷新；刷新成功会立即把
+`_COOLDOWN_UNTIL` 清 0，不会误伤后续正常请求。
+
+**与 A2 的关系**：代次让**同一批并发**共享一轮（默认 10 并发失败 40 → 4 次），
+冷却让**不同批次**共享失败结果（冷却期内 N 个新批次 → 0 次）。二次检查里也
+判断了冷却期，防止某请求在等锁期间刚好由另一批触发了新的冷却。
+
+**耗时**：单轮最坏约 `max_attempts × min(total, sock_read) + Σ退避`，默认
+`4 × 2 + 1.4 = 9.4` 秒、上界 `4 × 3 + 1.4 = 13.4` 秒（比改动前多出 1.4 秒
+退避，换来认证服务不被反复打）。但**冷却期内的请求为 0 等待**，持续故障
+场景下整体延迟反而大幅下降。要缩短单轮窗口，调小 `max_attempts` /
+退避参数 / `sock_read` / `total`。
+
+`config.yaml` 只新增 `IOP.retry` 一段；`IOP.timeout`、URL、凭据、请求头等均未动。
 
 ### 上游既定约定（不可改动）
 
@@ -206,7 +275,8 @@ headers，共用同一份 `skip_auto_headers=("Content-Type",)`。该参数只�
 - 请求头必须声明 `Content-Type: application/json; charset=gbk` 并显式携带
   `Accept-Encoding: gzip, deflate`，即使与实际序列化编码不一致也照发。
 
-换成 `aiohttp`、再收敛为共享 `ClientSession` 后，上述各项逐字保留。额外一处
+换成 `aiohttp`、收敛为共享 `ClientSession`、再加 D1 重试/退避/冷却后，上述各项
+逐字保留——D1 只改变「发几次、间隔多久」，不改变单次请求的形状。额外一处
 等价处理：`requests` 对字符串 `data=` 不加 `Content-Type`，而 `aiohttp` 默认会补
 `text/plain; charset=utf-8`，所以共享 session 统一带
 `skip_auto_headers=("Content-Type",)`。它只跳过自动生成的头，标签查询显式传入
@@ -522,7 +592,8 @@ curl "http://host:8989/api/callStat?month=2026-11"
 | 调用量库 | 启动时读库失败 | 只告警、基数按 0 恢复，服务照常启动；库恢复后下次重启从真实值继续 |
 | IOP | token / 标签查询超时、连接失败 | 就地记 ERROR、token 侧清空 `access_token`、最终降级 `{}`；不阻塞其它并发请求 |
 | IOP | 未经 lifespan（共享 session 未初始化） | `session_context()` 降级为本次请求临时 session，只告警一次；结果正确、不泄漏连接，但失去连接复用 |
-| IOP | token 刷新失败（含超时） | `ensure_token()` 一轮最多 4 次后不再抛异常，同一批并发共享失败结果并一起降级 `{}`；API 不 500 |
+| IOP | token 刷新失败（含超时） | `ensure_token()` 单轮最多 `IOP.retry.max_attempts` 次（默认 4）、失败间指数退避，一轮全失败进入 `cooldown` 冷却；不抛异常，同一批并发共享失败结果并一起降级 `{}`；API 不 500 |
+| IOP | 处于失败冷却期 | `ensure_token()` 在拿锁前直接短路，**不打认证服务、不等超时**；所有请求立即降级 `{}`；一个冷却周期只打一条 INFO 提示 |
 | 写入侧 | 注册 xlsx 缺失 | `dim_watcher` 告警跳过，库保留上次成功版本 |
 
 **维表侧出任何问题都不会让 API 500**：产品名为 `None`、`queried_label_ids` 为 `[]`、
@@ -570,7 +641,10 @@ curl "http://host:8989/api/callStat?month=2026-11"
   `IOP token 请求失败` 或 `IOP 标签查询网络失败` 的 ERROR 日志、返回 `{}`，
   且 API 不 500；token 侧 `access_token` 被清空。
   把 `config.yaml` 的 IOP host/port 临时指向一个「accept 后不回数据」的本地端口
-  可实测：默认 4 次 `sock_read=2` 触发约 8 秒，5 条 ERROR 日志，API 仍 200。
+  可实测：默认 4 次 `sock_read=2` + 3 次退避（1.4 秒）约 9.4 秒，
+  日志含 4 条 `IOP token 请求失败`、3 条 `IOP token 刷新重试`、
+  1 条 `IOP token 刷新失败 | attempts=4 | cooldown=5.0s`，API 仍 200；
+  紧接着再发请求应被冷却短路、0 次刷新、立即返回 `{}`。
 - **C2 生命周期**：`TestClient(app)` 作为上下文进入时
   `IOP.http_session.get_session()` 非 `None` 且 `closed=False`，退出后为 `None`
   （已 `close()`）；startup 日志含「IOP 共享 ClientSession 已创建」、
@@ -578,28 +652,39 @@ curl "http://host:8989/api/callStat?month=2026-11"
 - **C2 连接复用**：起本地 HTTP server 连打 5 次标签查询，服务端 accept 次数
   应为 1（keep-alive 复用）；每次新建 session 的旧实现为 5。
 - **C2 降级**：不把 `TestClient` 当上下文管理器时 `get_session()` 为 `None`，
-  首次请求打一条「降级为临时 session」WARNING（每进程只一次），结果仍正确、
-  API 不 500，临时 session 用后即关闭。
+  结果仍正确、API 不 500，临时 session 用后即关闭。代码里每进程只发一条
+  「降级为临时 session」WARNING，但本项目不落盘 WARNING，验证以
+  `get_session()` 与结果为准。
 - **A2 单飞（成功）**：打桩 `token2global` 让首次即写入有效 token，10 个并发
   `ensure_token()` 的刷新调用次数应为 **1**（改动前 10 个请求各刷 1 次 = 10）。
   token 已有效时直接调 `ensure_token()` 应为 **0** 次刷新，不进锁。
 - **A2 单飞（失败共享）**：打桩 `token2global` 始终不写 token，10 个并发
-  `get_custom_info_in_global()` 的刷新调用次数应为 **4**（改动前 10 × 4 = 40），
-  10 个结果全为 `{}`、API 不 500；「IOP token 不可用」日志只出现与并发批次数
-  相当的次数，不是每请求一条刷屏。
+  `get_custom_info_in_global()` 的刷新调用次数应为 **`max_attempts`**（默认 4，
+  改动前 10 × 4 = 40），10 个结果全为 `{}`、API 不 500。B1 的
+  「IOP token 不可用」仍是每请求一条；D1 的冷却提示（INFO）每周期一条。
 - **A2 跨 loop**：连续两次 `asyncio.run()` 各跑一批带争用的 `ensure_token()`，
   不应抛 `is bound to a different event loop`（`_get_refresh_lock()` 按当前 loop
   懒创建/重建）；同一 loop 内多次调用返回的是同一把锁。
-- **A2 未改 D1**：`ensure_token()` 里仍是「1 次 + `for _ in range(3)`」、
-  成功即 break、无 `asyncio.sleep` 退避；一轮失败仍串行等 4 次超时，
-  但**同一批并发只付一次**，不再是 N × 4 次。
+- **D1 次数与退避**：把 `IOP.retry.max_attempts` 设为 2 / 6，一轮全失败时
+  `token2global()` 调用次数应恰好是 2 / 6（不再是隐式的 1+3=4）；
+  打桩 `asyncio.sleep` 记录参数，默认 `backoff_base=0.2 / factor=2 / max=2`
+  的序列应为 `0.2 / 0.4 / 0.8`；每次重试有 `IOP token 刷新重试` 的 ERROR
+  （`src/log_util.py` 不落盘 WARNING）、全失败有
+  `attempts=N | cooldown=...` 的 ERROR、成功有 `attempt=k/N` 的 INFO。
+- **D1 冷却**：一轮失败后立刻再发 10 个并发请求，`token2global()` 调用应为
+  **0** 次、全部立即返回 `{}`、API 不 500，冷却 INFO 提示只打 1 条；
+  把 `cooldown` 设 0.2 秒，sleep 过后再发一批应重新开启一轮刷新；
+  刷新成功后 `_COOLDOWN_UNTIL` 清 0，后续请求走快速路径。
+- **D1 配置容错**：删掉 `IOP.retry` 整段应回落到
+  `4 / 0.2 / 2 / 2 / 5` 且不抛异常；`max_attempts: 0`、负数、
+  字符串、NaN、`factor < 1` 等非法值同样回落；`max_attempts > 20` 截到 20。
 
 ## 未实现
 
 - 基于 `version` 的进程级缓存、版本回滚、历史版本查询、灰度切换。
 - 加工规则的完全配置化：当前 `cut_in_str2tuple` 与分组规则写在 `dim_transform.py`，
   `registry.json` 只声明列角色与列顺序。
-- IOP 侧：D1 重试次数/退避与**失败冷却**（一轮刷新失败后短时间内不再发起新一轮）、
+- IOP 侧：D2 `expires_in - 360` 的有效期下限与类型保护、
   D3 token 响应状态码校验、A3 `Tokens.deadline` 初始化为过去时间、
-  F2 `IOPClient` 类。A2 只解决「同一批并发重复刷新」，不解决「持续失败下
-  不同批次各自刷新」。
+  F2 `IOPClient` 类。D1 已配好次数/退避/冷却，但**冷却是进程内状态**：
+  多实例部署时各实例各自冷却，不做跨进程共享。
