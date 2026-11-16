@@ -46,9 +46,9 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 
 `IOP/get_custinfo.py::get_custom_info_in_global(tel)` 一次请求只调用一次，结果在
 `productId` 循环内复用。返回 `{ITEMCODE: [ITEMNAME, ITEMVALUE], ...}`。
-入口处先 `await ensure_token()`（A2 单飞 + D1 重试/退避/冷却 + D3 响应校验，
-见后续三节），再发标签查询；token 刷新对同一批并发请求只发生一次，
-持续失败时冷却期内的请求直接降级、不再打认证服务。
+入口处先 `await ensure_token()`（A2 单飞 + D1 重试/退避/冷却 + D3 响应校验 +
+D2 有效期换算，见后续四节），再发标签查询；token 刷新对同一批并发请求
+只发生一次，持续失败时冷却期内的请求直接降级、不再打认证服务。
 
 ### 返回契约与降级
 
@@ -99,8 +99,10 @@ D3 之后 `IOP token 请求失败` 统一带 `status=` 与具体原因（状态�
 现在请求路径为 0 次，IOP 侧 import 阶段的读盘也由两次收敛为一次。
 运行期修改 `config.yaml` 不会热生效，需重启进程。`client_timeout()` 复用同一份
 模块级只读配置，构造 `aiohttp.ClientTimeout`，无磁盘 I/O；D1 的
-`RETRY = _retry_profile()` 同样在 `get_token.py` import 时读一次并归一化，
-`backoff_seconds()` 只做算术、不读盘。改 `IOP.retry.*` 需重启在线进程。
+`RETRY = _retry_profile()` 与 D2 的 `LIFETIME = _lifetime_profile()` 同样在
+`get_token.py` import 时各读一次并归一化，`backoff_seconds()` /
+`effective_lifetime()` 只做算术、不读盘。改 `IOP.retry.*` 或
+`IOP.token_lifetime.*` 需重启在线进程。
 
 ### 异步与超时（A1 / C1）
 
@@ -133,10 +135,10 @@ D3 之后 `IOP token 请求失败` 统一带 `status=` 与具体原因（状态�
 直接降级、完全不等待**，不再每个请求或每个新批次各付一轮。
 
 C2（共享 `ClientSession`）、A2（token 单飞）、D1（重试/退避/冷却）、
-D3（token 响应校验）均已实现，分见后续四小节。仍未越界的是
-D2 `expires_in` 有效期保护、A3 `deadline` 初始化、F2 `IOPClient` 类。
-`test_local/test_iop.py` 仍用 `requests`，它是独立调试脚本、不在服务链路，
-保留原样。
+D3（token 响应校验）、D2（有效期换算）均已实现，分见后续五个小节。
+仍未越界的是 A3 `deadline` 初始化；F2 `IOPClient` 类已明确不做（见文末
+「未实现」）。`test_local/test_iop.py` 仍用 `requests`，它是独立调试脚本、
+不在服务链路，保留原样。
 
 ### 共享 ClientSession（C2）
 
@@ -249,7 +251,8 @@ headers，共用同一份 `skip_auto_headers=("Content-Type",)`。该参数只�
 
 `token2global()` 仍是单次刷新原语，C1 的超时收口与 B2 的
 `IOP token 请求失败` 日志**前缀沿用**（D3 给它补了 `status=` 与具体原因，
-见下一小节）；D1 新增的是「第几次 / 退避多久 / 本轮汇总 / 冷却」这四类信息。
+见下一小节；D2 只改成功分支的有效期换算）。D1 新增的是「第几次 / 退避多久 /
+本轮汇总 / 冷却」这四类信息。
 
 **日志级别**：`src/log_util.py` 只落盘 `INFO` / `ERROR` 两个级别，
 `WARNING` 既没有文件 sink 也没有控制台 sink，**写了也看不到**。因此重试用
@@ -310,14 +313,78 @@ ERROR（与 `token2global` 的失败日志同文件、语义也确实是一次�
 日志前缀仍是 `IOP token 请求失败`，只新增 `status=` 与具体原因；项目只落盘
 INFO / ERROR，故用 ERROR（见上文「日志级别」）。
 
-**未越界**：`expires_in` 的类型保护与有效期下限仍是 D2。若上游返回合法
-`access_token` 但 `expires_in` 是非法字符串，`int(expires_in)` 仍会抛
-`ValueError` 穿透到 `main.py` 的 `except`（B1 降级 `{}`，但 IOP 侧无日志，
-D1 的 `finally` 只保证代次 +1）。这是**已有的既有行为**，D3 没有改变它，
-留待 D2 处理，别把两种失败混为一谈。
+**当时的边界已由 D2 补齐**：D3 落地时只判响应成败，没有碰成功分支里
+`int(expires_in) - 360` 那一行——上游返回合法 `access_token` 但 `expires_in`
+是非法字符串时会抛 `ValueError` 穿透；`expires_in <= 360` 时 deadline 落在
+过去、每个请求都判过期。两者现在都由 D2 的 `effective_lifetime()` 处理，
+见下一小节。D3 与 D2 是两类不同的问题，排查时别混为一谈。
 
 `token2global()` 仍是单次刷新原语，只在 A2 单飞锁内被调用；D3 只改响应
-校验，不改请求形状、不改重试次数、不改冷却，也不新增配置项。
+校验，D2 只改成功分支的有效期换算，二者都不改请求形状、重试次数、
+退避与冷却。
+
+### Token 有效期（D2）
+
+改动前成功分支只有两行：
+
+```python
+expires_in = res_data.get('expires_in', 600)
+TOKENS.deadline = datetime.datetime.now() + datetime.timedelta(seconds=(int(expires_in) - 360))
+```
+
+两个隐患：
+
+| 上游返回值 | 改动前行为 |
+|---|---|
+| `expires_in` 缺失 / `None` / `"abc"` / `""` / `bool` / `NaN` | `int()` 抛 `TypeError` / `ValueError` 穿透到 `main.py` 的 `except`：B1 降级 `{}`，**IOP 侧无日志**，D1 的 `finally` 只保证代次 +1 |
+| `expires_in = 300`（或任何 `<= 360`） | `300 - 360 = -60`，deadline 落在过去 → `token_valid()` 恒为假 → **每个请求都判过期、每次都刷新 token**，认证服务被打满 |
+| `expires_in` 极大（如 `1e15`） | `timedelta` 溢出 |
+
+现在由 `effective_lifetime(raw)` 统一换算，配置在 `config.yaml` 的
+`IOP.token_lifetime`，import 时由 `_lifetime_profile()` 读一次（E1）：
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `default_expires_in` | `600` | 上游未给或 `expires_in` 非法时的兜底秒数；最小 1 |
+| `refresh_buffer` | `360` | 提前刷新缓冲（秒），最小 0 |
+| `min_lifetime` | `60` | 有效期下限（秒），保证 deadline 落在未来；最小 1 |
+| `max_expires_in` | `86400` | 上游声明值上限（秒），防 `datetime` 溢出；最小 1 |
+
+缺段、类型错误、`NaN` / `inf` / 负数 / 越界一律回落默认，部署沿用旧
+`config.yaml` 不会启动失败。实际有效期公式：
+
+```
+v   = clamp(上游 expires_in, (0, max_expires_in])      # 非法/过大时兜底或截断
+ttl = min(max(v - refresh_buffer, min_lifetime), v)    # 夹在 [下限, 上游声明值]
+```
+
+`min(..., v)` 这一层保证**永不超过上游自己声明的有效期**：上游只给 30 秒时
+不会硬撑到 `min_lifetime=60` 秒。默认值下 `600 → 240` 秒，与改动前完全一致。
+
+| 上游 `expires_in` | 实际有效期 | 说明 |
+|---|---|---|
+| 缺失 | 240s | 静默用 `default_expires_in`，不记日志（上游可能本来就不给该字段） |
+| `600` / `"600"` | 240s | 与改动前一致；数字字符串现在也能接受 |
+| `360` | 60s | 不再出现 0 或负有效期 |
+| `300` | 60s | 不再落在过去、不再每请求刷新 |
+| `30` | **30s** | 不超过上游声明值 |
+| `"abc"` / `None` / `""` / `true` / `NaN` / `0` / `-1` | 240s | 回落默认值 |
+| `1e15` | 86040s | 截断到 `max_expires_in=86400` 后按 `86400 - 360` 计算，不溢出 |
+
+字段**存在但异常**时记一条 `INFO`：
+
+```
+IOP token expires_in 异常 | 非数字('abc') | 按 240s 计算有效期
+```
+
+用 `INFO` 而非 `ERROR`：token 本身有效、服务正常，只是上游字段不规范，
+不该算故障；但项目只落盘 INFO / ERROR，所以用 INFO 保证留痕（见 D1 的
+「日志级别」）。日志不含 `access_token` 的值。
+
+`token2global()` 仍先 `TOKENS.deadline = ...` 再写 `access_token`，顺序不变；
+`token_valid()` 靠 `access_token is not None` 短路，A3 未改（见文末）。
+deadline 仍用 `datetime.datetime.now()`（本地墙上时间），**系统时间回拨**
+不在 D2 范围内——D1 的冷却截止点已用 `time.monotonic()`，两者互不影响。
 
 ### 上游既定约定（不可改动）
 
@@ -329,9 +396,10 @@ D1 的 `finally` 只保证代次 +1）。这是**已有的既有行为**，D3 �
 - 请求头必须声明 `Content-Type: application/json; charset=gbk` 并显式携带
   `Accept-Encoding: gzip, deflate`，即使与实际序列化编码不一致也照发。
 
-换成 `aiohttp`、收敛为共享 `ClientSession`、再加 D1 重试/退避/冷却与 D3 响应
-校验后，上述各项逐字保留——D1 只改变「发几次、间隔多久」，D3 只改变
-「怎么判断响应成败」，都不改变单次请求的形状。额外一处
+换成 `aiohttp`、收敛为共享 `ClientSession`、再加 D1 重试/退避/冷却、D3 响应
+校验与 D2 有效期换算后，上述各项逐字保留——D1 只改变「发几次、间隔多久」，
+D3 只改变「怎么判断响应成败」，D2 只改变「拿到 token 后 deadline 怎么算」，
+都不改变单次请求的形状。额外一处
 等价处理：`requests` 对字符串 `data=` 不加 `Content-Type`，而 `aiohttp` 默认会补
 `text/plain; charset=utf-8`，所以共享 session 统一带
 `skip_auto_headers=("Content-Type",)`。它只跳过自动生成的头，标签查询显式传入
@@ -650,6 +718,7 @@ curl "http://host:8989/api/callStat?month=2026-11"
 | IOP | token 刷新失败（含超时） | `ensure_token()` 单轮最多 `IOP.retry.max_attempts` 次（默认 4）、失败间指数退避，一轮全失败进入 `cooldown` 冷却；不抛异常，同一批并发共享失败结果并一起降级 `{}`；API 不 500 |
 | IOP | 处于失败冷却期 | `ensure_token()` 在拿锁前直接短路，**不打认证服务、不等超时**；所有请求立即降级 `{}`；一个冷却周期只打一条 INFO 提示 |
 | IOP | token 响应非 200 / 解析失败 / 结构异常 / 缺字段 / 上游 `error`（D3） | `token2global()` 统一清空 `TOKENS` 并记带 `status=` 的 ERROR；由 D1 重试/退避/冷却，最终降级 `{}`；**不沿用旧 token** |
+| IOP | `expires_in` 缺失 / 非法 / `<= 360` / 过大（D2） | 缺失静默用 600；非法回落默认并记一条 INFO；有效期夹在 `[min_lifetime, 上游声明值]`，deadline 永远落在未来、不抛 `ValueError`、不每请求刷新；token 照常可用 |
 | 写入侧 | 注册 xlsx 缺失 | `dim_watcher` 告警跳过，库保留上次成功版本 |
 
 **维表侧出任何问题都不会让 API 500**：产品名为 `None`、`queried_label_ids` 为 `[]`、
@@ -750,14 +819,33 @@ curl "http://host:8989/api/callStat?month=2026-11"
 - **D3 端到端**：本地 IOP server 的 token 端点固定返回 502，起 uvicorn 打
   6 个并发业务请求；应全部 200，ERROR 日志含
   `status=502 | HTTP 状态码非 200`，且冷却期内再发一批不再打认证服务。
+- **D2 有效期对照**：直接调 `token2global()`，依次给 `expires_in` 为
+  缺失 / `600` / `"600"` / `360` / `300` / `30` / `"abc"` / `None` / `""` /
+  `true` / `NaN` / `0` / `-1` / `1e15`，应分别得到约
+  `240 / 240 / 240 / 60 / 60 / 30 / 240 / 240 / 240 / 240 / 240 / 240 /
+  240 / 86040` 秒的 deadline 偏移，且**全部** `token_valid()` 为真、不抛任何异常。
+  改动前 `"abc"` / `None` / `""` 会抛 `ValueError` / `TypeError`，
+  `360` / `300` / `30` 会让 deadline 落在过去。
+- **D2 不每请求刷新**：上游固定返回 `expires_in=300`，首轮刷新成功后
+  连续调 10 次 `ensure_token()`，`token2global()` 调用次数应为 **0**
+  （快速路径命中）；改动前每次都会重新判定过期并刷新。
+- **D2 配置容错与日志**：删掉 `IOP.token_lifetime` 整段应回落到
+  `600/360/60/86400`；非法值同样回落。`expires_in="abc"` 时
+  `TOKENS.access_token` 照常写入、日志出现一条
+  `IOP token expires_in 异常 | 非数字('abc')` 的 INFO，且不含 token 值。
 
 ## 未实现
 
 - 基于 `version` 的进程级缓存、版本回滚、历史版本查询、灰度切换。
 - 加工规则的完全配置化：当前 `cut_in_str2tuple` 与分组规则写在 `dim_transform.py`，
   `registry.json` 只声明列角色与列顺序。
-- IOP 侧：D2 `expires_in - 360` 的有效期下限与类型保护（当前若
-  `expires_in` 非法，`int()` 抛 `ValueError` 会穿透到 `main.py` 的 `except`，
-  B1 降级 `{}` 但 IOP 侧无日志）、A3 `Tokens.deadline` 初始化为过去时间、
-  F2 `IOPClient` 类。D1 已配好次数/退避/冷却，D3 已覆盖响应状态码与结构校验；
-  但**冷却是进程内状态**：多实例部署时各实例各自冷却，不做跨进程共享。
+- IOP 侧只剩 A3：`Tokens.deadline` 初始化为过去时间（当前为 `None`，
+  靠 `token_valid()` 里 `access_token is not None` 的短路顺序保护）。
+- **F2 `IOPClient` 类：已决定不做**。其并发正确性目标已由 A2（单飞 + 代次）、
+  C2（lifespan 共享 session）、D1（失败冷却）覆盖，统一失败契约由
+  B1 / B2 / D3 提供，不再单独收敛为类。类化需同时改动 `main.py`、
+  `get_custinfo.py`、`get_token.py`、`http_session.py`，并重新验证
+  A2 跨 event loop 与 C2 同 loop 约束，风险收益比不划算。
+- D1 已配好次数/退避/冷却，D2 已覆盖有效期换算，D3 已覆盖响应状态码与
+  结构校验；但**冷却是进程内状态**：多实例部署时各实例各自冷却，
+  不做跨进程共享。

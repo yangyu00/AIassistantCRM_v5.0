@@ -45,6 +45,15 @@ IOP:
     backoff_max: 2
     cooldown: 5
 
+  # D2：token 有效期计算（秒）。expires_in 缺失/非法时按 default_expires_in 兜底，
+  # 实际有效期 = min(max(expires_in - refresh_buffer, min_lifetime), expires_in)；
+  # max_expires_in 截断离谱值，防 datetime 溢出。缺该段时代码用下列默认值。
+  token_lifetime:
+    default_expires_in: 600
+    refresh_buffer: 360
+    min_lifetime: 60
+    max_expires_in: 86400
+
 sftp:
   host: "134.80.199.252"
   username: "wangsi"

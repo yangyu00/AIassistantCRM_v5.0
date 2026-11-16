@@ -65,6 +65,77 @@ def backoff_seconds(attempt: int) -> float:
                RETRY['backoff_max'])
 
 
+# --- D2：token 有效期 ---------------------------------------------------------
+# 与 D1 同样在 import 时从模块级只读配置解析一次，请求路径 0 次读盘（E1）。
+# 缺段、类型错误、非有限值、越界一律回落默认，部署沿用旧 config.yaml 不启动失败。
+_DEFAULT_LIFETIME = {
+    'default_expires_in': 600.0,   # 上游未给或非法 expires_in 时的兜底秒数
+    'refresh_buffer': 360.0,       # 提前刷新缓冲（秒）
+    'min_lifetime': 60.0,          # 有效期下限（秒），保证 deadline 落在未来
+    'max_expires_in': 86400.0,     # 上游声明值上限，防 datetime 溢出
+}
+
+
+def _lifetime_profile() -> dict:
+    cfg = global_config['IOP'].get('token_lifetime', {}) or {}
+
+    def num(key, default, minimum):
+        try:
+            v = float(cfg.get(key, default))
+        except (TypeError, ValueError):
+            v = float(default)
+        if v != v or v in (float('inf'), float('-inf')) or v < minimum:
+            v = float(default)
+        return v
+
+    return {
+        'default_expires_in': num('default_expires_in',
+                                  _DEFAULT_LIFETIME['default_expires_in'], 1.0),
+        'refresh_buffer': num('refresh_buffer',
+                              _DEFAULT_LIFETIME['refresh_buffer'], 0.0),
+        'min_lifetime': num('min_lifetime',
+                            _DEFAULT_LIFETIME['min_lifetime'], 1.0),
+        'max_expires_in': num('max_expires_in',
+                              _DEFAULT_LIFETIME['max_expires_in'], 1.0),
+    }
+
+
+LIFETIME = _lifetime_profile()
+
+
+def effective_lifetime(raw):
+    """把上游 expires_in 换算成写入 TOKENS.deadline 的实际秒数。
+
+    返回 ``(seconds, note)``；note 为 None 表示值正常，否则是需要记日志的原因。
+    - 非数字 / bool / NaN / inf / <= 0 → 回落 ``default_expires_in``
+    - 超过 ``max_expires_in`` → 截断到上限
+    - 有效期 = ``min(max(上游值 - refresh_buffer, min_lifetime), 上游值)``：
+      既保证 deadline 永远落在未来（上游值过短时不再出现负的有效期），
+      也保证永不超过上游自己声明的有效期。
+
+    D2 之前这里直接 ``int(expires_in) - 360``：非法字符串会抛 ValueError
+    穿透到 main.py 的 except（B1 降级 {}，但 IOP 侧无日志）；expires_in <= 360
+    时 deadline 落在过去，导致每个请求都判过期、每次都刷新 token。
+    """
+    p = LIFETIME
+    note = None
+    try:
+        if isinstance(raw, bool):
+            raise ValueError('bool is not a lifetime')
+        v = float(raw)
+    except (TypeError, ValueError):
+        v = p['default_expires_in']
+        note = f"非数字({raw!r})"
+    if v != v or v in (float('inf'), float('-inf')) or v <= 0:
+        v = p['default_expires_in']
+        note = note or f"非有限或非正({raw!r})"
+    if v > p['max_expires_in']:
+        v = p['max_expires_in']
+        note = note or f"超过上限({raw!r} > {p['max_expires_in']:.0f}s)"
+    ttl = min(max(v - p['refresh_buffer'], p['min_lifetime']), v)
+    return ttl, note
+
+
 # 冷却截止点用 time.monotonic()，不受系统时间回拨影响；0 表示不在冷却期。
 _COOLDOWN_UNTIL = 0.0
 # 同一个冷却周期只打一条 INFO 提示，避免每个失败请求都刷屏。
@@ -188,6 +259,8 @@ async def token2global():
     只由 ensure_token() 在单飞锁内调用；业务侧请勿直接调用，否则绕开 A2 保护。
     D3：先查状态码，再校验响应结构；所有失败分支统一走 _fail_token()，
     不再让「既无 access_token 也无 error」的响应静默保留旧 token。
+    D2：成功分支的有效期改由 effective_lifetime() 换算，不再直接
+    int(expires_in) - 360，保证 deadline 落在未来且不抛 ValueError。
     """
     # 上游仅提供 http 明文 token 端点；client_id / client_secret 以表单串提交，
     # 凭据存放于 config.yaml。均为上游与部署环境的既定要求，不可改动。
@@ -231,10 +304,19 @@ async def token2global():
         if not access_token:
             _fail_token(status_code, "access_token 为空")
             return
-        # D2 未改：expires_in 的类型保护与有效期下限留待 D2，
-        # 这里保持原先的 int(expires_in) - 360 逐字不动。
-        expires_in = res_data.get('expires_in', 600)
-        TOKENS.deadline = datetime.datetime.now() + datetime.timedelta(seconds=(int(expires_in) - 360))
+        # D2：expires_in 缺失时静默用默认值；字段存在但非法/过短/过大时
+        # 由 effective_lifetime() 兜底或夹取，并记一条 INFO（token 本身有效，
+        # 不算失败，故不用 ERROR）。不再直接 int(expires_in) - 360。
+        if 'expires_in' in res_data:
+            lifetime, note = effective_lifetime(res_data['expires_in'])
+        else:
+            lifetime, note = effective_lifetime(LIFETIME['default_expires_in'])
+        if note:
+            my_log.info(
+                f"IOP token expires_in 异常 | {note} | "
+                f"按 {lifetime:.0f}s 计算有效期"
+            )
+        TOKENS.deadline = datetime.datetime.now() + datetime.timedelta(seconds=lifetime)
         TOKENS.access_token = access_token
         return
 
