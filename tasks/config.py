@@ -110,9 +110,9 @@ def _sharded_task(prefix):
 
 
 TASKS = {
-    "f09554_opp": _task("TASK1"),
-    "f09591_loss": _sharded_task("TASK2"),
-    "f09609_diag": _sharded_task("TASK3"),
+    "opportunity_recall": _task("OPPORTUNITY_RECALL"),
+    "loss_control": _sharded_task("LOSS_CONTROL"),
+    "customer_diagnosis": _sharded_task("CUSTOMER_DIAGNOSIS"),
 }
 
 # ---------------------------------------------------------------------------
@@ -124,7 +124,7 @@ TASKS = {
 # ---------------------------------------------------------------------------
 
 DB_SCHEMAS = {
-    "f09554_opp": [
+    "opportunity_recall": [
         ("op_time", "TEXT"),
         ("call_time", "TEXT"),
         ("product_no", "TEXT NOT NULL"),
@@ -138,14 +138,14 @@ DB_SCHEMAS = {
         ("refer_strategy", "TEXT"),
         ("city_id", "INTEGER"),
     ],
-    "f09591_loss": [
+    "loss_control": [
         ("op_time", "TEXT"),
         ("user_id", "TEXT"),
         ("product_no", "TEXT NOT NULL"),
         ("city_id", "TEXT"),
         ("strategy_name", "TEXT"),
     ],
-    "f09609_diag": [
+    "customer_diagnosis": [
         ("op_time", "TEXT"),
         ("user_id", "TEXT"),
         ("product_no", "TEXT NOT NULL"),
@@ -161,7 +161,7 @@ DB_SCHEMAS = {
 #   order_by          : 排序；None 表示不排序（仍 LIMIT 1）
 #   table_map / product_ids : 供 main.py 做业务路由判断，避免 ID 散落在代码里
 QUERY_SPECS = {
-    "f09554_opp": {
+    "opportunity_recall": {
         "mode": "by_product",
         "table_map": {
             "202608041615335173": "F09554",  # 号卡业务
@@ -171,13 +171,13 @@ QUERY_SPECS = {
         "where": ["product_no"],
         "order_by": "op_time DESC",
     },
-    "f09591_loss": {
+    "loss_control": {
         "mode": "sharded",
         "product_ids": ["202609180955095402"],  # 控损专用
         "where": ["product_no"],
         "order_by": "op_time DESC",
     },
-    "f09609_diag": {
+    "customer_diagnosis": {
         "mode": "sharded",
         "where": ["product_no", "product_id"],
         "order_by": None,

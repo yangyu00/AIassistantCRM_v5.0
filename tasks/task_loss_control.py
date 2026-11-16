@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""任务2：控损 AVL 定时拉取与入库。
+"""控损 AVL 定时拉取与入库。
 
 远程文件 F09591{YYYYMMDD}000000.AVL，制表符分隔，逻辑 5 列：
 op_time | user_id | product_no | city_id | strategy_name。
@@ -9,9 +9,9 @@ strategy_name（第 5 列）内部含裸换行，一条逻辑记录横跨多个�
 按 product_no 分 128 张表，以 product_no 为主键覆盖入库。
 
 运行（项目根目录）：
-    python -m tasks.task_f09591_loss
-    python -m tasks.task_f09591_loss --date 20261110
-    python -m tasks.task_f09591_loss --date 20261110 --force-reload
+    python -m tasks.task_loss_control
+    python -m tasks.task_loss_control --date 20261110
+    python -m tasks.task_loss_control --date 20261110 --force-reload
 """
 import os
 import re
@@ -24,7 +24,7 @@ from typing import List
 from .base_task import BaseSftpTask
 from .config import TASKS
 
-_CONF = TASKS["f09591_loss"]
+_CONF = TASKS["loss_control"]
 
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
@@ -38,8 +38,8 @@ def _strip_eol(line: str) -> str:
     return content
 
 
-class LossTask(BaseSftpTask):
-    TASK_NAME = "f09591_loss"
+class LossControlTask(BaseSftpTask):
+    TASK_NAME = "loss_control"
     FILE_PREFIXES = _CONF["FILE_PREFIXES"]
     SFTP = _CONF["SFTP"]
     DATA_EXPIRE_DAYS = _CONF["DATA_EXPIRE_DAYS"]
@@ -194,4 +194,4 @@ class LossTask(BaseSftpTask):
 
 
 if __name__ == "__main__":
-    LossTask.main()
+    LossControlTask.main()

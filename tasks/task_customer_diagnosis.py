@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""任务3：诊断 AVL 定时拉取与入库。
+"""诊断 AVL 定时拉取与入库。
 
 前缀 F09609，拆分后约 3 亿条，宽表结构 + 分表 + 续行：
 
@@ -32,9 +32,9 @@
     重跑/补导同一文件时天然幂等，不会产生重复行。
 
 运行（项目根目录）：
-    python -m tasks.task_f09609_diag
-    python -m tasks.task_f09609_diag --date 20261110
-    python -m tasks.task_f09609_diag --date 20261110 --force-reload
+    python -m tasks.task_customer_diagnosis
+    python -m tasks.task_customer_diagnosis --date 20261110
+    python -m tasks.task_customer_diagnosis --date 20261110 --force-reload
 """
 import os
 import re
@@ -47,14 +47,14 @@ from typing import List
 from .base_task import BaseSftpTask
 from .config import TASKS
 
-_CONF = TASKS["f09609_diag"]
+_CONF = TASKS["customer_diagnosis"]
 
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
 
 
-class DiagTask(BaseSftpTask):
-    TASK_NAME = "f09609_diag"
+class CustomerDiagnosisTask(BaseSftpTask):
+    TASK_NAME = "customer_diagnosis"
     FILE_PREFIXES = _CONF["FILE_PREFIXES"]
     SFTP = _CONF["SFTP"]
     DATA_EXPIRE_DAYS = _CONF["DATA_EXPIRE_DAYS"]
@@ -216,7 +216,7 @@ class DiagTask(BaseSftpTask):
 
 
 if __name__ == "__main__":
-    DiagTask.main()
+    CustomerDiagnosisTask.main()
 
 def _strip_eol(line: str) -> str:
     """去掉物理行行尾换行符与至多一个 ASCII 续行反斜杠。"""

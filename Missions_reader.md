@@ -3,6 +3,7 @@
 > 写入侧（SFTP 拉取 3 个进程、维表写入 1 个进程）见 `Missions_writer.md`。
 > 在线 API（`python main.py`）不写任何库、不含 startup 定时任务，
 > 所有业务数据与维表一律只读 SQLite。
+> 三个任务的业务命名与配置键前缀见 `Missions_writer.md` 的「任务命名」。
 
 ## 架构与数据流向
 
@@ -27,15 +28,15 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 
 | 顺序 | 条件（ID 来自配置） | 数据源 | 业务对象 |
 |---|---|---|---|
-| 1 | `F09554_PRODUCT_IDS`（202608041615335173 / 172 / 174） | `data_query.get_f09554_latest(telnum, product_id)` | `ProductInfoBySpec9554` |
-| 2 | `F09591_PRODUCT_IDS`（202609180955095402） | `data_query.get_f09591_latest(telnum)`，有记录才命中 | `ProductInfoBySpec9591` |
-| 3 | 其余 ID | `data_query.get_f09609_record(telnum, product_id)`，有记录才命中 | `ProductInfoBySpec9609` |
+| 1 | `OPPORTUNITY_RECALL_PRODUCT_IDS`（202608041615335173 / 172 / 174） | `data_query.get_opportunity_recall_latest(telnum, product_id)` | `ProductInfoBySpec9554` |
+| 2 | `LOSS_CONTROL_PRODUCT_IDS`（202609180955095402） | `data_query.get_loss_control_latest(telnum)`，有记录才命中 | `ProductInfoBySpec9591` |
+| 3 | 其余 ID | `data_query.get_customer_diagnosis_record(telnum, product_id)`，有记录才命中 | `ProductInfoBySpec9609` |
 | 4 | `load_product_selling_point()` 命中 business_id | 维表库 | `ProductInfoByExcel` |
 | 5 | 兜底 | 维表库 | `ProductInfoRaw` |
 
 前两组 ID 不再硬编码在 `main.py`，分别由
-`QUERY_SPECS["f09554_opp"]["table_map"]` 的 key 与
-`QUERY_SPECS["f09591_loss"]["product_ids"]` 派生。
+`QUERY_SPECS["opportunity_recall"]["table_map"]` 的 key 与
+`QUERY_SPECS["loss_control"]["product_ids"]` 派生。
 
 3. 输出：`product_name` 非空 → `code: "0"` 带话术；为空 → `code: "2"`、产品名与话术为空。
 
@@ -49,13 +50,13 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 
 | 配置 | 位置 | 在线读取侧用途 |
 |---|---|---|
-| `.env` 的 `TASK{1,2,3}_FILE_PREFIXES` / `NUM_TABLES` / `TABLE_NAME_PREFIX` | `TASKS[任务名]` | 库文件名、分表数、表名前缀；改 `.env` 读写两侧同时生效 |
+| `.env` 各任务分组的 `*_FILE_PREFIXES` / `*_NUM_TABLES` / `*_TABLE_NAME_PREFIX`（业务前缀见 `Missions_writer.md`） | `TASKS[任务名]` | 库文件名、分表数、表名前缀；改 `.env` 读写两侧同时生效 |
 | `DB_SCHEMAS[任务名]` | `tasks/config.py` | `(列名, 类型)` 列表，既是写入侧建表定义，也是 `SELECT *` 结果的 `dict` 组装顺序 |
 | `QUERY_SPECS[任务名]` | `tasks/config.py` | 查询模式、条件列、排序、业务 ID 映射 |
 | `db_dir(任务名)` | `tasks/config.py` | 固定指向 `tasks/sqlite_db/{任务名}/`，与写入路径一致 |
 
-`TASKS` / `DB_SCHEMAS` / `QUERY_SPECS` 三者 key 完全一致（`f09554_opp` /
-`f09591_loss` / `f09609_diag`），导入时校验列与前缀的合法性，漂移即抛 `ValueError`。
+`TASKS` / `DB_SCHEMAS` / `QUERY_SPECS` 三者 key 完全一致（`opportunity_recall` /
+`loss_control` / `customer_diagnosis`），导入时校验列与前缀的合法性，漂移即抛 `ValueError`。
 
 ### `QUERY_SPECS` 字段
 
@@ -71,19 +72,19 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 
 | 任务名（= `TASKS` key） | mode | 库文件 | 表名 | 条件与排序 | 返回列 |
 |---|---|---|---|---|---|
-| `f09554_opp` | `by_product` | `tasks/sqlite_db/f09554_opp/{前缀}.db` | `data_{前缀}`，前缀来自 `table_map` | `product_no = telnum` + `ORDER BY op_time DESC` | 12 列（op_time…city_id） |
-| `f09591_loss` | `sharded` | `tasks/sqlite_db/f09591_loss/F09591.db` | `data_F09591_{crc32 % NUM_TABLES}` | `product_no = telnum` + `ORDER BY op_time DESC` | 5 列（op_time, user_id, product_no, city_id, strategy_name） |
-| `f09609_diag` | `sharded` | `tasks/sqlite_db/f09609_diag/F09609.db` | `data_F09609_{crc32 % NUM_TABLES}` | `product_no = telnum AND product_id = ?`，不排序 | 5 列（op_time, user_id, product_no, product_id, strategy_script） |
+| `opportunity_recall` | `by_product` | `tasks/sqlite_db/opportunity_recall/{前缀}.db` | `data_{前缀}`，前缀来自 `table_map` | `product_no = telnum` + `ORDER BY op_time DESC` | 12 列（op_time…city_id） |
+| `loss_control` | `sharded` | `tasks/sqlite_db/loss_control/F09591.db` | `data_F09591_{crc32 % NUM_TABLES}` | `product_no = telnum` + `ORDER BY op_time DESC` | 5 列（op_time, user_id, product_no, city_id, strategy_name） |
+| `customer_diagnosis` | `sharded` | `tasks/sqlite_db/customer_diagnosis/F09609.db` | `data_F09609_{crc32 % NUM_TABLES}` | `product_no = telnum AND product_id = ?`，不排序 | 5 列（op_time, user_id, product_no, product_id, strategy_script） |
 
 ### 对外接口
 
 | 接口 | 说明 |
 |---|---|
 | `query(task_name, telnum, product_id=None)` | 通用派发；`task_name` 必须是 `QUERY_SPECS` 的 key |
-| `get_f09554_latest(telnum, product_id)` | 上表三行的薄封装，保持 `main.py` 调用点语义清晰 |
-| `get_f09591_latest(telnum)` | 同上 |
-| `get_f09609_record(telnum, product_id)` | 同上 |
-| `F09554_PRODUCT_IDS` / `F09591_PRODUCT_IDS` | 由 `table_map` / `product_ids` 派生的不可变集合，供路由判断 |
+| `get_opportunity_recall_latest(telnum, product_id)` | 上表三行的薄封装，保持 `main.py` 调用点语义清晰 |
+| `get_loss_control_latest(telnum)` | 同上 |
+| `get_customer_diagnosis_record(telnum, product_id)` | 同上 |
+| `OPPORTUNITY_RECALL_PRODUCT_IDS` / `LOSS_CONTROL_PRODUCT_IDS` | 由 `table_map` / `product_ids` 派生的不可变集合，供路由判断 |
 
 均为 `async` 函数、内部同步 `sqlite3`；表名与列名来自代码内配置，用户输入只走参数绑定。
 
@@ -91,7 +92,7 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 
 - 改列名/列顺序 → 只改 `DB_SCHEMAS[任务名]`（写入侧建表与读取侧 `dict` 组装同时生效）。
 - 改条件或排序 → 只改 `QUERY_SPECS[任务名]`。
-- 加分表数/换表名前缀/换文件前缀 → 改 `.env` 对应 `TASK*_` 键，读写两侧同时生效。
+- 加分表数/换表名前缀/换文件前缀 → 改 `.env` 对应业务前缀分组的键，读写两侧同时生效。
 - 新增一个任务 → 在 `TASKS` / `DB_SCHEMAS` / `QUERY_SPECS` 各加一项，`main.py` 用
   `query(任务名, ...)` 调用即可，无需新增查询模块。
 
@@ -246,7 +247,7 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 - 只改卖点表中的 `product_name` 后直接请求接口，下一次调用即读到新名字。
 - `services/data_query.py`、三个 spec 子类、`dim_reader` 均可独立导入。
 - `TASKS` / `DB_SCHEMAS` / `QUERY_SPECS` 三者 key 一致；改 `.env` 的
-  `TASK2_NUM_TABLES` 后，`get_f09591_latest()` 解析出的表名后缀同步变化。
+  `LOSS_CONTROL_NUM_TABLES` 后，`get_loss_control_latest()` 解析出的表名后缀同步变化。
 
 ## 未实现
 

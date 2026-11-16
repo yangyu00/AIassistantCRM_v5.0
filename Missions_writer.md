@@ -6,6 +6,21 @@
 
 > 在线业务（FastAPI）的读取与重组逻辑见 `Missions_reader.md`。
 
+## 任务命名
+
+三个任务按业务含义命名，不再用「AVL 前缀 + 缩写」组合。同一个英文名同时作为
+`TASKS` / `DB_SCHEMAS` / `QUERY_SPECS` 的 key、`tasks/sqlite_db/{任务名}/` 库目录名、
+`.env` 键前缀、日志与状态文件名前缀。
+
+| 中文业务名 | 任务 key | `.env` 键前缀 | 进程脚本 | AVL 前缀 |
+|---|---|---|---|---|
+| 回捞商机 | `opportunity_recall` | `OPPORTUNITY_RECALL_` | `tasks/task_opportunity_recall.py` | F09554 / F09555 / F09556 |
+| 控损 | `loss_control` | `LOSS_CONTROL_` | `tasks/task_loss_control.py` | F09591 |
+| 诊断 | `customer_diagnosis` | `CUSTOMER_DIAGNOSIS_` | `tasks/task_customer_diagnosis.py` | F09609 |
+
+> `F09554` 等 AVL 文件前缀与 `data_F09554` 等表名属于外部数据约定，保持不变；
+> 只有任务自身的 key、脚本名、配置键前缀、库目录与文件名前缀采用业务英文名。
+
 ## 通用规则
 
 1. **远程文件**：连接参数见 `.env` 的 `SFTP_*`。
@@ -15,16 +30,16 @@
 3. **失败重试**：入库失败不登记清单，下一轮自动重试；本地文件保留。
 4. **跨天兜底**：每轮同时检查「昨天 + 今天」两天的文件名。
    > ⚠️ **文件名日期 ≠ 数据日期（op_time）**：`{YYYYMMDD}` 是文件生成日，`op_time` 是业务数据日，各任务偏移量见下文。
-   > 补跑时 `--date` 填**文件名日期**：补 op_time=2026-11-08 的数据，任务1 用 `--date 20261110`，任务2 用 `--date 20261109`。
+   > 补跑时 `--date` 填**文件名日期**：补 op_time=2026-11-08 的数据，回捞商机用 `--date 20261110`，控损用 `--date 20261109`。
 5. **单实例锁**：`tasks/state/{任务名}.lock`（portalocker/fcntl 非阻塞锁）。
-6. **轮询间隔**：由 `.env` 的 `TASK{1,2,3}_POLL_INTERVAL_SECONDS` 控制（默认 600 / 1800 / 3600 秒）。
-7. **本地文件**：`tasks/files/{任务名}/`，按 `.env` 的 `TASK{1,2,3}_LOCAL_FILE_EXPIRE_DAYS` 天清理。
+6. **轮询间隔**：由 `.env` 各任务分组的 `*_POLL_INTERVAL_SECONDS` 控制（业务前缀见「任务命名」，默认 600 / 1800 / 3600 秒）。
+7. **本地文件**：`tasks/files/{任务名}/`，按 `.env` 各任务分组的 `*_LOCAL_FILE_EXPIRE_DAYS` 天清理。
 8. **日志**：`tasks/log/{任务名}_INFO|ERROR_日期.log`，每天轮转，保留 7 天。
 9. **运行方式**（在项目根目录执行，用 `-m` 保证包内相对导入生效）：
    ```bash
-   python -m tasks.task_f09554_opp
-   python -m tasks.task_f09591_loss --date 20261110
-   python -m tasks.task_f09609_diag --date 20261110 --force-reload
+   python -m tasks.task_opportunity_recall
+   python -m tasks.task_loss_control --date 20261110
+   python -m tasks.task_customer_diagnosis --date 20261110 --force-reload
    ```
    生产建议用 systemd/nohup 各起一个常驻进程；单机单实例。
 
@@ -47,12 +62,12 @@
 - 优先级：**系统环境变量 > `.env`**；设置 `TASKS_ENV_FILE` 可指向其他 `.env` 路径。
   `.env` 支持 `#` 注释、行内注释、`export`、`${VAR}` 插值、单/双引号；缺必需键会在启动时报错，不会静默连错服务器。
 - 分组：SFTP 公共 5 项（`SFTP_HOST/PORT/USERNAME/PASSWORD/REMOTE_PATH`），
-  每个任务一组 `TASK{1,2,3}_*`（前缀列表、批次大小、库/本地文件保留天数、轮询间隔），
-  任务2/3 另有 `NUM_TABLES`、`TABLE_NAME_PREFIX`。
+  每个任务一组 `<业务前缀>_*`（前缀列表、批次大小、库/本地文件保留天数、轮询间隔；业务前缀见「任务命名」），
+  控损/诊断另有 `NUM_TABLES`、`TABLE_NAME_PREFIX`。
 
-  默认值如下（表中键名省略前缀 `TASK1_` / `TASK2_` / `TASK3_`，分表键同理）：
+  默认值如下（表中键名省略前缀 `OPPORTUNITY_RECALL_` / `LOSS_CONTROL_` / `CUSTOMER_DIAGNOSIS_`，分表键同理）：
 
-  | 键 | 任务1 | 任务2 | 任务3 |
+  | 键 | 回捞商机 | 控损 | 诊断 |
   |---|---|---|---|
   | `FILE_PREFIXES` | F09554,F09555,F09556 | F09591 | F09609 |
   | `BATCH_SIZE` | 10000 | 5000 | 5000 |
@@ -61,16 +76,33 @@
   | `POLL_INTERVAL_SECONDS` | 600 | 1800 | 3600 |
   | `NUM_TABLES` / `TABLE_NAME_PREFIX` | — | 128 / `data_F09591` | 128 / `data_F09609` |
 
-  > 任务2 保留天数为 **3 天**；需要 50 天改 `.env` 一行即可。
+  > 控损保留天数为 **3 天**；需要 50 天改 `.env` 一行即可。
 - `.env` 含 SFTP 明文密码：仓库公开时建议加入 `.gitignore`，或部署时改用系统环境变量注入（不提交 `.env`）。
 - 本方案取代原待办「统一迁到 `config.yaml`」：不并入项目总配置，避免 tasks 与在线业务的配置耦合。
+
+### 已有库目录迁移（改名后必做）
+
+任务 key 同时是 `tasks/sqlite_db/{任务名}/` 的目录名，改名后**不兼容旧目录**。
+部署到已有数据的机器时，先停掉 3 个任务进程，把旧目录搬成新名再启动：
+
+```bash
+cd tasks/sqlite_db
+mv f09554_opp   opportunity_recall
+mv f09591_loss  loss_control
+mv f09609_diag  customer_diagnosis
+```
+
+`tasks/files/` 下的本地 AVL 目录同理，避免重新下载。
+`tasks/state/*.fetched` 建议一并改名（否则新 key 从空清单开始，会重复拉取并
+覆盖入库一次，数据仍正确但多跑一轮）；`.lock` 无需搬，启动时按新 key 重新创建。
+日志只影响历史归档。`main.py` 与 `services/data_query.py` 只读库，不依赖旧目录名。
 
 ---
 
 ## 入库幂等
 
-- **任务1、任务2**：`PRIMARY KEY (product_no)` + `INSERT OR REPLACE`，同一 `product_no` 只保留一条。
-- **任务3**：`PRIMARY KEY (product_no, product_id)` + `INSERT OR REPLACE`（一个手机号对应多个产品各一条）。
+- **回捞商机、控损**：`PRIMARY KEY (product_no)` + `INSERT OR REPLACE`，同一 `product_no` 只保留一条。
+- **诊断**：`PRIMARY KEY (product_no, product_id)` + `INSERT OR REPLACE`（一个手机号对应多个产品各一条）。
 - `product_no` 为 `TEXT NOT NULL`；空手机号记录在解析时跳过，跳过条数写进日志。
 - 主键自带索引，不再额外建 `(product_no, op_time)` 索引。
 - `REPLACE` 是后写覆盖先写。批量补跑历史文件按文件名日期**升序**执行（先旧后新）；
@@ -80,9 +112,9 @@
 
 ---
 
-# 任务1 回捞商机（号卡 / 套餐 / 宽带）AVL 入库（F09554 / F09555 / F09556）
+# 回捞商机（号卡 / 套餐 / 宽带）AVL 入库（F09554 / F09555 / F09556）
 
-进程：`tasks/task_f09554_opp.py`；任务名 `f09554_opp`。
+进程：`tasks/task_opportunity_recall.py`；任务名 `opportunity_recall`。
 
 ## 文件日期与数据日期
 
@@ -112,15 +144,15 @@
 | 12 | city_id | INTEGER | 地市编码；非数字/空 → 0 |
 
 - 列数不足补空串，超出截断；`product_no` 为空的记录跳过。
-- 库表：每个前缀一个库 `tasks/sqlite_db/f09554_opp/{F09554,F09555,F09556}.db`，
+- 库表：每个前缀一个库 `tasks/sqlite_db/opportunity_recall/{F09554,F09555,F09556}.db`，
   表名 `data_{前缀}`，主键 `PRIMARY KEY (product_no)`；与在线查询的
-  `QUERY_SPECS["f09554_opp"]["table_map"]`（202608041615335173/172/174 → 前缀）对应。
-- 保留天数、批次大小、轮询间隔见 `.env`（`TASK1_*`）。
+  `QUERY_SPECS["opportunity_recall"]["table_map"]`（202608041615335173/172/174 → 前缀）对应。
+- 保留天数、批次大小、轮询间隔见 `.env`（`OPPORTUNITY_RECALL_*`）。
 - 量级：每个 AVL 每天不到 1 万条，单库单表即可；覆盖后每库行数 ≤ 去重后的手机号数。
 
-# 任务2 控损 AVL 入库（F09591）
+# 控损 AVL 入库（F09591）
 
-进程：`tasks/task_f09591_loss.py`；任务名 `f09591_loss`。
+进程：`tasks/task_loss_control.py`；任务名 `loss_control`。
 
 ## 文件日期与数据日期
 
@@ -154,17 +186,17 @@
 
 ## 库表与分表
 
-- 单库 `tasks/sqlite_db/f09591_loss/F09591.db`，128 张表 `data_F09591_0 … data_F09591_127`。
+- 单库 `tasks/sqlite_db/loss_control/F09591.db`，128 张表 `data_F09591_0 … data_F09591_127`。
 - 路由：`表号 = zlib.crc32(product_no) % NUM_TABLES`，与 `services/data_query.py` 的
-  `QUERY_SPECS["f09591_loss"]`（sharded 模式）一致。
+  `QUERY_SPECS["loss_control"]`（sharded 模式）一致。
 - 每张分表主键 `PRIMARY KEY (product_no)`，入库 `INSERT OR REPLACE`。
-- 保留天数、批次大小、轮询间隔见 `.env`（`TASK2_*`）。
+- 保留天数、批次大小、轮询间隔见 `.env`（`LOSS_CONTROL_*`）。
 - 量级：每个 AVL 约 7000 万逻辑记录；按 `product_no` 覆盖后实际行数取决于去重后的手机号数。
   PRAGMA 用 `synchronous = NORMAL`。
 
-# 任务3 诊断 AVL 入库（F09609）
+# 诊断 AVL 入库（F09609）
 
-进程：`tasks/task_f09609_diag.py`；任务名 `f09609_diag`。
+进程：`tasks/task_customer_diagnosis.py`；任务名 `customer_diagnosis`。
 
 ## 文件日期与数据日期（待业务确认）
 
@@ -188,17 +220,17 @@ op_time 直接取自文件第 1 列，代码不做日期改写。当前样例 `F
 3. 切列后第 1~3 列 = `op_time / user_id / product_no`；
    **第 4 列起每两列一组 `(product_id, strategy_script)`**，每组生成一条入库记录。
 4. `product_id` 为空（纯空白）的组跳过；总列数 `< 3` 的逻辑记录整条跳过并告警。
-5. 行尾反斜杠处理同任务2（只剥一个 ASCII 反斜杠）。
+5. 行尾反斜杠处理同控损（只剥一个 ASCII 反斜杠）。
 
 ## 库表与分表
 
-- 单库 `tasks/sqlite_db/f09609_diag/F09609.db`，128 张表 `data_F09609_0 … data_F09609_127`。
-- 路由同任务2：`zlib.crc32(product_no) % NUM_TABLES`，与 `services/data_query.py` 的
-  `QUERY_SPECS["f09609_diag"]`（sharded 模式）一致。
+- 单库 `tasks/sqlite_db/customer_diagnosis/F09609.db`，128 张表 `data_F09609_0 … data_F09609_127`。
+- 路由同控损：`zlib.crc32(product_no) % NUM_TABLES`，与 `services/data_query.py` 的
+  `QUERY_SPECS["customer_diagnosis"]`（sharded 模式）一致。
 - 主键 `PRIMARY KEY (product_no, product_id)`，入库 `INSERT OR REPLACE`。
-- 保留天数、批次大小、轮询间隔见 `.env`（`TASK3_*`）。
+- 保留天数、批次大小、轮询间隔见 `.env`（`CUSTOMER_DIAGNOSIS_*`）。
 - 量级：拆分后每天约 3 亿条 → 每表日均约 234 万条；`synchronous = NORMAL`。
-  若单机入库速度不够，可增大 `.env` 的 `TASK3_BATCH_SIZE` 或调低 `TASK3_POLL_INTERVAL_SECONDS`。
+  若单机入库速度不够，可增大 `.env` 的 `CUSTOMER_DIAGNOSIS_BATCH_SIZE` 或调低 `CUSTOMER_DIAGNOSIS_POLL_INTERVAL_SECONDS`。
 
 
 ---

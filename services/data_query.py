@@ -7,8 +7,8 @@
 
 对外提供：
     query(task_name, telnum, product_id=None)   按任务名派发
-    get_f09554_latest / get_f09591_latest / get_f09609_record
-    F09554_PRODUCT_IDS / F09591_PRODUCT_IDS      供 main.py 做业务路由判断
+    get_opportunity_recall_latest / get_loss_control_latest / get_customer_diagnosis_record
+    OPPORTUNITY_RECALL_PRODUCT_IDS / LOSS_CONTROL_PRODUCT_IDS      供 main.py 做业务路由判断
 """
 import os
 import sqlite3
@@ -16,8 +16,8 @@ import zlib
 
 from tasks.config import TASKS, QUERY_SPECS, db_dir
 
-F09554_PRODUCT_IDS = frozenset(QUERY_SPECS["f09554_opp"]["table_map"])
-F09591_PRODUCT_IDS = frozenset(QUERY_SPECS["f09591_loss"]["product_ids"])
+OPPORTUNITY_RECALL_PRODUCT_IDS = frozenset(QUERY_SPECS["opportunity_recall"]["table_map"])
+LOSS_CONTROL_PRODUCT_IDS = frozenset(QUERY_SPECS["loss_control"]["product_ids"])
 
 
 def _warn(msg):
@@ -89,16 +89,16 @@ async def query(task_name, telnum, product_id=None):
     return _query(task_name, telnum, product_id)
 
 
-async def get_f09554_latest(telnum, product_id):
+async def get_opportunity_recall_latest(telnum, product_id):
     """回捞商机：按 product_id 选库表，取 op_time 最新一条。"""
-    return await query("f09554_opp", telnum, product_id)
+    return await query("opportunity_recall", telnum, product_id)
 
 
-async def get_f09591_latest(telnum):
+async def get_loss_control_latest(telnum):
     """控损专用：按手机号分表，取 op_time 最新一条。"""
-    return await query("f09591_loss", telnum)
+    return await query("loss_control", telnum)
 
 
-async def get_f09609_record(telnum, product_id):
+async def get_customer_diagnosis_record(telnum, product_id):
     """客户诊断：按手机号分表，查 (product_no, product_id) 一条。"""
-    return await query("f09609_diag", telnum, product_id)
+    return await query("customer_diagnosis", telnum, product_id)

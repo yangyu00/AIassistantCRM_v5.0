@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
-"""任务1：回捞商机（号卡 / 套餐 / 宽带）AVL 定时拉取与入库。
+"""回捞商机（号卡 / 套餐 / 宽带）AVL 定时拉取与入库。
 
 远程文件 {F09554|F09555|F09556}{YYYYMMDD}000000.AVL，制表符分隔 12 列，
 一行一条记录，无续行。每个前缀一个 .db，按 product_no 主键覆盖入库。
 
 运行（项目根目录）：
-    python -m tasks.task_f09554_opp
-    python -m tasks.task_f09554_opp --date 20261110
-    python -m tasks.task_f09554_opp --date 20261110 --force-reload
+    python -m tasks.task_opportunity_recall
+    python -m tasks.task_opportunity_recall --date 20261110
+    python -m tasks.task_opportunity_recall --date 20261110 --force-reload
 """
 import os
 import gc
@@ -17,11 +17,11 @@ import traceback
 from .base_task import BaseSftpTask
 from .config import TASKS
 
-_CONF = TASKS["f09554_opp"]
+_CONF = TASKS["opportunity_recall"]
 
 
-class OppTask(BaseSftpTask):
-    TASK_NAME = "f09554_opp"
+class OpportunityRecallTask(BaseSftpTask):
+    TASK_NAME = "opportunity_recall"
     FILE_PREFIXES = _CONF["FILE_PREFIXES"]
     SFTP = _CONF["SFTP"]
     DATA_EXPIRE_DAYS = _CONF["DATA_EXPIRE_DAYS"]
@@ -161,4 +161,4 @@ class OppTask(BaseSftpTask):
 
 
 if __name__ == "__main__":
-    OppTask.main()
+    OpportunityRecallTask.main()
