@@ -5,6 +5,10 @@
 ``tasks.config.TASKS[...]``，本模块不含硬编码的表名/列名/路径。
 新增或调整任务只需改 ``tasks/config.py`` 的 DB_SCHEMAS / QUERY_SPECS。
 
+``QUERY_SPECS[任务名]["mode"]`` 决定库表形式，共三种：
+多库单表（db_map 选库名）、单库多表（crc32 分表）、单库单表（table_name 固定表）；
+多库多表不在支持范围内。本模块 ``_resolve()`` 按 mode 走对应分支。
+
 对外提供：
     query(task_name, telnum, product_id=None)   按任务名派发
     get_opportunity_recall_latest / get_loss_control_latest / get_customer_diagnosis_record
@@ -16,7 +20,7 @@ import zlib
 
 from tasks.config import TASKS, QUERY_SPECS, db_dir
 
-OPPORTUNITY_RECALL_PRODUCT_IDS = frozenset(QUERY_SPECS["opportunity_recall"]["table_map"])
+OPPORTUNITY_RECALL_PRODUCT_IDS = frozenset(QUERY_SPECS["opportunity_recall"]["db_map"])
 LOSS_CONTROL_PRODUCT_IDS = frozenset(QUERY_SPECS["loss_control"]["product_ids"])
 
 
@@ -34,18 +38,29 @@ def _resolve(task_name, product_no, product_id=None):
     spec = conf["QUERY"]
     qdir = db_dir(task_name)
 
-    if spec["mode"] == "by_product":
-        prefix = spec["table_map"].get(product_id)
-        if not prefix:
-            _warn(f"product_id [{product_id}] 未在 {task_name} table_map 中映射")
+    mode = spec["mode"]
+    if mode == "multi_db_single_table":
+        # 多库单表：db_map 的值是库名（{库名}.db），每库一张表 data_{库名}
+        db_name = spec["db_map"].get(product_id)
+        if not db_name:
+            _warn(f"product_id [{product_id}] 未在 {task_name} db_map 中映射库名")
             return None
-        db_path = qdir / f"{prefix}.db"
-        table = f"data_{prefix}"
-    else:
+        db_path = qdir / f"{db_name}.db"
+        table = f"data_{db_name}"
+    elif mode == "single_db_multi_table":
+        # 单库多表：单库按 crc32(product_no) 路由到 NUM_TABLES 张表之一
         db_path = qdir / f"{conf['FILE_PREFIXES'][0]}.db"
         p_no = product_no if product_no else "NULL"
         idx = zlib.crc32(p_no.encode("utf-8")) % conf["NUM_TABLES"]
         table = f"{conf['TABLE_NAME_PREFIX']}_{idx}"
+    elif mode == "single_db_single_table":
+        # 单库单表：单库一张固定表
+        db_path = qdir / f"{conf['FILE_PREFIXES'][0]}.db"
+        table = spec["table_name"]
+    else:
+        # 配置校验在 import 时已拒绝非法 mode；运行时仍降级，避免异常冒泡到业务侧
+        _warn(f"{task_name} 不支持的 QUERY.mode {mode}")
+        return None
 
     available = {"product_no": product_no, "product_id": product_id}
     values = [available[col] for col in spec["where"]]

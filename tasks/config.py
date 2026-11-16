@@ -102,7 +102,7 @@ def _task(prefix):
     }
 
 
-def _sharded_task(prefix):
+def _multi_table_task(prefix):
     conf = _task(prefix)
     conf["NUM_TABLES"] = _int(f"{prefix}_NUM_TABLES")
     conf["TABLE_NAME_PREFIX"] = _str(f"{prefix}_TABLE_NAME_PREFIX")
@@ -111,8 +111,8 @@ def _sharded_task(prefix):
 
 TASKS = {
     "opportunity_recall": _task("OPPORTUNITY_RECALL"),
-    "loss_control": _sharded_task("LOSS_CONTROL"),
-    "customer_diagnosis": _sharded_task("CUSTOMER_DIAGNOSIS"),
+    "loss_control": _multi_table_task("LOSS_CONTROL"),
+    "customer_diagnosis": _multi_table_task("CUSTOMER_DIAGNOSIS"),
 }
 
 # ---------------------------------------------------------------------------
@@ -155,15 +155,22 @@ DB_SCHEMAS = {
 }
 
 # key 与 TASKS 一致；在线查询按任务名派发。
-#   mode = by_product : 一个 product_id 对应一个前缀，库文件 {前缀}.db、表名 data_{前缀}
-#   mode = sharded    : 按 crc32(product_no) % NUM_TABLES 分表，单库 {FILE_PREFIXES[0]}.db
-#   where             : 查询条件列，值由 services/data_query.py 按列名从入参取
-#   order_by          : 排序；None 表示不排序（仍 LIMIT 1）
-#   table_map / product_ids : 供 main.py 做业务路由判断，避免 ID 散落在代码里
+#
+# mode 按「库数量 × 表数量」分成三种形式（多库多表不存在，不支持）：
+#   multi_db_single_table  多库单表：db_map 按 product_id 选库名，每库一张表
+#   single_db_multi_table  单库多表：单库按 crc32(product_no) % NUM_TABLES 分表
+#   single_db_single_table 单库单表：单库一张固定表，需声明 table_name（当前无任务使用，预留）
+#
+#   db_map        : 多库单表专用，product_id → 库名（即 {库名}.db）；
+#                   表名按固定约定 data_{库名}，与写入侧建表一致
+#   table_name    : 单库单表专用，固定表名
+#   where         : 查询条件列，值由 services/data_query.py 按列名从入参取
+#   order_by      : 排序；None 表示不排序（仍 LIMIT 1）
+#   db_map / product_ids : 供 main.py 做业务路由判断，避免 ID 散落在代码里
 QUERY_SPECS = {
     "opportunity_recall": {
-        "mode": "by_product",
-        "table_map": {
+        "mode": "multi_db_single_table",
+        "db_map": {
             "202608041615335173": "F09554",  # 号卡业务
             "202608041615335172": "F09555",  # 套餐业务
             "202608041615335174": "F09556",  # 宽带业务
@@ -172,17 +179,23 @@ QUERY_SPECS = {
         "order_by": "op_time DESC",
     },
     "loss_control": {
-        "mode": "sharded",
+        "mode": "single_db_multi_table",
         "product_ids": ["202609180955095402"],  # 控损专用
         "where": ["product_no"],
         "order_by": "op_time DESC",
     },
     "customer_diagnosis": {
-        "mode": "sharded",
+        "mode": "single_db_multi_table",
         "where": ["product_no", "product_id"],
         "order_by": None,
     },
 }
+
+QUERY_MODES = (
+    "multi_db_single_table",     # 多库单表
+    "single_db_multi_table",     # 单库多表
+    "single_db_single_table",    # 单库单表
+)
 
 
 def _validate_specs():
@@ -195,16 +208,25 @@ def _validate_specs():
         for col in spec["where"]:
             if col not in cols:
                 raise ValueError(f"{name}: QUERY.where 列 {col} 不在 DB_SCHEMA 中")
-        if spec["mode"] == "by_product":
+        mode = spec["mode"]
+        if mode not in QUERY_MODES:
+            raise ValueError(
+                f"{name}: 不支持的 QUERY.mode {mode}；仅支持 {QUERY_MODES}（多库多表不存在）"
+            )
+        if mode == "multi_db_single_table":
+            db_map = spec.get("db_map")
+            if not db_map:
+                raise ValueError(f"{name}: 多库单表模式需要 db_map（product_id → 库名）")
             prefixes = set(conf["FILE_PREFIXES"])
-            for pid, prefix in spec["table_map"].items():
-                if prefix not in prefixes:
-                    raise ValueError(f"{name}: table_map[{pid}] 的 {prefix} 不在 FILE_PREFIXES 中")
-        elif spec["mode"] == "sharded":
+            for pid, db_name in db_map.items():
+                if db_name not in prefixes:
+                    raise ValueError(f"{name}: db_map[{pid}] 的库名 {db_name} 不在 FILE_PREFIXES 中")
+        elif mode == "single_db_multi_table":
             if "NUM_TABLES" not in conf or "TABLE_NAME_PREFIX" not in conf:
-                raise ValueError(f"{name}: sharded 模式需要 NUM_TABLES / TABLE_NAME_PREFIX")
-        else:
-            raise ValueError(f"{name}: 不支持的 QUERY.mode {spec['mode']}")
+                raise ValueError(f"{name}: 单库多表模式需要 NUM_TABLES / TABLE_NAME_PREFIX")
+        else:  # single_db_single_table
+            if not spec.get("table_name"):
+                raise ValueError(f"{name}: 单库单表模式需要 table_name（固定表名）")
 
 
 _validate_specs()

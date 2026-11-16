@@ -35,7 +35,7 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 | 5 | 兜底 | 维表库 | `ProductInfoRaw` |
 
 前两组 ID 不再硬编码在 `main.py`，分别由
-`QUERY_SPECS["opportunity_recall"]["table_map"]` 的 key 与
+`QUERY_SPECS["opportunity_recall"]["db_map"]` 的 key 与
 `QUERY_SPECS["loss_control"]["product_ids"]` 派生。
 
 3. 输出：`product_name` 非空 → `code: "0"` 带话术；为空 → `code: "2"`、产品名与话术为空。
@@ -58,23 +58,43 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 `TASKS` / `DB_SCHEMAS` / `QUERY_SPECS` 三者 key 完全一致（`opportunity_recall` /
 `loss_control` / `customer_diagnosis`），导入时校验列与前缀的合法性，漂移即抛 `ValueError`。
 
+### `mode` 的三种库表形式
+
+`mode` 按「库数量 × 表数量」划分，枚举写在 `tasks/config.py` 的 `QUERY_MODES`。
+**多库多表场景不存在，不在支持范围内**，配置里出现任何其它值会在导入时抛 `ValueError`。
+
+| mode | 库表形式 | 库文件 | 表名 | 专用字段 |
+|---|---|---|---|---|
+| `multi_db_single_table` | 多库单表 | 按 `product_id` 选 `{库名}.db` | 每库一张 `data_{库名}` | `db_map` |
+| `single_db_multi_table` | 单库多表 | `{FILE_PREFIXES[0]}.db` | `{TABLE_NAME_PREFIX}_{crc32 % NUM_TABLES}` | 无（用 `.env` 的分表配置） |
+| `single_db_single_table` | 单库单表 | `{FILE_PREFIXES[0]}.db` | `table_name` 指定的固定表 | `table_name` |
+
+当前三个任务只用到前两种；`single_db_single_table` 已实现但暂无任务使用，
+新增单库单表任务时补 `table_name` 即可。`services/data_query.py::_resolve()` 按
+`mode` 走三个分支，各自算出 `(db_path, table_name, where 值列表)`。
+
+> **库名与表名分开**：`db_map` 是**库名映射**（`product_id → 库名`），值是 `.db`
+> 文件名主体，不是表名。多库单表模式下表名按固定约定 `data_{库名}` 派生，
+> 与写入侧 `init_db()` 建的 `data_{前缀}` 一致。
+
 ### `QUERY_SPECS` 字段
 
 | 字段 | 含义 |
 |---|---|
-| `mode` | `by_product`：按 `product_id` 选前缀；`sharded`：按 `crc32(product_no) % NUM_TABLES` 分表 |
+| `mode` | 库表形式，必须是 `QUERY_MODES` 三者之一，见上表 |
 | `where` | 条件列名数组，值由模块按列名从 `(telnum, product_id)` 取，用参数绑定传入 SQL |
 | `order_by` | 排序表达式，`None` 表示不排序；两者都 `LIMIT 1` |
-| `table_map` | `by_product` 专用：`product_id → 文件前缀`，表名 = `data_{前缀}`，库文件 = `{前缀}.db` |
+| `db_map` | 多库单表专用：**库名映射** `product_id → 库名`；库文件 `{库名}.db`，表名 `data_{库名}`。库名必须存在于 `FILE_PREFIXES` |
+| `table_name` | 单库单表专用：固定表名 |
 | `product_ids` | 供 `main.py` 路由判断的业务 ID 列表 |
 
 ### 三个任务的解析结果
 
 | 任务名（= `TASKS` key） | mode | 库文件 | 表名 | 条件与排序 | 返回列 |
 |---|---|---|---|---|---|
-| `opportunity_recall` | `by_product` | `tasks/sqlite_db/opportunity_recall/{前缀}.db` | `data_{前缀}`，前缀来自 `table_map` | `product_no = telnum` + `ORDER BY op_time DESC` | 12 列（op_time…city_id） |
-| `loss_control` | `sharded` | `tasks/sqlite_db/loss_control/F09591.db` | `data_F09591_{crc32 % NUM_TABLES}` | `product_no = telnum` + `ORDER BY op_time DESC` | 5 列（op_time, user_id, product_no, city_id, strategy_name） |
-| `customer_diagnosis` | `sharded` | `tasks/sqlite_db/customer_diagnosis/F09609.db` | `data_F09609_{crc32 % NUM_TABLES}` | `product_no = telnum AND product_id = ?`，不排序 | 5 列（op_time, user_id, product_no, product_id, strategy_script） |
+| `opportunity_recall` | `multi_db_single_table` | `tasks/sqlite_db/opportunity_recall/{库名}.db` | `data_{库名}`，库名来自 `db_map` | `product_no = telnum` + `ORDER BY op_time DESC` | 12 列（op_time…city_id） |
+| `loss_control` | `single_db_multi_table` | `tasks/sqlite_db/loss_control/F09591.db` | `data_F09591_{crc32 % NUM_TABLES}` | `product_no = telnum` + `ORDER BY op_time DESC` | 5 列（op_time, user_id, product_no, city_id, strategy_name） |
+| `customer_diagnosis` | `single_db_multi_table` | `tasks/sqlite_db/customer_diagnosis/F09609.db` | `data_F09609_{crc32 % NUM_TABLES}` | `product_no = telnum AND product_id = ?`，不排序 | 5 列（op_time, user_id, product_no, product_id, strategy_script） |
 
 ### 对外接口
 
@@ -84,7 +104,7 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 | `get_opportunity_recall_latest(telnum, product_id)` | 上表三行的薄封装，保持 `main.py` 调用点语义清晰 |
 | `get_loss_control_latest(telnum)` | 同上 |
 | `get_customer_diagnosis_record(telnum, product_id)` | 同上 |
-| `OPPORTUNITY_RECALL_PRODUCT_IDS` / `LOSS_CONTROL_PRODUCT_IDS` | 由 `table_map` / `product_ids` 派生的不可变集合，供路由判断 |
+| `OPPORTUNITY_RECALL_PRODUCT_IDS` / `LOSS_CONTROL_PRODUCT_IDS` | 由 `db_map` / `product_ids` 派生的不可变集合，供路由判断 |
 
 均为 `async` 函数、内部同步 `sqlite3`；表名与列名来自代码内配置，用户输入只走参数绑定。
 
@@ -93,8 +113,11 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 - 改列名/列顺序 → 只改 `DB_SCHEMAS[任务名]`（写入侧建表与读取侧 `dict` 组装同时生效）。
 - 改条件或排序 → 只改 `QUERY_SPECS[任务名]`。
 - 加分表数/换表名前缀/换文件前缀 → 改 `.env` 对应业务前缀分组的键，读写两侧同时生效。
-- 新增一个任务 → 在 `TASKS` / `DB_SCHEMAS` / `QUERY_SPECS` 各加一项，`main.py` 用
-  `query(任务名, ...)` 调用即可，无需新增查询模块。
+- 换库表形式 → 改 `QUERY_SPECS[任务名]["mode"]` 并补齐对应的专用字段
+  （多库单表要 `db_map`、单库单表要 `table_name`、单库多表用 `.env` 分表配置），
+  三种形式的分支已经在 `services/data_query.py::_resolve()` 里实现。
+- 新增一个任务 → 在 `TASKS` / `DB_SCHEMAS` / `QUERY_SPECS` 各加一项并选好 `mode`，
+  `main.py` 用 `query(任务名, ...)` 调用即可，无需新增查询模块。
 
 主键、分表数与库表定义的完整口径见 `Missions_writer.md`。
 
@@ -248,6 +271,9 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 - `services/data_query.py`、三个 spec 子类、`dim_reader` 均可独立导入。
 - `TASKS` / `DB_SCHEMAS` / `QUERY_SPECS` 三者 key 一致；改 `.env` 的
   `LOSS_CONTROL_NUM_TABLES` 后，`get_loss_control_latest()` 解析出的表名后缀同步变化。
+- `QUERY_MODES` 恰为三种；`_resolve()` 对三个任务分别解析出
+  `{库名}.db` + `data_{库名}`、`F09591.db` + `data_F09591_N`、`F09609.db` + `data_F09609_N`。
+  把 `mode` 改成多库多表等非法值，import `tasks.config` 应抛 `ValueError`。
 
 ## 未实现
 
