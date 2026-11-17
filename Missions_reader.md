@@ -102,7 +102,8 @@ D3 之后 `IOP token 请求失败` 统一带 `status=` 与具体原因（状态�
 `RETRY = _retry_profile()` 与 D2 的 `LIFETIME = _lifetime_profile()` 同样在
 `get_token.py` import 时各读一次并归一化，`backoff_seconds()` /
 `effective_lifetime()` 只做算术、不读盘。改 `IOP.retry.*` 或
-`IOP.token_lifetime.*` 需重启在线进程。
+`IOP.token_lifetime.*` 需重启在线进程。接口路径、`method`、`grant_type`、
+请求头等契约常量不读配置，集中在 `IOP/endpoints.py`（见「请求契约集中」小节）。
 
 ### 异步与超时（A1 / C1）
 
@@ -437,7 +438,8 @@ B1 的 `{}` 降级、D2 的有效期计算全部不受影响。
 
 ### 上游既定约定（不可改动）
 
-代码里对应位置已加注释锁定，后续优化不要"顺手修好"：
+契约值集中在 `IOP/endpoints.py`，两个调用点也保留锁定注释，后续优化不要
+"顺手修好"：
 
 - `access_token` 必须放在 URL 查询串，上游不接受 `Authorization` 头。
 - 两个端点只提供 `http` 明文；`client_id` / `client_secret` 以表单串提交，
@@ -454,6 +456,31 @@ D3 只改变「怎么判断响应成败」，D2 只改变「拿到 token 后 dea
 `skip_auto_headers=("Content-Type",)`。它只跳过自动生成的头，标签查询显式传入
 的 `charset=gbk` / `Accept-Encoding` 仍原样发出，实测两种请求的上游请求头与
 改动前逐一一致。这不是新约定，是把库切换与会话共用带来的副作用消掉。
+
+### 请求契约集中（`IOP/endpoints.py`）
+
+两个端点的 URL 路径、查询参数名、OAuth2 固定参数与请求头集中在
+`IOP/endpoints.py`；`get_token.py` / `get_custinfo.py` 只调用
+`token_request(cfg)` / `custinfo_request(cfg, tel, access_token)`，不再各自拼接
+字符串。仍由 `config.yaml` 提供的是部署与业务参数：
+
+| 位置 | 内容 |
+|---|---|
+| `IOP/endpoints.py` | `http` scheme、两个端点路径、`qryCustInfoByChannel`、`format=json`、`grant_type=client_credentials`、`charset=gbk` / `Accept-Encoding` 请求头 |
+| `IOP.TOKEN` | host / port / id / secret |
+| `IOP.CustInfo` | host / port / version / type |
+| `IOP.timeout` / `retry` / `token_lifetime` | 超时、重试退避冷却、有效期换算 |
+
+`token_request()` 用 `urllib.parse.urlencode` 构造表单串：参数顺序与原先一致，
+对当前凭据（纯字母数字）输出逐字相同；凭据含 `&` / `=` 等字符时不再把参数
+拆坏。这是「直接拼字符串」改成库编码带来的唯一差异，不改变 http 明文、
+token 放查询串、凭据存放位置或请求头；`version` / `type` 仍从配置读取。
+`custinfo_request()` 每次返回一份新的 headers dict，避免调用方改到常量。
+
+改动任一契约值只需改 `endpoints.py` 一处；新增 IOP 接口时在文件里加一个
+`*_request()` 即可，调用点不需要知道路径与参数名。对同一份 `config.yaml`，
+两个 `*_request()` 的输出与原先在两个调用点里逐个拼接的结果逐字一致，
+可用自检要点里的比对方法复核。
 
 ### 单次画像查询脚本（`test_local/test_iop.py`）
 
@@ -929,6 +956,10 @@ curl "http://host:8989/api/callStat?month=2026-11"
   脚本自身不打桩、不做断言，不写死真实号码，也不复制
   `requests.post` / `grant_type=client_credentials` / `qryCustInfoByChannel` /
   `int(expires_in) - 360` 这些请求实现。
+- **请求契约逐字一致**：用同一份 `config.yaml` 分别跑改动前后版本，以假
+  session 捕获两端点 `client.post()` 的 `url` / `data` / `json` / `headers`，
+  两组参数应逐字相同；另把 `IOP.TOKEN.secret` 临时换成含 `&` / `=` 的值，
+  `token_request()` 应正确转义，直接拼字符串则会把参数拆开。
 - **A3 状态不变量**：新建 `Tokens()` 后 `isinstance(deadline, datetime)` 为真、
   `deadline < now`、`token_valid()` 为 `False`；把判断顺序反写成
   `now <= deadline and access_token is not None` 也不抛异常（A3 之前必抛
@@ -956,7 +987,8 @@ curl "http://host:8989/api/callStat?month=2026-11"
   生产模块真实查询 IOP、打印客户标签画像，见「单次画像查询脚本」小节。
   按明确要求**不做自动化单元测试**，F3 不再列为待办；最初「复制两份请求实现」
   的问题已随复用生产模块解决。
-- 剩余独立清理项：F4（URL 模板 / `method` / `grant_type` / `version` /
-  `type` 等常量仍散在代码里，可再收敛一处）。
+- F4 已处理：URL 路径 / `method` / `grant_type` / `charset=gbk` 请求头等
+  契约常量集中在 `IOP/endpoints.py`，`version` / `type` / host / port /
+  超时 / 重试 / 有效期仍由 `config.yaml` 提供，见「请求契约集中」小节。
 - 另：根目录 `test_online.py` 的请求体里仍写有 `18866816199`，
   属在线接口测试脚本，不在本次调试脚本范围内。

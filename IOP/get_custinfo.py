@@ -1,6 +1,7 @@
 from src.log_util import my_log
 from IOP.get_token import TOKENS, ensure_token, token_valid
 from IOP.http_session import global_config, session_context
+from IOP.endpoints import custinfo_request
 import aiohttp
 import asyncio
 import time
@@ -17,21 +18,9 @@ async def get_custom_info_in_global(tel):
 
     # 上游接口约定：access_token 必须放在 URL 查询串中（不接受 Authorization 头），
     # 且只提供 http 明文端点。均为上游实际要求，不可改动。
-    url = ("http://{host}:{port}/openapi/httpService/UserService"
-           "?access_token={access_token}&method=qryCustInfoByChannel&format=json").format(
-        host=global_config['IOP']['CustInfo']['host'],
-        port=global_config['IOP']['CustInfo']['port'],
-        access_token=TOKENS.access_token)
-
     # 上游强制要求 Content-Type 声明 charset=gbk 并显式携带 Accept-Encoding，
     # 即使与实际序列化编码不一致也需照发，不可改动。
-    headers = {'Content-Type': 'application/json; charset=gbk', 'Accept-Encoding': 'gzip, deflate'}
-
-    post_data = {
-        "VERSION": f"{global_config['IOP']['CustInfo']['version']}",
-        "TELNUM": tel,
-        "TYPE": f"{global_config['IOP']['CustInfo']['type']}",
-    }
+    url, headers, post_data = custinfo_request(global_config, tel, TOKENS.access_token)
 
     start = time.perf_counter()
     # 复用应用级共享 session（lifespan 创建/关闭）。

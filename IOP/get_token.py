@@ -9,6 +9,7 @@ import time
 # client_timeout / global_config / session_context 统一由 http_session 提供；
 # 此处转出 client_timeout 以保持既有 `from IOP.get_token import client_timeout` 可用。
 from IOP.http_session import global_config, client_timeout, session_context
+from IOP.endpoints import token_request
 
 
 # 无有效 token 时 deadline 统一置为这个过去时间点，保证 TOKENS.deadline
@@ -271,19 +272,14 @@ async def token2global():
     """
     # 上游仅提供 http 明文 token 端点；client_id / client_secret 以表单串提交，
     # 凭据存放于 config.yaml。均为上游与部署环境的既定要求，不可改动。
-    token_url = 'http://{host}:{port}/openapi/restOauth2Server/access_token'.format(
-        host=global_config['IOP']['TOKEN']['host'], port=global_config['IOP']['TOKEN']['port'])
-
-    body = (f"grant_type=client_credentials"
-            f"&client_id={global_config['IOP']['TOKEN']['id']}"
-            f"&client_secret={global_config['IOP']['TOKEN']['secret']}")
+    url, body = token_request(global_config)
 
     # 复用应用级共享 session（lifespan 创建/关闭）。
     # session 已带 timeout 与 skip_auto_headers，这里只发请求、不再构造参数。
     status_code = None
     try:
         async with session_context() as client:
-            async with client.post(token_url, data=body) as response:
+            async with client.post(url, data=body) as response:
                 status_code = response.status
                 # 先查状态码。502 / 网关错误页即使 body 是合法 JSON，
                 # 也不该进入「按字段判断」的路径；不读 body 直接失败。
