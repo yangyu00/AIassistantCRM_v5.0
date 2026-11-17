@@ -12,7 +12,6 @@ from IOP.http_session import init_session, close_session
 from config import ImmutableYamlConfig
 from excel2consts.dim_reader import load_product_selling_point
 from services.product_info_raw import ProductInfoRaw as ProductInfoRaw
-from services.rewrite_by_excel.rewrite import ProductInfoRewrite as ProductInfoByExcel
 from services.rewrite_by_spec_f09554.rewrite import ProductInfoRewrite as ProductInfoBySpec9554
 from services.rewrite_by_spec_f09591.rewrite import ProductInfoRewrite as ProductInfoBySpec9591
 from services import data_query
@@ -103,7 +102,7 @@ async def marketAssistant(args: Args):
         custom_label_info = {}
 
     # 2. 建立产品对象列表
-    # 维表路由判断：一次请求只读一次，循环内复用
+    # 维表读取暂留，后续步骤统一收敛读取时机；当前不再参与路由判断
     product_selling_point_match_dict = load_product_selling_point()
     product_obj_list = []
     for one_product_obj in args.productId:
@@ -121,18 +120,19 @@ async def marketAssistant(args: Args):
                 product_obj_list.append(ProductInfoBySpec9591(one_product_obj.id, custom_label_info, record))
                 continue
 
-        # 3. 维表中业务
-        if one_product_obj.id in product_selling_point_match_dict:
-            product_obj_list.append(ProductInfoByExcel(one_product_obj.id, custom_label_info))
-            continue
-
+        # 3. 诊断兜底
+        # 不属于上述两类的产品 ID 全部落到这里。新线输出待完成，当前
+        # 统一输出 code=2 空话术；等新线实现后再切换。
         product_obj_list.append(ProductInfoRaw(one_product_obj.id, custom_label_info))
 
     # 3. 输出话术
+    # 诊断兜底统一输出 code=2 空话术。这里不能再靠 product_name 是否为空判定：
+    # 维表命中的产品 ID 落到兜底后，product_name 仍会从维表取到非空值，只看它
+    # 会返回 code=0 + 空话术，看起来成功、实际没有内容。
     allScripts = []
     for product_obj in product_obj_list:
         my_log.info(product_obj)
-        if product_obj.product_name is not None:
+        if isinstance(product_obj, (ProductInfoBySpec9554, ProductInfoBySpec9591)):
             allScripts.append(
                 {"productId": product_obj.product_id, "productName": product_obj.product_name,
                  "script": product_obj.output_script, "code": "0"})
