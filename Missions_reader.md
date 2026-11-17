@@ -46,8 +46,8 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 
 `IOP/get_custinfo.py::get_custom_info_in_global(tel)` 一次请求只调用一次，结果在
 `productId` 循环内复用。返回 `{ITEMCODE: [ITEMNAME, ITEMVALUE], ...}`。
-入口处先 `await ensure_token()`（A2 单飞 + D1 重试/退避/冷却 + D3 响应校验 +
-D2 有效期换算，见后续四节），再发标签查询；token 刷新对同一批并发请求
+入口处先 `await ensure_token()`（token 单飞 + 重试/退避/冷却 + 响应校验 +
+有效期换算，见后续四节），再发标签查询；token 刷新对同一批并发请求
 只发生一次，持续失败时冷却期内的请求直接降级、不再打认证服务。
 
 ### 返回契约与降级
@@ -59,12 +59,12 @@ D2 有效期换算，见后续四节），再发标签查询；token 刷新对�
 按「无标签」正常产出话术。
 
 失败分支包括：token 不可用、token 请求超时/网络异常、**token 响应非 200 /
-解析失败 / 结构异常 / 缺字段 / 上游 `error`**（D3，见后）、标签查询连接或读超时、
+解析失败 / 结构异常 / 缺字段 / 上游 `error`**（详见「Token 响应校验」），以及标签查询连接或读超时、
 响应 JSON 解析失败、非 200、`res_code != 0`、响应非 dict、缺少或非列表的
 `BUSIINFO`。缺 `ITEMCODE` / 非 dict 的单条记录跳过，不拖累整批。
 `res_code` 按 `str(...)` 比较，兼容上游返回字符串 `"0"` 或数字 `0`。
 
-token 侧任一失败都会清空 `TOKENS` 并记 ERROR，由 D1 按配置重试/退避/冷却，
+token 侧任一失败都会清空 `TOKENS` 并记 ERROR，按配置重试/退避/冷却，
 最终仍无有效 token 时统一返回 `{}`；**不会沿用可能已过期的旧 access_token**。
 
 ### 日志字段
@@ -84,10 +84,10 @@ token 侧任一失败都会清空 `TOKENS` 并记 ERROR，由 D1 按配置重试
 `IOP token 请求失败` 与 `IOP 标签查询网络失败`，都带 `error` 与 `cost`，
 保证超时时 IOP 侧仍留痕（否则异常会穿透到 `main.py` 的 `except`，只剩一条笼统日志）。
 
-D3 之后 `IOP token 请求失败` 统一带 `status=` 与具体原因（状态码非 200 /
+响应校验后 `IOP token 请求失败` 统一带 `status=` 与具体原因（状态码非 200 /
 响应解析失败 / 响应结构异常 / `access_token` 为空 / 上游返回错误 / 缺少
 `access_token` 且无 `error` / 网络异常）。网络异常发生在建连阶段时
-`status=None`。前缀沿用 C1/B2，只是把原先笼统的 `error=` 与 `str(res_data)`
+`status=None`。前缀保持不变，只是把原先笼统的 `error=` 与 `str(res_data)`
 换成结构化字段。
 
 ### 配置读取
@@ -98,14 +98,14 @@ D3 之后 `IOP token 请求失败` 统一带 `status=` 与具体原因（状态�
 重建字典，原先每请求至少一次磁盘 I/O + yaml 解析（token 刷新时再多一次）。
 现在请求路径为 0 次，IOP 侧 import 阶段的读盘也由两次收敛为一次。
 运行期修改 `config.yaml` 不会热生效，需重启进程。`client_timeout()` 复用同一份
-模块级只读配置，构造 `aiohttp.ClientTimeout`，无磁盘 I/O；D1 的
-`RETRY = _retry_profile()` 与 D2 的 `LIFETIME = _lifetime_profile()` 同样在
+模块级只读配置，构造 `aiohttp.ClientTimeout`，无磁盘 I/O。
+`RETRY = _retry_profile()` 与 `LIFETIME = _lifetime_profile()` 同样在
 `get_token.py` import 时各读一次并归一化，`backoff_seconds()` /
 `effective_lifetime()` 只做算术、不读盘。改 `IOP.retry.*` 或
 `IOP.token_lifetime.*` 需重启在线进程。接口路径、`method`、`grant_type`、
 请求头等契约常量不读配置，集中在 `IOP/endpoints.py`（见「请求契约集中」小节）。
 
-### 异步与超时（A1 / C1）
+### 异步与超时
 
 原先 `IOP/get_token.py::token2global()` 虽是 `async def`，内部却用同步
 `requests.post`：一旦触发 token 刷新，**整个事件循环被卡住**，所有并发请求一起等。
@@ -114,7 +114,7 @@ D3 之后 `IOP token 请求失败` 统一带 `status=` 与具体原因（状态�
 | 位置 | 改动 |
 |---|---|
 | `get_token.py` | `requests.post` → `aiohttp` 异步请求；服务链路不再混用 `requests` / `aiohttp` |
-| `IOP/http_session.py` | 统一构造 `ClientSession(timeout=client_timeout(), skip_auto_headers=...)`，connect / sock_read / total 三层超时；两处调用点只取 `session_context()`（见 C2 小节） |
+| `IOP/http_session.py` | 统一构造 `ClientSession(timeout=client_timeout(), skip_auto_headers=...)`，connect / sock_read / total 三层超时；两处调用点只取 `session_context()`（见「共享 ClientSession」） |
 | 两处调用点 | 超时与网络异常（`aiohttp.ClientError` / `asyncio.TimeoutError`）就地捕获、记日志、降级；token 侧还清空 `access_token`，让既有重试继续 |
 
 配置在 `config.yaml` 的 `IOP.timeout`（秒），两个端点共用一组：
@@ -131,17 +131,17 @@ D3 之后 `IOP token 请求失败` 统一带 `status=` 与具体原因（状态�
 所以 token 端点持续无响应时，一轮刷新的耗时约为
 `max_attempts × min(total, sock_read) + Σ退避`：默认 `4 × 2 + (0.2+0.4+0.8)
 = 9.4` 秒，上界 `4 × 3 + 1.4 = 13.4` 秒。要压低这个窗口，调小
-`max_attempts` / `sock_read` / `total` / 退避参数（见 D1 小节）。
-**A2 单飞 + D1 冷却后这笔代价由同一批并发请求共同承担一次，冷却期内的新批次
+`max_attempts` / `sock_read` / `total` / 退避参数（见「重试、退避与失败冷却」）。
+**token 单飞 + 失败冷却后这笔代价由同一批并发请求共同承担一次，冷却期内的新批次
 直接降级、完全不等待**，不再每个请求或每个新批次各付一轮。
 
-C2（共享 `ClientSession`）、A2（token 单飞）、D1（重试/退避/冷却）、
-D3（token 响应校验）、D2（有效期换算）、A3（`deadline` 恒为 datetime）均已实现，
-分见后续六个小节。F2 `IOPClient` 类已明确不做（见文末「未实现」）。
+共享 `ClientSession`、token 单飞、重试/退避/冷却、
+响应校验、有效期换算、`deadline` 恒为 datetime 均已实现，
+分见后续六个小节。`IOPClient` 类已明确不做（见文末「未实现」）。
 `test_local/test_iop.py` 是单次画像查询脚本：命令行给电话号，复用生产模块
 真实查询 IOP 并打印客户标签画像，见「单次画像查询脚本」小节。
 
-### 共享 ClientSession（C2）
+### 共享 ClientSession
 
 原先每次请求都 `async with aiohttp.ClientSession(...)`，无连接复用、每次重新
 TCP 握手，高并发下句柄开销明显。现在应用级只创建一个会话：
@@ -161,25 +161,25 @@ uvicorn 正常关闭时 startup / shutdown 在同一 loop。`init_session()` /
 调用），`get_session()` 为 `None`，`session_context()` 退回「本次请求一个临时
 session」，由内层 `async with` 在当前 loop 内创建并关闭，只告警一次避免刷屏。
 行为与改动前一致、不泄漏连接，但**失去连接复用**——生产必须确保走 lifespan。
-该降级告警是 `WARNING`，而 `src/log_util.py` 只落盘 INFO / ERROR（见 D1 小节），
+该降级告警是 `WARNING`，而 `src/log_util.py` 只落盘 INFO / ERROR（见「重试、退避与失败冷却」），
 所以判断部署是否漏了入口应直接看 `get_session()` 或 startup 的
 「IOP 共享 ClientSession 已创建」INFO 日志，不要依赖这条告警。
 
 **一个 session 服务两个端点**：token 用 `data=`、标签查询用 `json=` + 显式
 headers，共用同一份 `skip_auto_headers=("Content-Type",)`。该参数只跳过
 **自动生成**的头：token 请求不带 Content-Type（等价 `requests`），标签查询
-显式传入的 `charset=gbk` / `Accept-Encoding` 不受影响、原样发出（E4）。
+显式传入的 `charset=gbk` / `Accept-Encoding` 不受影响、原样发出。
 实测 5 次请求共享 session 的连接池只有 1 条活跃连接，改动前每次新建 session
 对应 5 条 TCP 连接。会话侧本身没有专属配置项，复用 `IOP.timeout`；`config.yaml`
-另有 `IOP.retry` 段供 D1 使用（见后）。
+另有 `IOP.retry` 段供重试策略使用（见「重试、退避与失败冷却」）。
 
-### Token 单飞（A2）
+### Token 单飞
 
 原先 `get_custinfo.py` 每次请求各自判定 `TOKENS` 是否过期、各自调
 `token2global()` 刷新：N 个请求同时判定过期 → **N 份 token 请求并发打认证服务**，
 彼此覆盖 `access_token` / `deadline`（惊群）。叠加当时单轮 4 次重试后，上游持续
 失败时最坏是 `4 × N` 次请求、日志刷屏、延迟互相叠加（次数现由
-`IOP.retry.max_attempts` 配置，见 D1 小节）。
+`IOP.retry.max_attempts` 配置，见「重试、退避与失败冷却」）。
 
 现在把「确保 token 有效」收敛成 `IOP/get_token.py::ensure_token()` 一个入口，
 `get_custinfo.py` 只调它一次：
@@ -190,16 +190,16 @@ headers，共用同一份 `skip_auto_headers=("Content-Type",)`。该参数只�
 | 2 记代次 | 等锁前记下 `_REFRESH_GEN` |
 | 3 拿锁 | `async with _get_refresh_lock()` |
 | 4 二次检查 | `token_valid()` 为真（别人刷成功）**或** `_REFRESH_GEN` 已变（本批并发已有人刷过一轮）**或**已进入冷却期 → 直接返回，复用结果 |
-| 5 锁内刷新 | 只有第一个请求执行一轮 D1 刷新（`max_attempts` 次请求、成功即返回、失败间指数退避），`finally` 里 `_REFRESH_GEN += 1` |
-| 6 降级 | 仍无有效 token 时由 `get_custinfo.py` 按 B1 统一返回 `{}` |
+| 5 锁内刷新 | 只有第一个请求执行一轮重试刷新（`max_attempts` 次请求、成功即返回、失败间指数退避），`finally` 里 `_REFRESH_GEN += 1` |
+| 6 降级 | 仍无有效 token 时由 `get_custinfo.py` 统一返回 `{}` |
 
 冷却期在**拿锁之前**就短路，冷却期内的请求连锁都不碰（步骤 1 之前）。
 
 `token2global()` 保留为**单次刷新原语**，只在单飞锁内被调用；业务侧不要直接
 调它，否则绕开保护。`token_valid()` 是
 `access_token is not None and now <= deadline`；前者是「拿没拿到 token」的
-业务条件，A3 之后 `deadline` 恒为 datetime，这一半不再兼作类型兜底
-（见「Token 状态不变量（A3）」小节）。
+业务条件，`deadline` 恒为 datetime，这一半不再兼作类型兜底
+（见「Token 状态不变量」小节）。
 
 **代次为什么必要**：只做「锁 + 二次检查」时，刷新**失败**后 token 仍无效，
 每个等待者拿锁后都会再刷一轮 `max_attempts` 次——把「并发打爆上游」变成
@@ -213,20 +213,20 @@ headers，共用同一份 `skip_auto_headers=("Content-Type",)`。该参数只�
 | 刷新失败 | 40（每请求 4 次） | **4** |
 
 **跨 event loop**：`asyncio.Lock` 一旦发生争用就绑定创建它的 loop，跨 loop 会抛
-`RuntimeError`（与 C2 共享 session 同一个坑）。故 `_get_refresh_lock()` 按当前
+`RuntimeError`（与共享 ClientSession 同一个坑）。故 `_get_refresh_lock()` 按当前
 `asyncio.get_running_loop()` 懒创建/重建，不在模块级放裸锁；生产单 loop 下始终
 是同一把锁，TestClient / 独立脚本多次 `asyncio.run()` 也不会炸。不需要 lifespan
 接线，不改 `main.py`。
 
-### 重试、退避与失败冷却（D1）
+### 重试、退避与失败冷却
 
 原先 `ensure_token()` 里是「循环外 1 次 + `for _ in range(3)`」：想写「重试
 3 次」实际是 **4 次**连续打认证服务，**无退避**、重试之间**无日志**，只有
-`token2global()` 内每条请求各记一条 ERROR。A2 只解决「同一批并发重复刷新」，
+`token2global()` 内每条请求各记一条 ERROR。token 单飞只解决「同一批并发重复刷新」，
 不解决「持续失败下不同批次各自刷新」——这一节补上。
 
 配置在 `config.yaml` 的 `IOP.retry`，import 时由 `_retry_profile()` 读一次
-（请求路径 0 次读盘，E1）。缺段、类型错误、NaN / inf / 越界一律回落默认，
+（请求路径 0 次读盘）。缺段、类型错误、NaN / inf / 越界一律回落默认，
 部署沿用旧 `config.yaml` 不会启动失败。
 
 | 键 | 默认 | 说明 |
@@ -239,7 +239,7 @@ headers，共用同一份 `skip_auto_headers=("Content-Type",)`。该参数只�
 
 默认退避序列（4 次尝试之间有 3 次）：`0.2 / 0.4 / 0.8` 秒。
 
-**单轮流程**（全部在 A2 单飞锁内，只有持锁者执行）：
+**单轮流程**（全部在单飞锁内，只有持锁者执行）：
 
 1. INFO `IOP token 刷新开始 | max_attempts=N`
 2. 逐次 `await token2global()`；`token_valid()` 为真即记
@@ -250,11 +250,11 @@ headers，共用同一份 `skip_auto_headers=("Content-Type",)`。该参数只�
 4. N 次全失败：ERROR
    `IOP token 刷新失败 | attempts=N | cooldown=5.0s | cost=...ms`，
    设置 `_COOLDOWN_UNTIL = time.monotonic() + cooldown`
-5. `finally` 里 `_REFRESH_GEN += 1`，与 A2 代次共享
+5. `finally` 里 `_REFRESH_GEN += 1`，与单飞代次共享
 
-`token2global()` 仍是单次刷新原语，C1 的超时收口与 B2 的
-`IOP token 请求失败` 日志**前缀沿用**（D3 给它补了 `status=` 与具体原因，
-见下一小节；D2 只改成功分支的有效期换算）。D1 新增的是「第几次 / 退避多久 /
+`token2global()` 仍是单次刷新原语，超时收口与
+`IOP token 请求失败` 日志**前缀沿用**（响应校验给它补了 `status=` 与具体原因，
+见下一小节；有效期换算只改成功分支）。本节新增的是「第几次 / 退避多久 /
 本轮汇总 / 冷却」这四类信息。
 
 **日志级别**：`src/log_util.py` 只落盘 `INFO` / `ERROR` 两个级别，
@@ -263,14 +263,14 @@ ERROR（与 `token2global` 的失败日志同文件、语义也确实是一次�
 冷却提示用 INFO。后续若想改回 WARNING，必须同时给 `log_util.py` 加 sink。
 
 **失败冷却**：截止点用 `time.monotonic()`，不受系统时间回拨影响。冷却期内
-`ensure_token()` 在**拿锁之前**直接短路，连锁都不碰：所有请求立即按 B1
+`ensure_token()` 在**拿锁之前**直接短路，连锁都不碰：所有请求立即
 降级 `{}`，**不再打认证服务、不再等 4 次超时**。一个冷却周期只打一条
 `IOP token 处于失败冷却期 | remain=...s` INFO（`_COOLDOWN_WARNED_UNTIL`
-按截止点去重），避免每个失败请求刷屏；B1 的「IOP token 不可用」仍是每请求
+按截止点去重），避免每个失败请求刷屏；「IOP token 不可用」仍是每请求
 一条。冷却到期后的第一个请求开启新一轮刷新；刷新成功会立即把
 `_COOLDOWN_UNTIL` 清 0，不会误伤后续正常请求。
 
-**与 A2 的关系**：代次让**同一批并发**共享一轮（默认 10 并发失败 40 → 4 次），
+**与单飞的关系**：代次让**同一批并发**共享一轮（默认 10 并发失败 40 → 4 次），
 冷却让**不同批次**共享失败结果（冷却期内 N 个新批次 → 0 次）。二次检查里也
 判断了冷却期，防止某请求在等锁期间刚好由另一批触发了新的冷却。
 
@@ -282,7 +282,7 @@ ERROR（与 `token2global` 的失败日志同文件、语义也确实是一次�
 
 `config.yaml` 只新增 `IOP.retry` 一段；`IOP.timeout`、URL、凭据、请求头等均未动。
 
-### Token 响应校验（D3）
+### Token 响应校验
 
 改动前 `token2global()` 只判 `'access_token' in res_data` / `elif 'error' in res_data`
 两种结构，**完全没读 `response.status`**，三条隐患叠在一起：
@@ -295,7 +295,7 @@ ERROR（与 `token2global` 的失败日志同文件、语义也确实是一次�
 | 上游返回 `error` | `my_log.error(str(res_data))` 打整个 dict，无 status、非结构化 |
 
 最危险的是第一条：旧 `access_token` 可能已被吊销或即将过期，刷新失败却继续沿用，
-且 D1 的循环因为 `token_valid()` 为真会提前 break，把失败伪装成成功。
+且重试循环因为 `token_valid()` 为真会提前 break，把失败伪装成成功。
 
 现在所有失败分支统一走 `_fail_token(status_code, reason)`：
 
@@ -308,26 +308,26 @@ ERROR（与 `token2global` 的失败日志同文件、语义也确实是一次�
    `error=` / `error_description=`；**既无 `access_token` 也无 `error` 明确报
    「响应缺少 access_token 且无 error 字段」**。
 5. **统一清空**：`_fail_token()` 把 `access_token` 置 `None`、`deadline` 置回
-   `_INVALID_DEADLINE`（过去时间）并记 ERROR。A3 之前这里写的是 `deadline = None`，
+   `_INVALID_DEADLINE`（过去时间）并记 ERROR。此前这里写的是 `deadline = None`，
    靠 `token_valid()` 的短路顺序躲开与 `None` 比较；现在两个字段都是明确的
    「无有效 token」状态，不残留过期的 deadline，也不依赖短路顺序。
-6. **网络异常**：C1 的 `ClientError` / `TimeoutError` 收口保留，改调
+6. **网络异常**：`ClientError` / `TimeoutError` 收口保留，改调
    `_fail_token()`，日志带 `status=None`（建连阶段还没拿到响应）。
 
 日志前缀仍是 `IOP token 请求失败`，只新增 `status=` 与具体原因；项目只落盘
 INFO / ERROR，故用 ERROR（见上文「日志级别」）。
 
-**当时的边界已由 D2 补齐**：D3 落地时只判响应成败，没有碰成功分支里
+**当时的边界已由有效期换算补齐**：响应校验落地时只判响应成败，没有碰成功分支里
 `int(expires_in) - 360` 那一行——上游返回合法 `access_token` 但 `expires_in`
 是非法字符串时会抛 `ValueError` 穿透；`expires_in <= 360` 时 deadline 落在
-过去、每个请求都判过期。两者现在都由 D2 的 `effective_lifetime()` 处理，
-见下一小节。D3 与 D2 是两类不同的问题，排查时别混为一谈。
+过去、每个请求都判过期。两者现在都由 `effective_lifetime()` 处理，
+见下一小节。响应成败与有效期换算是两类不同的问题，排查时别混为一谈。
 
-`token2global()` 仍是单次刷新原语，只在 A2 单飞锁内被调用；D3 只改响应
-校验，D2 只改成功分支的有效期换算，二者都不改请求形状、重试次数、
+`token2global()` 仍是单次刷新原语，只在单飞锁内被调用；响应校验只改
+成败判断，有效期换算只改成功分支，二者都不改请求形状、重试次数、
 退避与冷却。
 
-### Token 有效期（D2）
+### Token 有效期
 
 改动前成功分支只有两行：
 
@@ -340,12 +340,12 @@ TOKENS.deadline = datetime.datetime.now() + datetime.timedelta(seconds=(int(expi
 
 | 上游返回值 | 改动前行为 |
 |---|---|
-| `expires_in` 缺失 / `None` / `"abc"` / `""` / `bool` / `NaN` | `int()` 抛 `TypeError` / `ValueError` 穿透到 `main.py` 的 `except`：B1 降级 `{}`，**IOP 侧无日志**，D1 的 `finally` 只保证代次 +1 |
+| `expires_in` 缺失 / `None` / `"abc"` / `""` / `bool` / `NaN` | `int()` 抛 `TypeError` / `ValueError` 穿透到 `main.py` 的 `except`：下游降级 `{}`，**IOP 侧无日志**，重试循环的 `finally` 只保证代次 +1 |
 | `expires_in = 300`（或任何 `<= 360`） | `300 - 360 = -60`，deadline 落在过去 → `token_valid()` 恒为假 → **每个请求都判过期、每次都刷新 token**，认证服务被打满 |
 | `expires_in` 极大（如 `1e15`） | `timedelta` 溢出 |
 
 现在由 `effective_lifetime(raw)` 统一换算，配置在 `config.yaml` 的
-`IOP.token_lifetime`，import 时由 `_lifetime_profile()` 读一次（E1）：
+`IOP.token_lifetime`，import 时由 `_lifetime_profile()` 读一次：
 
 | 键 | 默认 | 说明 |
 |---|---|---|
@@ -382,15 +382,15 @@ IOP token expires_in 异常 | 非数字('abc') | 按 240s 计算有效期
 ```
 
 用 `INFO` 而非 `ERROR`：token 本身有效、服务正常，只是上游字段不规范，
-不该算故障；但项目只落盘 INFO / ERROR，所以用 INFO 保证留痕（见 D1 的
+不该算故障；但项目只落盘 INFO / ERROR，所以用 INFO 保证留痕（见「重试、退避与失败冷却」的
 「日志级别」）。日志不含 `access_token` 的值。
 
 `token2global()` 仍先 `TOKENS.deadline = ...` 再写 `access_token`，顺序不变。
 deadline 仍用 `datetime.datetime.now()`（本地墙上时间），**系统时间回拨**
-不在 D2 范围内——D1 的冷却截止点已用 `time.monotonic()`，两者互不影响。
-「无有效 token」时的 deadline 由 A3 统一为过去时间，见下一小节。
+不在本节范围内——冷却截止点已用 `time.monotonic()`，两者互不影响。
+「无有效 token」时的 deadline 统一为过去时间，见下一小节。
 
-### Token 状态不变量（A3）
+### Token 状态不变量
 
 改动前 `Tokens.deadline` 初始为 `None`，`token_valid()` 写成：
 
@@ -401,7 +401,7 @@ return (TOKENS.access_token is not None
 
 `now <= None` 会抛 `TypeError`，全靠 `access_token is not None` **排在第一位**
 短路才不炸。这是一个隐式依赖：一旦有人调整判断顺序、或某个失败分支只把
-`access_token` 置 `None` 而忘了 `deadline`，就会立刻出问题。D3 的
+`access_token` 置 `None` 而忘了 `deadline`，就会立刻出问题；
 `_fail_token()` 也确实把 `deadline` 写成 `None`，等于每次失败后又把状态退回
 需要短路保护的样子。
 
@@ -414,27 +414,27 @@ _INVALID_DEADLINE = datetime.datetime.min
 | 位置 | 改动前 | 改动后 |
 |---|---|---|
 | `Tokens.__init__()` | `deadline = None` | `deadline = _INVALID_DEADLINE` |
-| `_fail_token()`（D3 所有失败分支） | `deadline = None` | `deadline = _INVALID_DEADLINE` |
+| `_fail_token()`（所有失败分支） | `deadline = None` | `deadline = _INVALID_DEADLINE` |
 | `token_valid()` docstring | 注明「短路顺序保护 deadline 初始为 None」 | 改为说明 `deadline` 恒为 datetime、`access_token` 检查是业务条件 |
 
 于是 `TOKENS.deadline` 在**所有路径**下都是 `datetime` 对象：初始化、刷新成功、
-D3 任一失败分支、D2 异常有效期、D1 冷却。`token_valid()` 里的 `and` 仍保留，
+响应校验的各类失败、异常有效期取值、失败冷却。`token_valid()` 里的 `and` 仍保留，
 但含义从「兼作类型兜底」收敛为纯粹的业务判断——「没拿到 token 就不算有效」，
 即便某个 deadline 恰好落在未来也是如此。
 
 `test_local/test_iop.py` 现为**单次画像查询脚本**（见「单次画像查询脚本」小节），
 只调 `get_custom_info_in_global()`，不持有 `Tokens`、不给 `TOKENS.deadline`
-赋值，也没有场景间的状态复位，因此 A3 不需要在这个脚本里加任何代码；
+赋值，也没有场景间的状态复位，因此状态不变量不需要在这个脚本里加任何代码；
 不变量只由生产模块 `IOP/get_token.py` 一处维护。
 
 改动量只有几行，且**不改变任何对外行为**：`datetime.min` 恒在过去，
-`token_valid()` 在初始态与失败态仍为 `False`；A2 快速路径、D1 冷却、
-B1 的 `{}` 降级、D2 的有效期计算全部不受影响。
+`token_valid()` 在初始态与失败态仍为 `False`；单飞快速路径、失败冷却、
+`{}` 降级、有效期计算全部不受影响。
 
 自检：新建 `Tokens()` 后 `isinstance(deadline, datetime)` 为真、
 `deadline < now`、`token_valid()` 为 `False`；把判断顺序反写成
-`now <= deadline and access_token is not None` 也不抛异常（A3 之前必抛
-`TypeError`）；跑完 D3 的各类失败分支后 `deadline` 仍是 datetime，不是 None。
+`now <= deadline and access_token is not None` 也不抛异常（此前必抛
+`TypeError`）；跑完各类失败分支后 `deadline` 仍是 datetime，不是 None。
 
 ### 上游既定约定（不可改动）
 
@@ -447,9 +447,9 @@ B1 的 `{}` 降级、D2 的有效期计算全部不受影响。
 - 请求头必须声明 `Content-Type: application/json; charset=gbk` 并显式携带
   `Accept-Encoding: gzip, deflate`，即使与实际序列化编码不一致也照发。
 
-换成 `aiohttp`、收敛为共享 `ClientSession`、再加 D1 重试/退避/冷却、D3 响应
-校验与 D2 有效期换算后，上述各项逐字保留——D1 只改变「发几次、间隔多久」，
-D3 只改变「怎么判断响应成败」，D2 只改变「拿到 token 后 deadline 怎么算」，
+换成 `aiohttp`、收敛为共享 `ClientSession`、再加重试/退避/冷却、
+响应校验与有效期换算后，上述各项逐字保留——重试只改变「发几次、间隔多久」，
+响应校验只改变「怎么判断成败」，有效期换算只改变「拿到 token 后 deadline 怎么算」，
 都不改变单次请求的形状。额外一处
 等价处理：`requests` 对字符串 `data=` 不加 `Content-Type`，而 `aiohttp` 默认会补
 `text/plain; charset=utf-8`，所以共享 session 统一带
@@ -501,8 +501,8 @@ python test_local/test_iop.py 13900000000
 
 与最初的复制版相比，只保留一个改进：**不复制请求实现**。脚本只调
 `IOP.get_custinfo.get_custom_info_in_global()`，URL / headers / post_data /
-Tokens / 有效期换算全部走生产模块，因此 A2 单飞、D1 重试退避冷却、D2 有效期
-换算、D3 响应校验、C1 超时、C2 会话生命周期都自动带上，生产侧改了不会漏。
+Tokens / 有效期换算全部走生产模块，因此 token 单飞、重试退避冷却、
+有效期换算、响应校验、超时收口、会话生命周期都自动带上，生产侧改了不会漏。
 
 | 项 | 做法 |
 |---|---|
@@ -510,7 +510,7 @@ Tokens / 有效期换算全部走生产模块，因此 A2 单飞、D1 重试退�
 | 会话 | 独立脚本不进 uvicorn 的 lifespan，显式 `await init_session()` / `finally: await close_session()`，避免走「临时 session 降级」告警，且同 loop 内关闭 |
 | import 时机 | 生产模块在 `_query()` 内 import；`import test_local.test_iop` 零副作用、不发请求 |
 | 输出 | 逐项打印 `ITEMCODE / 名称 / 值`，再附原始 dict 的 JSON；只打印到终端，不写日志文件 |
-| 空结果 | 打印「未查到标签画像」并提示看 `log/ERROR_*.log`（token 不可用 / 上游非 200 / 超时都会按 B1 降级为 `{}`），退出码仍为 0 |
+| 空结果 | 打印「未查到标签画像」并提示看 `log/ERROR_*.log`（token 不可用 / 上游非 200 / 超时都会降级为 `{}`），退出码仍为 0 |
 
 这里的「客户画像」指 IOP 返回的**客户标签画像** `{ITEMCODE: [ITEMNAME, ITEMVALUE]}`，
 也就是在线业务 `custom_label_info` 的原始输入。业务侧的 `auxiliary_portrait`
@@ -519,7 +519,7 @@ Tokens / 有效期换算全部走生产模块，因此 A2 单飞、D1 重试退�
 
 两点注意：`config.yaml` 里的 IOP 地址是**生产地址**，运行即真实联网；生产模块
 import 时 `src/log_util.py` 会按既有行为创建 `log/` 目录与当日日志，但日志内容
-不含手机号（B2），脚本自身也不写日志行。
+不含手机号，脚本自身也不写日志行。
 
 ## 业务库读取（`services/data_query.py`）
 
@@ -832,8 +832,8 @@ curl "http://host:8989/api/callStat?month=2026-11"
 | IOP | 未经 lifespan（共享 session 未初始化） | `session_context()` 降级为本次请求临时 session，只告警一次；结果正确、不泄漏连接，但失去连接复用 |
 | IOP | token 刷新失败（含超时） | `ensure_token()` 单轮最多 `IOP.retry.max_attempts` 次（默认 4）、失败间指数退避，一轮全失败进入 `cooldown` 冷却；不抛异常，同一批并发共享失败结果并一起降级 `{}`；API 不 500 |
 | IOP | 处于失败冷却期 | `ensure_token()` 在拿锁前直接短路，**不打认证服务、不等超时**；所有请求立即降级 `{}`；一个冷却周期只打一条 INFO 提示 |
-| IOP | token 响应非 200 / 解析失败 / 结构异常 / 缺字段 / 上游 `error`（D3） | `token2global()` 统一清空 `TOKENS` 并记带 `status=` 的 ERROR；由 D1 重试/退避/冷却，最终降级 `{}`；**不沿用旧 token** |
-| IOP | `expires_in` 缺失 / 非法 / `<= 360` / 过大（D2） | 缺失静默用 600；非法回落默认并记一条 INFO；有效期夹在 `[min_lifetime, 上游声明值]`，deadline 永远落在未来、不抛 `ValueError`、不每请求刷新；token 照常可用 |
+| IOP | token 响应非 200 / 解析失败 / 结构异常 / 缺字段 / 上游 `error` | `token2global()` 统一清空 `TOKENS` 并记带 `status=` 的 ERROR；按配置重试/退避/冷却，最终降级 `{}`；**不沿用旧 token** |
+| IOP | `expires_in` 缺失 / 非法 / `<= 360` / 过大 | 缺失静默用 600；非法回落默认并记一条 INFO；有效期夹在 `[min_lifetime, 上游声明值]`，deadline 永远落在未来、不抛 `ValueError`、不每请求刷新；token 照常可用 |
 | 写入侧 | 注册 xlsx 缺失 | `dim_watcher` 告警跳过，库保留上次成功版本 |
 
 **维表侧出任何问题都不会让 API 500**：产品名为 `None`、`queried_label_ids` 为 `[]`、
@@ -873,12 +873,12 @@ curl "http://host:8989/api/callStat?month=2026-11"
   `skip_auto_headers=("Content-Type",)`：token 的 `data=` 请求头与改动前 `requests`
   一致（不带 `Content-Type`），标签查询显式 `charset=gbk` / `Accept-Encoding`
   原样发出。
-- **A1 不再阻塞事件循环**：把 IOP 请求打桩成 50ms 延迟，10 个并发
+- **异步请求不再阻塞事件循环**：把 IOP 请求打桩成 50ms 延迟，10 个并发
   `token2global()` 总耗时应接近 50ms（改动前用同步 `requests.post` 会串行成 ~500ms）。
   注意 `token2global()` 现在是单次刷新原语，业务侧入口是 `ensure_token()`；
   测并发刷新次数应打桩 `token2global` 后跑 `ensure_token()`。
-- **C1 超时收口**：让 token / 标签查询抛 `asyncio.TimeoutError`，应看到
-  `IOP token 请求失败`（D3 后带 `status=None`）或 `IOP 标签查询网络失败` 的
+- **超时收口**：让 token / 标签查询抛 `asyncio.TimeoutError`，应看到
+  `IOP token 请求失败`（带 `status=None`）或 `IOP 标签查询网络失败` 的
   ERROR 日志、返回 `{}`，且 API 不 500；token 侧 `access_token` 与 `deadline`
   都被清空。
   把 `config.yaml` 的 IOP host/port 临时指向一个「accept 后不回数据」的本地端口
@@ -886,66 +886,66 @@ curl "http://host:8989/api/callStat?month=2026-11"
   日志含 4 条 `IOP token 请求失败`、3 条 `IOP token 刷新重试`、
   1 条 `IOP token 刷新失败 | attempts=4 | cooldown=5.0s`，API 仍 200；
   紧接着再发请求应被冷却短路、0 次刷新、立即返回 `{}`。
-- **C2 生命周期**：`TestClient(app)` 作为上下文进入时
+- **共享 session 生命周期**：`TestClient(app)` 作为上下文进入时
   `IOP.http_session.get_session()` 非 `None` 且 `closed=False`，退出后为 `None`
   （已 `close()`）；startup 日志含「IOP 共享 ClientSession 已创建」、
   shutdown 日志含「已关闭」，二者在同一 event loop。
-- **C2 连接复用**：起本地 HTTP server 连打 5 次标签查询，服务端 accept 次数
+- **共享 session 连接复用**：起本地 HTTP server 连打 5 次标签查询，服务端 accept 次数
   应为 1（keep-alive 复用）；每次新建 session 的旧实现为 5。
-- **C2 降级**：不把 `TestClient` 当上下文管理器时 `get_session()` 为 `None`，
+- **共享 session 降级**：不把 `TestClient` 当上下文管理器时 `get_session()` 为 `None`，
   结果仍正确、API 不 500，临时 session 用后即关闭。代码里每进程只发一条
   「降级为临时 session」WARNING，但本项目不落盘 WARNING，验证以
   `get_session()` 与结果为准。
-- **A2 单飞（成功）**：打桩 `token2global` 让首次即写入有效 token，10 个并发
+- **单飞（成功）**：打桩 `token2global` 让首次即写入有效 token，10 个并发
   `ensure_token()` 的刷新调用次数应为 **1**（改动前 10 个请求各刷 1 次 = 10）。
   token 已有效时直接调 `ensure_token()` 应为 **0** 次刷新，不进锁。
-- **A2 单飞（失败共享）**：打桩 `token2global` 始终不写 token，10 个并发
+- **单飞（失败共享）**：打桩 `token2global` 始终不写 token，10 个并发
   `get_custom_info_in_global()` 的刷新调用次数应为 **`max_attempts`**（默认 4，
-  改动前 10 × 4 = 40），10 个结果全为 `{}`、API 不 500。B1 的
-  「IOP token 不可用」仍是每请求一条；D1 的冷却提示（INFO）每周期一条。
-- **A2 跨 loop**：连续两次 `asyncio.run()` 各跑一批带争用的 `ensure_token()`，
+  改动前 10 × 4 = 40），10 个结果全为 `{}`、API 不 500。
+  「IOP token 不可用」仍是每请求一条；冷却提示（INFO）每周期一条。
+- **单飞跨 loop**：连续两次 `asyncio.run()` 各跑一批带争用的 `ensure_token()`，
   不应抛 `is bound to a different event loop`（`_get_refresh_lock()` 按当前 loop
   懒创建/重建）；同一 loop 内多次调用返回的是同一把锁。
-- **D1 次数与退避**：把 `IOP.retry.max_attempts` 设为 2 / 6，一轮全失败时
+- **重试次数与退避**：把 `IOP.retry.max_attempts` 设为 2 / 6，一轮全失败时
   `token2global()` 调用次数应恰好是 2 / 6（不再是隐式的 1+3=4）；
   打桩 `asyncio.sleep` 记录参数，默认 `backoff_base=0.2 / factor=2 / max=2`
   的序列应为 `0.2 / 0.4 / 0.8`；每次重试有 `IOP token 刷新重试` 的 ERROR
   （`src/log_util.py` 不落盘 WARNING）、全失败有
   `attempts=N | cooldown=...` 的 ERROR、成功有 `attempt=k/N` 的 INFO。
-- **D1 冷却**：一轮失败后立刻再发 10 个并发请求，`token2global()` 调用应为
+- **失败冷却**：一轮失败后立刻再发 10 个并发请求，`token2global()` 调用应为
   **0** 次、全部立即返回 `{}`、API 不 500，冷却 INFO 提示只打 1 条；
   把 `cooldown` 设 0.2 秒，sleep 过后再发一批应重新开启一轮刷新；
   刷新成功后 `_COOLDOWN_UNTIL` 清 0，后续请求走快速路径。
-- **D1 配置容错**：删掉 `IOP.retry` 整段应回落到
+- **重试配置容错**：删掉 `IOP.retry` 整段应回落到
   `4 / 0.2 / 2 / 2 / 5` 且不抛异常；`max_attempts: 0`、负数、
   字符串、NaN、`factor < 1` 等非法值同样回落；`max_attempts > 20` 截到 20。
-- **D3 失败分支全覆盖**：给 `token2global()` 打桩依次返回 7 类响应——
+- **响应校验失败分支全覆盖**：给 `token2global()` 打桩依次返回 7 类响应——
   `status=502` + 合法 JSON、HTML 错误页（`json()` 抛 `ValueError`）、
   `res_data` 为 list / `None` / 字符串、`{"access_token": ""}`、
   `{"error": "invalid_client"}`、`{"res_code": "1"}`（既无 token 也无 error）——
   每次都应返回 `None`、`TOKENS.access_token is None`、
-  `deadline == _INVALID_DEADLINE`（A3 之前是 `None`）、
+  `deadline == _INVALID_DEADLINE`（此前是 `None`）、
   记一条带 `status=` 与具体原因的 ERROR，且不抛异常。
-- **D3 不再保留旧值**：先写入一个有效 token，再让它收到
+- **响应校验不再保留旧值**：先写入一个有效 token，再让它收到
   `200 + {"res_code": "1"}`；改动前旧 `access_token` 仍在且 `token_valid()`
   为真（失败被伪装成成功），改动后应立刻变为 `False`。
-- **D3 成功路径**：`200 + {"access_token": "tk", "expires_in": 600}` →
+- **响应校验成功路径**：`200 + {"access_token": "tk", "expires_in": 600}` →
   `token_valid()` 为真、deadline 约为 240 秒后、无 ERROR 日志；
   日志里不出现 `access_token` 的值。
-- **D3 端到端**：本地 IOP server 的 token 端点固定返回 502，起 uvicorn 打
+- **响应校验端到端**：本地 IOP server 的 token 端点固定返回 502，起 uvicorn 打
   6 个并发业务请求；应全部 200，ERROR 日志含
   `status=502 | HTTP 状态码非 200`，且冷却期内再发一批不再打认证服务。
-- **D2 有效期对照**：直接调 `token2global()`，依次给 `expires_in` 为
+- **有效期对照**：直接调 `token2global()`，依次给 `expires_in` 为
   缺失 / `600` / `"600"` / `360` / `300` / `30` / `"abc"` / `None` / `""` /
   `true` / `NaN` / `0` / `-1` / `1e15`，应分别得到约
   `240 / 240 / 240 / 60 / 60 / 30 / 240 / 240 / 240 / 240 / 240 / 240 /
   240 / 86040` 秒的 deadline 偏移，且**全部** `token_valid()` 为真、不抛任何异常。
   改动前 `"abc"` / `None` / `""` 会抛 `ValueError` / `TypeError`，
   `360` / `300` / `30` 会让 deadline 落在过去。
-- **D2 不每请求刷新**：上游固定返回 `expires_in=300`，首轮刷新成功后
+- **有效期不再每请求刷新**：上游固定返回 `expires_in=300`，首轮刷新成功后
   连续调 10 次 `ensure_token()`，`token2global()` 调用次数应为 **0**
   （快速路径命中）；改动前每次都会重新判定过期并刷新。
-- **D2 配置容错与日志**：删掉 `IOP.token_lifetime` 整段应回落到
+- **有效期配置容错与日志**：删掉 `IOP.token_lifetime` 整段应回落到
   `600/360/60/86400`；非法值同样回落。`expires_in="abc"` 时
   `TOKENS.access_token` 照常写入、日志出现一条
   `IOP token expires_in 异常 | 非数字('abc')` 的 INFO，且不含 token 值。
@@ -960,11 +960,11 @@ curl "http://host:8989/api/callStat?month=2026-11"
   session 捕获两端点 `client.post()` 的 `url` / `data` / `json` / `headers`，
   两组参数应逐字相同；另把 `IOP.TOKEN.secret` 临时换成含 `&` / `=` 的值，
   `token_request()` 应正确转义，直接拼字符串则会把参数拆开。
-- **A3 状态不变量**：新建 `Tokens()` 后 `isinstance(deadline, datetime)` 为真、
+- **状态不变量**：新建 `Tokens()` 后 `isinstance(deadline, datetime)` 为真、
   `deadline < now`、`token_valid()` 为 `False`；把判断顺序反写成
-  `now <= deadline and access_token is not None` 也不抛异常（A3 之前必抛
-  `TypeError`）。依次跑完初始化 / 刷新成功 / D3 各类失败 / D2 异常有效期 /
-  D1 冷却后，`deadline` 应始终是 datetime，从不为 `None`。
+  `now <= deadline and access_token is not None` 也不抛异常（此前必抛
+  `TypeError`）。依次跑完初始化 / 刷新成功 / 各类失败 / 异常有效期 /
+  失败冷却后，`deadline` 应始终是 datetime，从不为 `None`。
   当前单次画像查询脚本不触碰 `TOKENS`，无需状态复位。
 
 ## 未实现
@@ -972,22 +972,22 @@ curl "http://host:8989/api/callStat?month=2026-11"
 - 基于 `version` 的进程级缓存、版本回滚、历史版本查询、灰度切换。
 - 加工规则的完全配置化：当前 `cut_in_str2tuple` 与分组规则写在 `dim_transform.py`，
   `registry.json` 只声明列角色与列顺序。
-- A3 已处理：`Tokens.deadline` 恒为 datetime，无有效 token 时统一为
-  `_INVALID_DEADLINE`（过去时间），见「Token 状态不变量（A3）」小节。
+- 状态不变量已处理：`Tokens.deadline` 恒为 datetime，无有效 token 时统一为
+  `_INVALID_DEADLINE`（过去时间），见「Token 状态不变量」小节。
   IOP 侧已无待办的隐式类型依赖。
-- **F2 `IOPClient` 类：已决定不做**。其并发正确性目标已由 A2（单飞 + 代次）、
-  C2（lifespan 共享 session）、D1（失败冷却）覆盖，统一失败契约由
-  B1 / B2 / D3 提供，不再单独收敛为类。类化需同时改动 `main.py`、
+- **`IOPClient` 类：已决定不做**。其并发正确性目标已由单飞 + 代次、
+  lifespan 共享 session、失败冷却覆盖，统一失败契约由
+  空 dict 降级 / 日志字段 / 响应校验提供，不再单独收敛为类。类化需同时改动 `main.py`、
   `get_custinfo.py`、`get_token.py`、`http_session.py`，并重新验证
-  A2 跨 event loop 与 C2 同 loop 约束，风险收益比不划算。
-- D1 已配好次数/退避/冷却，D2 已覆盖有效期换算，D3 已覆盖响应状态码与
-  结构校验，A3 已消除 `deadline=None` 的隐式短路依赖；但**冷却是进程内状态**：
+  单飞跨 event loop 与共享 session 同 loop 约束，风险收益比不划算。
+- 重试已配好次数/退避/冷却，有效期换算已完成，响应校验已覆盖状态码与
+  结构校验，状态不变量已消除 `deadline=None` 的隐式短路依赖；但**冷却是进程内状态**：
   多实例部署时各实例各自冷却，不做跨进程共享。
 - `test_local/test_iop.py` 现为**单次画像查询脚本**：命令行指定电话号、复用
   生产模块真实查询 IOP、打印客户标签画像，见「单次画像查询脚本」小节。
-  按明确要求**不做自动化单元测试**，F3 不再列为待办；最初「复制两份请求实现」
+  按明确要求**不做自动化单元测试**，不再列为待办；最初「复制两份请求实现」
   的问题已随复用生产模块解决。
-- F4 已处理：URL 路径 / `method` / `grant_type` / `charset=gbk` 请求头等
+- 请求契约已集中：URL 路径 / `method` / `grant_type` / `charset=gbk` 请求头等
   契约常量集中在 `IOP/endpoints.py`，`version` / `type` / host / port /
   超时 / 重试 / 有效期仍由 `config.yaml` 提供，见「请求契约集中」小节。
 - 另：根目录 `test_online.py` 的请求体里仍写有 `18866816199`，
