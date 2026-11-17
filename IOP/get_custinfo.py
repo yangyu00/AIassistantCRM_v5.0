@@ -7,8 +7,6 @@ import time
 
 
 async def get_custom_info_in_global(tel):
-    # A2：原「循环外 1 次 + 循环内最多 3 次」重试整体收敛到 ensure_token() 单飞
-    # 入口，重试次数与无退避语义不变（D1 未改）；并发请求不再各自刷新 token。
     await ensure_token()
 
     if not token_valid():
@@ -36,15 +34,15 @@ async def get_custom_info_in_global(tel):
     }
 
     start = time.perf_counter()
-    # C2：复用应用级共享 session（lifespan 创建/关闭），不再每次新建。
-    # C1：session 已带 ClientTimeout；连接/读超时与网络异常就地收口，
+    # 复用应用级共享 session（lifespan 创建/关闭）。
+    # session 已带 ClientTimeout；连接/读超时与网络异常就地收口，
     # 不让异常穿透到 main.py（那样 IOP 侧会没有日志）。
     try:
         async with session_context() as client:
             async with client.post(url, json=post_data, headers=headers) as response:
                 status_code = response.status
                 try:
-                    # 上游返回的 Content-Type 不规范，沿用原有约定不做类型校验
+                    # 上游返回的 Content-Type 不规范，不做类型校验
                     res_data = await response.json(content_type=None)
                 except Exception as e:
                     my_log.error(f"IOP 标签查询响应解析失败 | status={status_code} | error={e}")

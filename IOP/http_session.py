@@ -17,7 +17,7 @@ from config import ImmutableYamlConfig
 from src.log_util import my_log
 
 # 配置在 import 时读一次；get_token.py / get_custinfo.py 复用同一份只读配置，
-# 比原先各读一次更省，请求路径仍然 0 次磁盘 I/O（E1）。
+# 请求路径不读盘。
 global_config = ImmutableYamlConfig()
 
 _DEFAULT_TIMEOUT = {'total': 3.0, 'connect': 1.0, 'sock_read': 2.0}
@@ -47,10 +47,10 @@ _WARNED = False
 def _session_kwargs() -> dict:
     """共享 session 与降级临时 session 共用的构造参数。
 
-    ``skip_auto_headers``：``requests`` 对字符串 ``data=`` 不加 Content-Type，
-    而 aiohttp 默认补 ``text/plain``；跳过自动头后 token 请求与原来一致。
-    它只跳过**自动生成**的头，调用点显式传入的 headers（标签查询的
-    ``charset=gbk`` / ``Accept-Encoding``）不受影响，仍按原样发出（E3/E4）。
+    ``skip_auto_headers``：跳过 aiohttp 自动补的 Content-Type。token 请求用
+    字符串 ``data=``，按上游约定不带 Content-Type；标签查询则显式传入
+    ``charset=gbk`` / ``Accept-Encoding``。该参数只跳过**自动生成**的头，
+    显式传入的 headers 不受影响，仍按原样发出。
     两个端点共用一个 session 正是靠这一点，无需按端点拆两个 session。
     """
     return dict(timeout=client_timeout(),

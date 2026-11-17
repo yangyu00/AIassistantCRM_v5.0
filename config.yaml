@@ -27,14 +27,14 @@ IOP:
     version: "1.0.1"
     type: "M"
 
-  # A1/C1：token 与标签查询两个端点共用的 HTTP 超时（秒）
+  # token 与标签查询两个端点共用的 HTTP 超时（秒）
   # 缺该段时代码用默认值 total=3 / connect=1 / sock_read=2
   timeout:
     total: 3
     connect: 1
     sock_read: 2
 
-  # D1：单轮 token 刷新的次数、指数退避与全失败后的冷却（秒）
+  # 单轮 token 刷新的次数、指数退避与全失败后的冷却（秒）
   # max_attempts 是「单轮请求总次数」，不是「重试次数」；上限 20
   # 缺该段时代码用默认值 max_attempts=4 / backoff_base=0.2 /
   # backoff_factor=2 / backoff_max=2 / cooldown=5
@@ -45,7 +45,7 @@ IOP:
     backoff_max: 2
     cooldown: 5
 
-  # D2：token 有效期计算（秒）。expires_in 缺失/非法时按 default_expires_in 兜底，
+  # token 有效期计算（秒）。expires_in 缺失/非法时按 default_expires_in 兜底，
   # 实际有效期 = min(max(expires_in - refresh_buffer, min_lifetime), expires_in)；
   # max_expires_in 截断离谱值，防 datetime 溢出。缺该段时代码用下列默认值。
   token_lifetime:

@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 """单次查询指定电话号的客户画像（IOP 标签）。
 
-像以前的调试脚本一样：跑一次、给一个电话号、把查到的客户画像打印出来。
-**不是单元测试**：不打桩、不做断言、不跑多个场景，会向 ``config.yaml``
-里的 IOP 地址发起真实请求。
+跑一次、给一个电话号、把查到的客户画像打印出来。会向 ``config.yaml``
+里的 IOP 地址发起真实请求，不做任何打桩。
 
 用法（项目根目录）：
 
@@ -12,10 +11,10 @@
 
 不想每次敲参数的话，把号码填进下面的 ``DEFAULT_TEL``，然后不带参数运行。
 
-与最初的复制版不同，这里不自己拼 URL / headers / post_data，也不自己算
-token 有效期，而是复用生产模块 ``IOP.get_custinfo.get_custom_info_in_global()``：
-A2 单飞、D1 重试/退避/冷却、D2 有效期换算、D3 响应校验、C1 超时、C2 会话
-生命周期全部自动带上，生产侧改了这里不会漏。
+这里不自己拼 URL / headers / post_data，也不自己算 token 有效期，而是复用
+生产模块 ``IOP.get_custinfo.get_custom_info_in_global()``：token 刷新、重试与
+冷却、有效期换算、响应校验、超时与会话生命周期都自动带上，生产侧改了这里
+不会漏。
 """
 from __future__ import annotations
 

@@ -11,9 +11,8 @@ import time
 from IOP.http_session import global_config, client_timeout, session_context
 
 
-# A3：无有效 token 时 deadline 统一置为这个过去时间点，而不是 None。
-# 这样 TOKENS.deadline 恒为 datetime 对象，`now <= deadline` 永远可比较，
-# token_valid() 不必再靠「access_token is not None」的短路顺序来躲 None。
+# 无有效 token 时 deadline 统一置为这个过去时间点，保证 TOKENS.deadline
+# 恒为 datetime，`now <= deadline` 永远可比较。
 _INVALID_DEADLINE = datetime.datetime.min
 
 
@@ -25,8 +24,8 @@ class Tokens:
 
 TOKENS = Tokens()
 
-# --- D1：重试次数 / 指数退避 / 失败冷却 ---------------------------------------
-# 全部在 import 时从模块级只读配置解析一次，请求路径 0 次读盘（E1）。
+# --- 重试次数 / 指数退避 / 失败冷却 ------------------------------------------
+# 全部在 import 时从模块级只读配置解析一次，请求路径不读盘。
 # 缺段、类型错误、非有限值、越界一律回落默认，部署沿用旧 config.yaml 不启动失败。
 _DEFAULT_RETRY = {
     'max_attempts': 4,        # 单轮刷新「请求总次数」，不是「重试次数」
@@ -71,8 +70,8 @@ def backoff_seconds(attempt: int) -> float:
                RETRY['backoff_max'])
 
 
-# --- D2：token 有效期 ---------------------------------------------------------
-# 与 D1 同样在 import 时从模块级只读配置解析一次，请求路径 0 次读盘（E1）。
+# --- token 有效期 -------------------------------------------------------------
+# 同样在 import 时从模块级只读配置解析一次，请求路径不读盘。
 # 缺段、类型错误、非有限值、越界一律回落默认，部署沿用旧 config.yaml 不启动失败。
 _DEFAULT_LIFETIME = {
     'default_expires_in': 600.0,   # 上游未给或非法 expires_in 时的兜底秒数
@@ -118,10 +117,6 @@ def effective_lifetime(raw):
     - 有效期 = ``min(max(上游值 - refresh_buffer, min_lifetime), 上游值)``：
       既保证 deadline 永远落在未来（上游值过短时不再出现负的有效期），
       也保证永不超过上游自己声明的有效期。
-
-    D2 之前这里直接 ``int(expires_in) - 360``：非法字符串会抛 ValueError
-    穿透到 main.py 的 except（B1 降级 {}，但 IOP 侧无日志）；expires_in <= 360
-    时 deadline 落在过去，导致每个请求都判过期、每次都刷新 token。
     """
     p = LIFETIME
     note = None
@@ -147,16 +142,16 @@ _COOLDOWN_UNTIL = 0.0
 # 同一个冷却周期只打一条 INFO 提示，避免每个失败请求都刷屏。
 _COOLDOWN_WARNED_UNTIL = 0.0
 
-# --- A2：token 单飞 -----------------------------------------------------------
-# 与 C2 共享 ClientSession 同样的约束：asyncio.Lock 一旦发生过争用就绑定创建它的
-# event loop，跨 loop 使用会抛 RuntimeError。生产是单进程单 loop，但 TestClient、
-# 独立脚本可能多次 asyncio.run()，故按当前 loop 懒创建/重建，不放在模块级裸锁。
+# --- token 单飞 ---------------------------------------------------------------
+# asyncio.Lock 一旦发生过争用就绑定创建它的 event loop，跨 loop 使用会抛
+# RuntimeError。生产是单进程单 loop，但 TestClient、独立脚本可能多次
+# asyncio.run()，故按当前 loop 懒创建/重建，不放在模块级裸锁。
 _REFRESH_LOCK = None
 _REFRESH_LOCK_LOOP = None
 
 # 刷新「代次」：每完成一轮刷新（成功或失败）+1。并发请求在等锁前记下代次，
 # 拿锁后若代次已变，说明已有请求替大家刷过一轮，直接复用其结果，不再重复刷新。
-# 这样刷新失败时也不会让 N 个等待者各刷一轮；配合 D1 的失败冷却，同一批并发
+# 这样刷新失败时也不会让 N 个等待者各刷一轮；配合失败冷却，同一批并发
 # 与冷却期内的新批次都不会重复打认证服务。
 _REFRESH_GEN = 0
 
@@ -174,20 +169,20 @@ def _get_refresh_lock() -> asyncio.Lock:
 def token_valid() -> bool:
     """token 是否有效。
 
-    A3：deadline 恒为 datetime（无有效 token 时是 `_INVALID_DEADLINE`），
-    `now <= deadline` 可直接比较，不再需要靠短路顺序避免与 None 比较。
-    `access_token is not None` 是「拿没拿到 token」的业务条件，不是类型兜底。
+    `deadline` 恒为 datetime（无有效 token 时是 `_INVALID_DEADLINE`），
+    `now <= deadline` 可直接比较。`access_token is not None` 是
+    「拿没拿到 token」的业务条件。
     """
     return (TOKENS.access_token is not None
             and datetime.datetime.now() <= TOKENS.deadline)
 
 
 async def ensure_token():
-    """A2 单飞 + D1 重试入口：确保 TOKENS 里有有效 access_token。
+    """确保 TOKENS 里有有效 access_token，业务侧统一调用本函数。
 
-    业务侧统一调用本函数，不要直接调用 token2global()。
+    不要直接调用 token2global()，否则绕开并发保护。
     - token 已有效：快速路径直接返回，连锁都不碰
-    - 冷却期内：直接返回（不刷新），调用方按 B1 降级为空 dict；
+    - 冷却期内：直接返回（不刷新），调用方按「无标签」降级；
       一个冷却周期只打一条 INFO 提示（本项目 WARNING 不落盘）
     - 并发同时判定过期：只有第一个请求真正刷新，其余等锁后二次检查复用结果
     - 单轮刷新：max_attempts 次请求（默认 4），成功即返回；失败之间按
@@ -254,12 +249,11 @@ async def ensure_token():
 
 
 def _fail_token(status_code, reason):
-    """D3：所有失败分支统一清空 TOKENS 并记 ERROR，绝不静默保留可能已过期的旧值。
+    """所有失败分支统一清空 TOKENS 并记 ERROR，绝不沿用可能已过期的旧值。
 
-    A3：deadline 置回 `_INVALID_DEADLINE`（过去时间）而不是 None，保持
-    「恒为 datetime」的不变量，失败后调用 token_valid() 也不会撞上 None。
-    日志前缀沿用 C1/B2 的 `IOP token 请求失败`，只新增 status 与具体原因；
-    项目只落盘 INFO / ERROR，故用 ERROR（见 Missions_reader.md 的日志级别说明）。
+    `deadline` 置回 `_INVALID_DEADLINE`（过去时间），保持「恒为 datetime」
+    的不变量。日志前缀为 `IOP token 请求失败`，附带 status 与具体原因；
+    项目只落盘 INFO / ERROR，故用 ERROR。
     """
     TOKENS.access_token = None
     TOKENS.deadline = _INVALID_DEADLINE
@@ -269,11 +263,11 @@ def _fail_token(status_code, reason):
 async def token2global():
     """单次刷新 token 并写入 TOKENS。
 
-    只由 ensure_token() 在单飞锁内调用；业务侧请勿直接调用，否则绕开 A2 保护。
-    D3：先查状态码，再校验响应结构；所有失败分支统一走 _fail_token()，
-    不再让「既无 access_token 也无 error」的响应静默保留旧 token。
-    D2：成功分支的有效期改由 effective_lifetime() 换算，不再直接
-    int(expires_in) - 360，保证 deadline 落在未来且不抛 ValueError。
+    只由 ensure_token() 在单飞锁内调用；业务侧请勿直接调用，否则绕开
+    并发保护。先查状态码，再校验响应结构；所有失败分支统一走 _fail_token()，
+    不让「既无 access_token 也无 error」的响应沿用旧 token。
+    成功分支的有效期由 effective_lifetime() 换算，保证 deadline 落在未来
+    且不抛 ValueError。
     """
     # 上游仅提供 http 明文 token 端点；client_id / client_secret 以表单串提交，
     # 凭据存放于 config.yaml。均为上游与部署环境的既定要求，不可改动。
@@ -284,30 +278,30 @@ async def token2global():
             f"&client_id={global_config['IOP']['TOKEN']['id']}"
             f"&client_secret={global_config['IOP']['TOKEN']['secret']}")
 
-    # C2：复用应用级共享 session（lifespan 创建/关闭），不再每次新建。
-    # session 已带 timeout 与 skip_auto_headers，故这里只发请求、不再构造参数。
+    # 复用应用级共享 session（lifespan 创建/关闭）。
+    # session 已带 timeout 与 skip_auto_headers，这里只发请求、不再构造参数。
     status_code = None
     try:
         async with session_context() as client:
             async with client.post(token_url, data=body) as response:
                 status_code = response.status
-                # D3：先查状态码。502 / 网关错误页即使 body 是合法 JSON，
+                # 先查状态码。502 / 网关错误页即使 body 是合法 JSON，
                 # 也不该进入「按字段判断」的路径；不读 body 直接失败。
                 if status_code != 200:
                     _fail_token(status_code, "HTTP 状态码非 200")
                     return
                 try:
-                    # 上游返回的 Content-Type 不规范，沿用原有约定不做类型校验
+                    # 上游返回的 Content-Type 不规范，不做类型校验
                     res_data = await response.json(content_type=None)
                 except (aiohttp.ClientError, ValueError) as e:
                     _fail_token(status_code, f"响应解析失败 | error={type(e).__name__}: {e}")
                     return
     except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-        # C1：超时/网络异常就地收口，不让异常穿透到 main.py（否则 IOP 侧没有日志）
+        # 超时/网络异常就地收口，不让异常穿透到 main.py（否则 IOP 侧没有日志）
         _fail_token(status_code, f"error={type(e).__name__}: {e}")
         return
 
-    # D3：res_data 可能是 list / 字符串 / None（HTML 错误页被强行解析时也可能如此）
+    # res_data 可能是 list / 字符串 / None（HTML 错误页被强行解析时也可能如此）
     if not isinstance(res_data, dict):
         _fail_token(status_code, f"响应结构异常 | type={type(res_data).__name__}")
         return
@@ -317,9 +311,9 @@ async def token2global():
         if not access_token:
             _fail_token(status_code, "access_token 为空")
             return
-        # D2：expires_in 缺失时静默用默认值；字段存在但非法/过短/过大时
+        # expires_in 缺失时静默用默认值；字段存在但非法/过短/过大时
         # 由 effective_lifetime() 兜底或夹取，并记一条 INFO（token 本身有效，
-        # 不算失败，故不用 ERROR）。不再直接 int(expires_in) - 360。
+        # 不算失败，故不用 ERROR）。
         if 'expires_in' in res_data:
             lifetime, note = effective_lifetime(res_data['expires_in'])
         else:
@@ -338,6 +332,6 @@ async def token2global():
                                 f"error_description={res_data.get('error_description', '')}")
         return
 
-    # D3：既无 access_token 也无 error（如网关返回的业务错误 JSON）。
-    # 改动前这里什么都不做，旧的、可能已过期的 access_token 会被继续沿用。
+    # 既无 access_token 也无 error（如网关返回的业务错误 JSON），
+    # 不能沿用旧的、可能已过期的 access_token。
     _fail_token(status_code, "响应缺少 access_token 且无 error 字段")
