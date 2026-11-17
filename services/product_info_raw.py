@@ -22,6 +22,40 @@ _OPP_LABEL_IDS = {
 }
 
 
+def build_auxiliary_portrait(queried_label_nvs):
+    """按标签原本的名称与值逐项拼接，不做名称映射或按标签 ID 的值转换。
+
+    queried_label_nvs 由调用方按产品 ID 预先取好；商机回捞的标签子集固定，
+    这 5 个标签的名称直接取上游返回值即可。函数只读入参、不访问对象状态，
+    可按业务需要决定是否计算，也便于复用同一份结果。
+    """
+    portrait_str = ""
+    exist_label_name_list = []
+    for label_nv in queried_label_nvs:
+        if label_nv is None:
+            continue
+        label_name, label_value = label_nv[0], label_nv[1]
+        if not label_value:
+            continue
+
+        # 涉及是否的重复标签去重
+        if label_name in exist_label_name_list:
+            if label_value == "是":
+                portrait_str.replace(f"{label_name}: 否; ", f"{label_name}: 是; ")
+                continue
+            else:
+                continue
+
+        portrait_str += f'{label_name}: <strong><span style="color:blue;">{label_value}</span></strong>; '
+        exist_label_name_list.append(label_name)
+
+    if portrait_str:
+        portrait_str = "【辅助画像】" + portrait_str
+        portrait_str = portrait_str.rstrip('; ')
+
+    return portrait_str
+
+
 class ProductInfoRaw(object):
     def __init__(self, product_id, custom_label_info):
         self.product_id = product_id
@@ -32,7 +66,7 @@ class ProductInfoRaw(object):
         self.product_name = self.__get_product_name()
         self.queried_label_ids = self.__get_queried_label_ids()
         self.queried_label_nvs = self.__get_queried_label_nvs()
-        self.auxiliary_portrait = self.__get_auxiliary_portrait()
+        self.auxiliary_portrait = build_auxiliary_portrait(self.queried_label_nvs)
         self.output_script = "无"
 
     def __get_product_name(self):
@@ -60,37 +94,6 @@ class ProductInfoRaw(object):
                                       self.custom_label_info[one_label_id][1]))
 
         return queried_label_nvs
-
-    def __get_auxiliary_portrait(self):
-        """按标签原本的名称与值逐项拼接，不做名称映射或按标签 ID 的值转换。
-
-        商机回捞的标签子集固定，这 5 个标签的名称直接取上游返回值即可。
-        """
-        portrait_str = ""
-        exist_label_name_list = []
-        for label_nv in self.queried_label_nvs:
-            if label_nv is None:
-                continue
-            label_name, label_value = label_nv[0], label_nv[1]
-            if not label_value:
-                continue
-
-            # 涉及是否的重复标签去重
-            if label_name in exist_label_name_list:
-                if label_value == "是":
-                    portrait_str.replace(f"{label_name}: 否; ", f"{label_name}: 是; ")
-                    continue
-                else:
-                    continue
-
-            portrait_str += f'{label_name}: <strong><span style="color:blue;">{label_value}</span></strong>; '
-            exist_label_name_list.append(label_name)
-
-        if portrait_str:
-            portrait_str = "【辅助画像】" + portrait_str
-            portrait_str = portrait_str.rstrip('; ')
-
-        return portrait_str
 
     def __str__(self):
         return (f'Product ID: {self.product_id}\n'
