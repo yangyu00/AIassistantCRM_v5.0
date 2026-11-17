@@ -135,10 +135,10 @@ D3 之后 `IOP token 请求失败` 统一带 `status=` 与具体原因（状态�
 直接降级、完全不等待**，不再每个请求或每个新批次各付一轮。
 
 C2（共享 `ClientSession`）、A2（token 单飞）、D1（重试/退避/冷却）、
-D3（token 响应校验）、D2（有效期换算）均已实现，分见后续五个小节。
-仍未越界的是 A3 `deadline` 初始化；F2 `IOPClient` 类已明确不做（见文末
-「未实现」）。`test_local/test_iop.py` 是单次画像查询脚本：命令行给电话号，
-复用生产模块真实查询 IOP 并打印客户标签画像，见「单次画像查询脚本」小节。
+D3（token 响应校验）、D2（有效期换算）、A3（`deadline` 恒为 datetime）均已实现，
+分见后续六个小节。F2 `IOPClient` 类已明确不做（见文末「未实现」）。
+`test_local/test_iop.py` 是单次画像查询脚本：命令行给电话号，复用生产模块
+真实查询 IOP 并打印客户标签画像，见「单次画像查询脚本」小节。
 
 ### 共享 ClientSession（C2）
 
@@ -195,8 +195,10 @@ headers，共用同一份 `skip_auto_headers=("Content-Type",)`。该参数只�
 冷却期在**拿锁之前**就短路，冷却期内的请求连锁都不碰（步骤 1 之前）。
 
 `token2global()` 保留为**单次刷新原语**，只在单飞锁内被调用；业务侧不要直接
-调它，否则绕开保护。`token_valid()` 用 `access_token is not None and now <= deadline`
-短路，保护 `deadline` 初始为 `None`（A3 未改，不改 `Tokens.__init__`）。
+调它，否则绕开保护。`token_valid()` 是
+`access_token is not None and now <= deadline`；前者是「拿没拿到 token」的
+业务条件，A3 之后 `deadline` 恒为 datetime，这一半不再兼作类型兜底
+（见「Token 状态不变量（A3）」小节）。
 
 **代次为什么必要**：只做「锁 + 二次检查」时，刷新**失败**后 token 仍无效，
 每个等待者拿锁后都会再刷一轮 `max_attempts` 次——把「并发打爆上游」变成
@@ -304,9 +306,10 @@ ERROR（与 `token2global` 的失败日志同文件、语义也确实是一次�
 4. **字段校验**：`access_token` 为空值也判失败；上游 `error` 改成结构化
    `error=` / `error_description=`；**既无 `access_token` 也无 `error` 明确报
    「响应缺少 access_token 且无 error 字段」**。
-5. **统一清空**：`_fail_token()` 同时把 `access_token` 与 `deadline` 置 `None`
-   并记 ERROR。`token_valid()` 靠 `access_token is not None` 短路，清一个就够，
-   两个都清是为了不残留过期的 deadline。
+5. **统一清空**：`_fail_token()` 把 `access_token` 置 `None`、`deadline` 置回
+   `_INVALID_DEADLINE`（过去时间）并记 ERROR。A3 之前这里写的是 `deadline = None`，
+   靠 `token_valid()` 的短路顺序躲开与 `None` 比较；现在两个字段都是明确的
+   「无有效 token」状态，不残留过期的 deadline，也不依赖短路顺序。
 6. **网络异常**：C1 的 `ClientError` / `TimeoutError` 收口保留，改调
    `_fail_token()`，日志带 `status=None`（建连阶段还没拿到响应）。
 
@@ -381,10 +384,56 @@ IOP token expires_in 异常 | 非数字('abc') | 按 240s 计算有效期
 不该算故障；但项目只落盘 INFO / ERROR，所以用 INFO 保证留痕（见 D1 的
 「日志级别」）。日志不含 `access_token` 的值。
 
-`token2global()` 仍先 `TOKENS.deadline = ...` 再写 `access_token`，顺序不变；
-`token_valid()` 靠 `access_token is not None` 短路，A3 未改（见文末）。
+`token2global()` 仍先 `TOKENS.deadline = ...` 再写 `access_token`，顺序不变。
 deadline 仍用 `datetime.datetime.now()`（本地墙上时间），**系统时间回拨**
 不在 D2 范围内——D1 的冷却截止点已用 `time.monotonic()`，两者互不影响。
+「无有效 token」时的 deadline 由 A3 统一为过去时间，见下一小节。
+
+### Token 状态不变量（A3）
+
+改动前 `Tokens.deadline` 初始为 `None`，`token_valid()` 写成：
+
+```python
+return (TOKENS.access_token is not None
+        and datetime.datetime.now() <= TOKENS.deadline)
+```
+
+`now <= None` 会抛 `TypeError`，全靠 `access_token is not None` **排在第一位**
+短路才不炸。这是一个隐式依赖：一旦有人调整判断顺序、或某个失败分支只把
+`access_token` 置 `None` 而忘了 `deadline`，就会立刻出问题。D3 的
+`_fail_token()` 也确实把 `deadline` 写成 `None`，等于每次失败后又把状态退回
+需要短路保护的样子。
+
+现在引入模块级常量，把「无有效 token」表达成一个确定的过去时间点：
+
+```python
+_INVALID_DEADLINE = datetime.datetime.min
+```
+
+| 位置 | 改动前 | 改动后 |
+|---|---|---|
+| `Tokens.__init__()` | `deadline = None` | `deadline = _INVALID_DEADLINE` |
+| `_fail_token()`（D3 所有失败分支） | `deadline = None` | `deadline = _INVALID_DEADLINE` |
+| `token_valid()` docstring | 注明「短路顺序保护 deadline 初始为 None」 | 改为说明 `deadline` 恒为 datetime、`access_token` 检查是业务条件 |
+
+于是 `TOKENS.deadline` 在**所有路径**下都是 `datetime` 对象：初始化、刷新成功、
+D3 任一失败分支、D2 异常有效期、D1 冷却。`token_valid()` 里的 `and` 仍保留，
+但含义从「兼作类型兜底」收敛为纯粹的业务判断——「没拿到 token 就不算有效」，
+即便某个 deadline 恰好落在未来也是如此。
+
+`test_local/test_iop.py` 现为**单次画像查询脚本**（见「单次画像查询脚本」小节），
+只调 `get_custom_info_in_global()`，不持有 `Tokens`、不给 `TOKENS.deadline`
+赋值，也没有场景间的状态复位，因此 A3 不需要在这个脚本里加任何代码；
+不变量只由生产模块 `IOP/get_token.py` 一处维护。
+
+改动量只有几行，且**不改变任何对外行为**：`datetime.min` 恒在过去，
+`token_valid()` 在初始态与失败态仍为 `False`；A2 快速路径、D1 冷却、
+B1 的 `{}` 降级、D2 的有效期计算全部不受影响。
+
+自检：新建 `Tokens()` 后 `isinstance(deadline, datetime)` 为真、
+`deadline < now`、`token_valid()` 为 `False`；把判断顺序反写成
+`now <= deadline and access_token is not None` 也不抛异常（A3 之前必抛
+`TypeError`）；跑完 D3 的各类失败分支后 `deadline` 仍是 datetime，不是 None。
 
 ### 上游既定约定（不可改动）
 
@@ -847,7 +896,8 @@ curl "http://host:8989/api/callStat?month=2026-11"
   `status=502` + 合法 JSON、HTML 错误页（`json()` 抛 `ValueError`）、
   `res_data` 为 list / `None` / 字符串、`{"access_token": ""}`、
   `{"error": "invalid_client"}`、`{"res_code": "1"}`（既无 token 也无 error）——
-  每次都应返回 `None`、`TOKENS.access_token` 与 `deadline` 均为 `None`、
+  每次都应返回 `None`、`TOKENS.access_token is None`、
+  `deadline == _INVALID_DEADLINE`（A3 之前是 `None`）、
   记一条带 `status=` 与具体原因的 ERROR，且不抛异常。
 - **D3 不再保留旧值**：先写入一个有效 token，再让它收到
   `200 + {"res_code": "1"}`；改动前旧 `access_token` 仍在且 `token_valid()`
@@ -879,22 +929,29 @@ curl "http://host:8989/api/callStat?month=2026-11"
   脚本自身不打桩、不做断言，不写死真实号码，也不复制
   `requests.post` / `grant_type=client_credentials` / `qryCustInfoByChannel` /
   `int(expires_in) - 360` 这些请求实现。
+- **A3 状态不变量**：新建 `Tokens()` 后 `isinstance(deadline, datetime)` 为真、
+  `deadline < now`、`token_valid()` 为 `False`；把判断顺序反写成
+  `now <= deadline and access_token is not None` 也不抛异常（A3 之前必抛
+  `TypeError`）。依次跑完初始化 / 刷新成功 / D3 各类失败 / D2 异常有效期 /
+  D1 冷却后，`deadline` 应始终是 datetime，从不为 `None`。
+  当前单次画像查询脚本不触碰 `TOKENS`，无需状态复位。
 
 ## 未实现
 
 - 基于 `version` 的进程级缓存、版本回滚、历史版本查询、灰度切换。
 - 加工规则的完全配置化：当前 `cut_in_str2tuple` 与分组规则写在 `dim_transform.py`，
   `registry.json` 只声明列角色与列顺序。
-- IOP 侧只剩 A3：`Tokens.deadline` 初始化为过去时间（当前为 `None`，
-  靠 `token_valid()` 里 `access_token is not None` 的短路顺序保护）。
+- A3 已处理：`Tokens.deadline` 恒为 datetime，无有效 token 时统一为
+  `_INVALID_DEADLINE`（过去时间），见「Token 状态不变量（A3）」小节。
+  IOP 侧已无待办的隐式类型依赖。
 - **F2 `IOPClient` 类：已决定不做**。其并发正确性目标已由 A2（单飞 + 代次）、
   C2（lifespan 共享 session）、D1（失败冷却）覆盖，统一失败契约由
   B1 / B2 / D3 提供，不再单独收敛为类。类化需同时改动 `main.py`、
   `get_custinfo.py`、`get_token.py`、`http_session.py`，并重新验证
   A2 跨 event loop 与 C2 同 loop 约束，风险收益比不划算。
 - D1 已配好次数/退避/冷却，D2 已覆盖有效期换算，D3 已覆盖响应状态码与
-  结构校验；但**冷却是进程内状态**：多实例部署时各实例各自冷却，
-  不做跨进程共享。
+  结构校验，A3 已消除 `deadline=None` 的隐式短路依赖；但**冷却是进程内状态**：
+  多实例部署时各实例各自冷却，不做跨进程共享。
 - `test_local/test_iop.py` 现为**单次画像查询脚本**：命令行指定电话号、复用
   生产模块真实查询 IOP、打印客户标签画像，见「单次画像查询脚本」小节。
   按明确要求**不做自动化单元测试**，F3 不再列为待办；最初「复制两份请求实现」

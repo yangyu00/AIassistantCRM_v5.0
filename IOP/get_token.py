@@ -11,10 +11,16 @@ import time
 from IOP.http_session import global_config, client_timeout, session_context
 
 
+# A3：无有效 token 时 deadline 统一置为这个过去时间点，而不是 None。
+# 这样 TOKENS.deadline 恒为 datetime 对象，`now <= deadline` 永远可比较，
+# token_valid() 不必再靠「access_token is not None」的短路顺序来躲 None。
+_INVALID_DEADLINE = datetime.datetime.min
+
+
 class Tokens:
     def __init__(self) -> None:
         self.access_token = None
-        self.deadline = None
+        self.deadline = _INVALID_DEADLINE
 
 
 TOKENS = Tokens()
@@ -166,7 +172,12 @@ def _get_refresh_lock() -> asyncio.Lock:
 
 
 def token_valid() -> bool:
-    """token 是否有效。短路顺序保护 deadline 初始为 None（A3 未改，不改初始化）。"""
+    """token 是否有效。
+
+    A3：deadline 恒为 datetime（无有效 token 时是 `_INVALID_DEADLINE`），
+    `now <= deadline` 可直接比较，不再需要靠短路顺序避免与 None 比较。
+    `access_token is not None` 是「拿没拿到 token」的业务条件，不是类型兜底。
+    """
     return (TOKENS.access_token is not None
             and datetime.datetime.now() <= TOKENS.deadline)
 
@@ -245,11 +256,13 @@ async def ensure_token():
 def _fail_token(status_code, reason):
     """D3：所有失败分支统一清空 TOKENS 并记 ERROR，绝不静默保留可能已过期的旧值。
 
+    A3：deadline 置回 `_INVALID_DEADLINE`（过去时间）而不是 None，保持
+    「恒为 datetime」的不变量，失败后调用 token_valid() 也不会撞上 None。
     日志前缀沿用 C1/B2 的 `IOP token 请求失败`，只新增 status 与具体原因；
     项目只落盘 INFO / ERROR，故用 ERROR（见 Missions_reader.md 的日志级别说明）。
     """
     TOKENS.access_token = None
-    TOKENS.deadline = None
+    TOKENS.deadline = _INVALID_DEADLINE
     my_log.error(f"IOP token 请求失败 | status={status_code} | {reason}")
 
 
