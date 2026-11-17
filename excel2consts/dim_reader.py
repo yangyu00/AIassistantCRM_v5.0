@@ -90,7 +90,7 @@ def load_cut_in_script(cfg=None):
 
     库里只存「兜底话术」「匹配结果2」「标签0…标签N」原始列，拆解加工由
     dim_transform 在读取侧完成；值为 [切入话术, 挽留话术] 或空串 ""，
-    rewrite_by_excel 按 [0] / [1] 取值。
+    读取方按 [0] / [1] 取值。
 
     列名、标签列顺序、兜底 key 全部取自 registry.json 的 cut_in_script 声明。
     """
