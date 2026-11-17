@@ -11,7 +11,7 @@
 
 对外提供：
     query(task_name, telnum, product_id=None)   按任务名派发
-    get_opportunity_recall_latest / get_loss_control_latest / get_customer_diagnosis_record
+    get_opportunity_recall_latest / get_loss_control_latest
     OPPORTUNITY_RECALL_PRODUCT_IDS / LOSS_CONTROL_PRODUCT_IDS      供 main.py 做业务路由判断
 """
 import os
@@ -112,8 +112,3 @@ async def get_opportunity_recall_latest(telnum, product_id):
 async def get_loss_control_latest(telnum):
     """控损专用：按手机号分表，取 op_time 最新一条。"""
     return await query("loss_control", telnum)
-
-
-async def get_customer_diagnosis_record(telnum, product_id):
-    """客户诊断：按手机号分表，查 (product_no, product_id) 一条。"""
-    return await query("customer_diagnosis", telnum, product_id)
