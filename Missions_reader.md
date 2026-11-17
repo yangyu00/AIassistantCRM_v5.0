@@ -32,14 +32,21 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 |---|---|---|---|
 | 1 | `OPPORTUNITY_RECALL_PRODUCT_IDS`（202608041615335173 / 172 / 174） | `data_query.get_opportunity_recall_latest(telnum, product_id)` | `ProductInfoBySpec9554` |
 | 2 | `LOSS_CONTROL_PRODUCT_IDS`（202609180955095402） | `data_query.get_loss_control_latest(telnum)`，有记录才命中 | `ProductInfoBySpec9591` |
-| 3 | `load_product_selling_point()` 命中 business_id | 维表库 | `ProductInfoByExcel` |
-| 4 | 兜底 | 维表库 | `ProductInfoRaw` |
+| 3 | 其余全部 | —（新线待完成） | `ProductInfoRaw` |
 
 前两组 ID 不再硬编码在 `main.py`，分别由
 `QUERY_SPECS["opportunity_recall"]["db_map"]` 的 key 与
 `QUERY_SPECS["loss_control"]["product_ids"]` 派生。
 
-3. 输出：`product_name` 非空 → `code: "0"` 带话术；为空 → `code: "2"`、产品名与话术为空。
+第 3 类是唯一的兜底：不属于商机回捞 / 控损的产品 ID 全部落到这里，当前统一
+输出 `code: "2"` 空话术，等客户诊断新线实现后再切换。维表业务路由已下线，
+`load_product_selling_point()` 的读取暂留（`main.py` 注释写明后续统一收敛读取
+时机），不再参与路由判断。
+
+3. 输出：仅 `ProductInfoBySpec9554` / `ProductInfoBySpec9591` 返回 `code: "0"`
+   带话术；兜底返回 `code: "2"`、产品名与话术为空。这里不能靠 `product_name`
+   是否为空判定：维表命中的 ID 落到兜底后 `product_name` 仍会从维表取到非空值，
+   只看它会返回 `code: "0"` + 空话术，看起来成功、实际没有内容。
 
 ## 用户标签获取（IOP）
 
@@ -53,8 +60,8 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 
 **所有失败分支统一返回空 dict `{}`**，不再返回 `None`。原因是 `main.py` 的
 `try/except` 只包住函数调用本身，`None` 不抛异常、不会触发 `except`，会一路传到
-`ProductInfoRaw::__get_queried_label_nvs` 并抛 `TypeError`（只要该业务在维表里有
-标签项），使"token 拿不到"这个最该降级的场景反而返回 500。空 dict 则让下游
+`ProductInfoRaw::__get_queried_label_nvs` 并抛 `TypeError`（只要
+`queried_label_ids` 非空），使"token 拿不到"这个最该降级的场景反而返回 500。空 dict 则让下游
 按「无标签」正常产出话术。
 
 失败分支包括：token 不可用、token 请求超时/网络异常、**token 响应非 200 /
@@ -513,7 +520,7 @@ Tokens / 有效期换算全部走生产模块，因此 token 单飞、重试退�
 
 这里的「客户画像」指 IOP 返回的**客户标签画像** `{ITEMCODE: [ITEMNAME, ITEMVALUE]}`，
 也就是在线业务 `custom_label_info` 的原始输入。业务侧的 `auxiliary_portrait`
-（辅助画像）还需要 `product_id` 与维表参与拼装，只凭电话号查不到，不属本脚本
+（辅助画像）还要按产品 ID 选定的标签子集拼装，只凭电话号查不到，不属本脚本
 职责。
 
 两点注意：`config.yaml` 里的 IOP 地址是**生产地址**，运行即真实联网；生产模块
@@ -612,16 +619,17 @@ import 时 `src/log_util.py` 会按既有行为创建 `log/` 目录与当日日�
 
 三个加载函数，全部 `mode=ro` 打开、用完即关，**在线业务绝不创建/写入维表库**。
 
-| 函数 | 返回形状 | 消费方 |
+| 函数 | 返回形状 | 在线消费方 |
 |---|---|---|
-| `load_lookup("label_name_mapping")` | `{label_id: display_name}` | `ProductInfoRaw` 辅助画像 |
-| `load_product_selling_point()` | `{business_id: (product_name, selling_point, label_id)}` | `main.py` 路由、`ProductInfoRaw`、`ProductInfoByExcel` |
-| `load_cut_in_script()` | `{business_id: {标签ID / 兜底话术: [切入, 挽留] 或 ""}}` | `ProductInfoByExcel` |
+| `load_lookup("label_name_mapping")` | `{label_id: display_name}` | 无（辅助画像不再做名称映射，能力保留供新线复用） |
+| `load_product_selling_point()` | `{business_id: (product_name, selling_point, label_id)}` | `ProductInfoRaw` 的产品名与日志；`main.py` 的空转读取暂留 |
+| `load_cut_in_script()` | `{business_id: {标签ID / 兜底话术: [切入, 挽留] 或 ""}}` | 无（维表业务已下线，定义保留供新线复用） |
 
 `load_cut_in_script()` 用 `ORDER BY rowid` 取
 `{key, fallback, groups} + tag_*` 原始列，把每行转成列名映射后交给
 `dim_transform.build_cut_in_script_dict()`；列名、标签列顺序、兜底键全部取自
-`registry.json`，不硬编码。
+`registry.json`，不硬编码。该函数当前无在线调用方，留在 `dim_reader` 里不产生
+运行时开销。
 
 ### 降级矩阵
 
@@ -633,8 +641,9 @@ import 时 `src/log_util.py` 会按既有行为创建 `log/` 目录与当日日�
 | 查询异常、`registry.json` 缺失或损坏 | 返回 `{}` |
 | 注册 xlsx 缺失 | 写入侧告警跳过，库保留上次成功版本 |
 
-返回 `{}` 时业务行为：产品名为 `None`、`queried_label_ids` 为 `[]`、
-卖点/切入/挽留话术为空、辅助画像的标签名沿用上游 `custom_label_info` 给的名字。
+返回 `{}` 时业务行为：`ProductInfoRaw` 的产品名为 `None`、其余 ID 的
+`queried_label_ids` 为 `[]`；商机回捞的标签子集是代码内固定值，辅助画像仍由
+IOP 标签拼装，不受维表影响；兜底统一返回 `code: "2"` 空话术。
 **维表侧出任何问题都不会让 API 500**。同一类告警每进程只打印一次（`_WARNED` 集合），避免刷屏。
 
 ### 读取次数
@@ -642,16 +651,18 @@ import 时 `src/log_util.py` 会按既有行为创建 `log/` 目录与当日日�
 不做进程级缓存，每次调用读一次全表，天然读到 `dim_watcher` 写入的最新值，
 无缓存失效或脏读问题。一次请求内：
 
-- `main.py` 的 `marketAssistant` 循环**外**加载 1 次，供「维表中业务」路由判断复用；
-- 每个 `ProductInfoRaw` 实例加载 1 次卖点表 + 1 次标签映射表（循环外各一次）；
-- `ProductInfoByExcel` 复用父类那份卖点表，另加载 1 次 `cut_in_script`（36 列原始列）。
+- `main.py` 的 `marketAssistant` 循环**外**加载 1 次卖点表；维表业务下线后
+  已不参与路由判断，属暂留的空转读取，后续统一收敛读取时机；
+- 每个 `ProductInfoRaw` 实例加载 1 次卖点表（循环外各一次）；
+- `label_name_mapping` 与 `cut_in_script` 在线侧均不再加载。
 
-标签映射表 60 行、卖点表 1361 行，本地 SQLite 开销可忽略。
+卖点表 1361 行，本地 SQLite 开销可忽略。
 后续若要省连接，可基于**各表独立的 version** 加缓存。
 
 ## 维表读取侧依赖的 registry 声明
 
-完整配置项与校验见 `Missions_writer.md`；在线读取只消费其中两类声明：
+完整配置项与校验见 `Missions_writer.md`；`dim_reader` 提供以下三类声明的读取
+能力，当前在线侧实际只用到 `lookup.values`：
 
 | 声明 | 形状 | 用途 |
 |---|---|---|
@@ -659,8 +670,8 @@ import 时 `src/log_util.py` 会按既有行为创建 `log/` 目录与当日日�
 | `lookup.values` | 多列 → `{key: (值1, 值2, 值3)}` | `product_selling_point_match`，`values` 顺序即元组下标 |
 | `cut_in_script` | `key` / `fallback` / `groups` / `tags` / `fallback_key` | 声明加工所需的原始列角色，`tags` 可写 `"dynamic_columns"` 直接引用展开结果 |
 
-⚠️ `cut_in_script.fallback_key` 可配，但 `services/rewrite_by_excel/rewrite.py` 用
-`"兜底话术"` 做比较，改它需同步改业务代码。
+⚠️ `cut_in_script.fallback_key` 当前值 `"兜底话术"`，由 `dim_reader` /
+`dim_transform` 按声明生成兜底项；在线侧已无消费方，调整取值前先确认新线的口径。
 
 ## 维表数据重组（`dim_transform`）
 
@@ -678,8 +689,8 @@ import 时 `src/log_util.py` 会按既有行为创建 `log/` 目录与当日日�
 3. 行间用 `\n` 连接；切入段加 `【切入话术】\n` 前缀，挽留段加 `【挽留话术】\n` 前缀。
 4. 匹配不到标记，或两段都为空 → 返回空字符串 `""`（**不是 list**）。
 
-业务侧 `fusion_script_list[0]` 取切入、`[1]` 取挽留；值为 `""` 时 `""[0]`
-会 `IndexError` 并被业务侧 `except` 吞掉返回空串。
+调用方取 `fusion_script_list[0]` 作切入、`[1]` 作挽留；值为 `""` 时 `""[0]`
+会 `IndexError`，需由调用方自行兜底。当前在线侧已无该调用方。
 
 ### `build_cut_in_script_dict(rows, ...)`
 
@@ -698,31 +709,34 @@ import 时 `src/log_util.py` 会按既有行为创建 `log/` 目录与当日日�
 
 ## 在线业务接入点（维表）
 
+维表业务路由已下线，在线侧不再按 `business_id` 命中卖点表来选业务对象。
+当前与维表有关的只剩两处：
+
 | 位置 | 加载函数 | 消费方式 |
 |---|---|---|
-| `main.py::marketAssistant` | `load_product_selling_point()` | `if one_product_obj.id in dict` 判断是否走「维表中业务」分支 |
-| `services/product_info_raw.py::__init__` | 同上，存 `self.product_selling_point_match_dict` | `[0]` 取产品名；`[2].split("\n")` 取 `queried_label_ids`（不提前拆、不过滤空串、不额外 strip 每项） |
-| `services/product_info_raw.py::__get_auxiliary_portrait` | `load_lookup("label_name_mapping")` | 命中则替换辅助画像的标签名，后续所有标签特殊规则不变 |
-| `services/rewrite_by_excel/rewrite.py::__init__` | `load_cut_in_script()`，存 `self.cut_in_script_dict` | 切入取 `[0]`、挽留取 `[1]` |
-| `services/rewrite_by_excel/rewrite.py::__get_selling_point` | 复用父类 `self.product_selling_point_match_dict` 的 `[1]` | 正则 `\d、.*?：` 找编号段，首段包 `<strong>` + `<span style="color:red;">`，后续段落逐段 `<strong>` 拼接补换行；匹配不到编号只加 `【卖点】\n`。输出再经 `__strong_text()` 把四个小节标题包 `<strong>` |
+| `main.py::marketAssistant` | `load_product_selling_point()` | 循环外读取 1 次，属暂留的空转读取，不参与路由判断 |
+| `services/product_info_raw.py::__init__` | 同上，存 `self.product_selling_point_match_dict` | `[0]` 取产品名（仅用于日志）；商机回捞的 `queried_label_ids` 改由代码内固定集提供，其余 ID 才从 `[2].split("\n")` 取 |
 
-**格式转换全部留在业务侧**，库里 `selling_point` 存原始「生成话术」文本，
-以后改配色/标签不用重导全表。
+`load_cut_in_script()` 与 `load_lookup("label_name_mapping")` 仍由 `dim_reader`
+提供，但在线侧无调用方；维表库、`registry.json` 与 `dim_transform` 的加工能力
+全部保留，供客户诊断新线复用。
 
 ## 公共画像拼装（`services/product_info_raw.py`）
 
 所有业务对象都继承 `ProductInfoRaw`，构造时固定走这段重组：
 
-- `queried_label_ids`：卖点维表元组的 `[2]`，业务侧 `.split("\n")` 得到
-  （读取侧不提前拆、不过滤空串、不额外 strip 每项，保证与画像逐字一致）。
+- `queried_label_ids`：商机回捞的 3 个 ID 取代码内固定集（号卡 / 套餐共用
+  3 个标签、宽带 4 个，两组重叠 2 个、合计 5 个；元组顺序即画像拼接顺序）；
+  其余 ID 从卖点维表元组的 `[2]` 经 `.split("\n")` 得到（读取侧不提前拆、
+  不过滤空串、不额外 strip 每项）。
 - `queried_label_nvs`：按 `queried_label_ids` 顺序与 `custom_label_info` 对齐，缺失填 `None`。
-- `auxiliary_portrait`：逐个标签拼 `标签名: <strong><span style="color:blue;">值</span></strong>; `，
-  命中 `label_name_mapping` 时替换标签名；随后应用一组按标签 ID 硬编码的特殊规则
-  （掉线记录 0.00 → 「无」、费用类补「元」、抖音快手流量补「M」、1/0 → 是/否、
-  重复标签去重、降档阈值标题标红），最后补 `【辅助画像】` 前缀。
+- `auxiliary_portrait`：按上游返回的名称与原值逐项拼
+  `标签名: <strong><span style="color:blue;">值</span></strong>; `，保留空值跳过
+  与同名去重，最后补 `【辅助画像】` 前缀。固定标签集里的 5 个标签都不涉及
+  名称映射或按标签 ID 硬编码的值转换，这两类规则已一并取消。
 
-`ProductInfoByExcel` 在此基础上追加卖点、切入、挽留三段，经 `__strong_text()`
-把四个小节标题包成 `<strong>` 后作为 `output_script`。
+控损与诊断兜底不使用画像，但构造时仍会算出 `auxiliary_portrait` 并写进
+`__str__` 日志。
 
 ## 调用量统计（`src/call_stat.py` + GET `/api/callStat`）
 
@@ -832,8 +846,9 @@ curl "http://host:8989/api/callStat?month=2026-11"
 | IOP | `expires_in` 缺失 / 非法 / `<= 360` / 过大 | 缺失静默用 600；非法回落默认并记一条 INFO；有效期夹在 `[min_lifetime, 上游声明值]`，deadline 永远落在未来、不抛 `ValueError`、不每请求刷新；token 照常可用 |
 | 写入侧 | 注册 xlsx 缺失 | `dim_watcher` 告警跳过，库保留上次成功版本 |
 
-**维表侧出任何问题都不会让 API 500**：产品名为 `None`、`queried_label_ids` 为 `[]`、
-卖点/切入/挽留话术为空、辅助画像标签名沿用上游给的名字。
+**维表侧出任何问题都不会让 API 500**：`ProductInfoRaw` 的产品名为 `None`、
+商机回捞的标签子集仍取代码内固定值、其余 ID 的 `queried_label_ids` 为 `[]`，
+兜底统一 `code: "2"` 空话术；辅助画像只由 IOP 标签决定，不受维表影响。
 同一类告警每进程只打印一次（`_WARNED` 集合），避免刷屏。
 
 不做进程级缓存，每次调用读一次全表，天然读到写入侧的最新值，
@@ -844,7 +859,12 @@ curl "http://host:8989/api/callStat?month=2026-11"
 - 删库后调用 `load_product_selling_point()` / `load_cut_in_script()` 应返回 `{}`
   且不创建任何文件。
 - `import main` 正常，`app.router.on_startup` 为空（无定时任务）。
-- 只改卖点表中的 `product_name` 后直接请求接口，下一次调用即读到新名字。
+- 路由只有三类：商机 3 个 ID 走 `ProductInfoBySpec9554`、控损 ID 有记录时走
+  `ProductInfoBySpec9591`、其余全部落 `ProductInfoRaw` 并返回 `code: "2"`
+  空话术（产品名与话术均为空）。把维表里存在的业务 ID 传进去也应是 `code: "2"`，
+  不能因为 `product_name` 非空而返回 `code: "0"` + 空话术。
+- 商机回捞的 `queried_label_ids` 是代码内固定集，改卖点维表的 `label_id` 列
+  不影响画像；`label_name_mapping` 与 `cut_in_script` 在线侧不再被加载。
 - `services/data_query.py`、两个 spec 子类、`dim_reader` 均可独立导入。
 - `TASKS` / `DB_SCHEMAS` / `QUERY_SPECS` 三者 key 一致；改 `.env` 的
   `LOSS_CONTROL_NUM_TABLES` 后，`get_loss_control_latest()` 解析出的表名后缀同步变化。
@@ -968,7 +988,9 @@ curl "http://host:8989/api/callStat?month=2026-11"
 - **客户诊断新线（暂不实现）**：`output_script` 计划由多张维表结合 IOP 用户画像
   拼装，不再依赖每日 AVL 宽表入库。这些表的结构与获取形式尚未确定，暂不在项目中
   实现，也不建代码占位或空模块；旧业务线已分步清理完毕，本项目不再保留其
-  代码、配置、文档或样例。
+  代码、配置、文档或样例。维表业务下线后，不属于商机回捞 / 控损的产品 ID
+  全部作为诊断兜底，当前统一输出 `code: "2"` 空话术，等新线实现后再切换；
+  维表库、`registry.json`、`dim_reader` / `dim_transform` 的加工能力均保留供复用。
 - 基于 `version` 的进程级缓存、版本回滚、历史版本查询、灰度切换。
 - 加工规则的完全配置化：当前 `cut_in_str2tuple` 与分组规则写在 `dim_transform.py`，
   `registry.json` 只声明列角色与列顺序。

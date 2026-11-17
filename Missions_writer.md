@@ -293,7 +293,7 @@ mv f09591_loss  loss_control
 `key` / `value` / `values` 必须来自 `columns` 中已声明的列，且不等于 `key`；
 `values` 不可重复。换列名或调顺序只改 `registry.json`。
 
-### `cut_in_script`（由读取侧消费）
+### `cut_in_script`（读取侧加工声明）
 
 | 配置 | 当前值 | 含义 |
 |---|---|---|
@@ -303,8 +303,9 @@ mv f09591_loss  loss_control
 | `tags` | `"dynamic_columns"` | 标签话术列的有序数组，或直接引用展开结果；下标 g 对应 `标签{g}` |
 | `fallback_key` | `兜底话术` | 生成的嵌套 dict 里兜底项的键名 |
 
-⚠️ `fallback_key` 可配，但 `services/rewrite_by_excel/rewrite.py` 用 `"兜底话术"`
-做比较，改它需同步改业务代码。所有角色列必须来自 `columns` 声明。
+⚠️ `fallback_key` 可配，当前值 `"兜底话术"`；`dim_reader.load_cut_in_script()`
+按它生成兜底项，在线侧已无消费方，调整取值前先确认新线口径。
+所有角色列必须来自 `columns` 声明。
 
 ### 当前注册的两张表
 
