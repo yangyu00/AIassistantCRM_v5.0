@@ -1,15 +1,15 @@
 # 定时数据更新任务说明（SFTP AVL 拉取 → SQLite 入库）
 
-> 3 个任务各自独立进程运行，代码在 `tasks/`；在线业务（FastAPI）对业务库与维表只读 SQLite
+> 2 个任务各自独立进程运行，代码在 `tasks/`；在线业务（FastAPI）对业务库与维表只读 SQLite
 > （唯一例外是调用量统计，见 `Missions_reader.md`）。
-> 原随 `main.py` 启动的拉取实现与三个分散的 `sftp_workdir_*/data_query.py` 均已删除；
+> 原随 `main.py` 启动的拉取实现与原先分散的 `sftp_workdir_*/data_query.py` 均已删除；
 > 在线查询统一由 `services/data_query.py` 按 `tasks/config.py` 的配置派发。
 
 > 在线业务（FastAPI）的读取与重组逻辑见 `Missions_reader.md`。
 
 ## 任务命名
 
-三个任务按业务含义命名，不再用「AVL 前缀 + 缩写」组合。同一个英文名同时作为
+两个任务按业务含义命名，不再用「AVL 前缀 + 缩写」组合。同一个英文名同时作为
 `TASKS` / `DB_SCHEMAS` / `QUERY_SPECS` 的 key、`tasks/sqlite_db/{任务名}/` 库目录名、
 `.env` 键前缀、日志与状态文件名前缀。
 
@@ -17,7 +17,6 @@
 |---|---|---|---|---|
 | 回捞商机 | `opportunity_recall` | `OPPORTUNITY_RECALL_` | `tasks/task_opportunity_recall.py` | F09554 / F09555 / F09556 |
 | 控损 | `loss_control` | `LOSS_CONTROL_` | `tasks/task_loss_control.py` | F09591 |
-| 诊断 | `customer_diagnosis` | `CUSTOMER_DIAGNOSIS_` | `tasks/task_customer_diagnosis.py` | F09609 |
 
 > `F09554` 等 AVL 文件前缀与 `data_F09554` 等表名属于外部数据约定，保持不变；
 > 只有任务自身的 key、脚本名、配置键前缀、库目录与文件名前缀采用业务英文名。
@@ -33,14 +32,13 @@
    > ⚠️ **文件名日期 ≠ 数据日期（op_time）**：`{YYYYMMDD}` 是文件生成日，`op_time` 是业务数据日，各任务偏移量见下文。
    > 补跑时 `--date` 填**文件名日期**：补 op_time=2026-11-08 的数据，回捞商机用 `--date 20261110`，控损用 `--date 20261109`。
 5. **单实例锁**：`tasks/state/{任务名}.lock`（portalocker/fcntl 非阻塞锁）。
-6. **轮询间隔**：由 `.env` 各任务分组的 `*_POLL_INTERVAL_SECONDS` 控制（业务前缀见「任务命名」，默认 600 / 1800 / 3600 秒）。
+6. **轮询间隔**：由 `.env` 各任务分组的 `*_POLL_INTERVAL_SECONDS` 控制（业务前缀见「任务命名」，默认 600 / 1800 秒）。
 7. **本地文件**：`tasks/files/{任务名}/`，按 `.env` 各任务分组的 `*_LOCAL_FILE_EXPIRE_DAYS` 天清理。
 8. **日志**：`tasks/log/{任务名}_INFO|ERROR_日期.log`，每天轮转，保留 7 天。
 9. **运行方式**（在项目根目录执行，用 `-m` 保证包内相对导入生效）：
    ```bash
    python -m tasks.task_opportunity_recall
    python -m tasks.task_loss_control --date 20261110
-   python -m tasks.task_customer_diagnosis --date 20261110 --force-reload
    ```
    生产建议用 systemd/nohup 各起一个常驻进程；单机单实例。
 
@@ -48,13 +46,13 @@
 
 ## 配置
 
-- 三个任务的配置统一由 `tasks/config.py` 读取并解析项目根目录 `.env`，脚本从 `TASKS[...]` 取值。
+- 两个任务的配置统一由 `tasks/config.py` 读取并解析项目根目录 `.env`，脚本从 `TASKS[...]` 取值。
 - **不沿用项目总的 `config.yaml` / `config.py`**；配置只在 `tasks/config.py` 一处定义。
 - 在线查询 `services/data_query.py` 复用同一份 `TASKS[...]`，库目录由 `db_dir(任务名)`
-  统一指向 `tasks/sqlite_db/{任务名}/`，与三个任务脚本的写入路径一致，读写不再各算一套。
+  统一指向 `tasks/sqlite_db/{任务名}/`，与两个任务脚本的写入路径一致，读写不再各算一套。
 - `tasks/config.py` 里还有两张与 `TASKS` 同 key 的静态表，**写入侧建表与读取侧查询共用**：
   - `DB_SCHEMAS[任务名]`：`(列名, 类型)` 列表，即建表列定义，也是 `SELECT *` 结果的 `dict` 组装顺序；
-    三个任务脚本的 `DB_SCHEMA` 直接引用它，不再各写一份。
+    两个任务脚本的 `DB_SCHEMA` 直接引用它，不再各写一份。
   - `QUERY_SPECS[任务名]`：在线查询声明（`mode` / `where` / `order_by` / `db_map` / `table_name` / `product_ids`）；
     `mode` 分多库单表 / 单库多表 / 单库单表三种形式（多库多表不存在），详见 `Missions_reader.md`。
   - 二者在 `config.py` 导入时校验：`where` 列必须存在于 `DB_SCHEMAS`、
@@ -64,33 +62,32 @@
   `.env` 支持 `#` 注释、行内注释、`export`、`${VAR}` 插值、单/双引号；缺必需键会在启动时报错，不会静默连错服务器。
 - 分组：SFTP 公共 5 项（`SFTP_HOST/PORT/USERNAME/PASSWORD/REMOTE_PATH`），
   每个任务一组 `<业务前缀>_*`（前缀列表、批次大小、库/本地文件保留天数、轮询间隔；业务前缀见「任务命名」），
-  控损/诊断另有 `NUM_TABLES`、`TABLE_NAME_PREFIX`。
+  控损另有 `NUM_TABLES`、`TABLE_NAME_PREFIX`。
 
-  默认值如下（表中键名省略前缀 `OPPORTUNITY_RECALL_` / `LOSS_CONTROL_` / `CUSTOMER_DIAGNOSIS_`，分表键同理）：
+  默认值如下（表中键名省略前缀 `OPPORTUNITY_RECALL_` / `LOSS_CONTROL_`，分表键同理）：
 
-  | 键 | 回捞商机 | 控损 | 诊断 |
-  |---|---|---|---|
-  | `FILE_PREFIXES` | F09554,F09555,F09556 | F09591 | F09609 |
-  | `BATCH_SIZE` | 10000 | 5000 | 5000 |
-  | `DATA_EXPIRE_DAYS` | 30 | **3** | 50 |
-  | `LOCAL_FILE_EXPIRE_DAYS` | 7 | **3** | 50 |
-  | `POLL_INTERVAL_SECONDS` | 600 | 1800 | 3600 |
-  | `NUM_TABLES` / `TABLE_NAME_PREFIX` | — | 128 / `data_F09591` | 128 / `data_F09609` |
+  | 键 | 回捞商机 | 控损 |
+  |---|---|---|
+  | `FILE_PREFIXES` | F09554,F09555,F09556 | F09591 |
+  | `BATCH_SIZE` | 10000 | 5000 |
+  | `DATA_EXPIRE_DAYS` | 30 | **3** |
+  | `LOCAL_FILE_EXPIRE_DAYS` | 7 | **3** |
+  | `POLL_INTERVAL_SECONDS` | 600 | 1800 |
+  | `NUM_TABLES` / `TABLE_NAME_PREFIX` | — | 128 / `data_F09591` |
 
-  > 控损保留天数为 **3 天**；需要 50 天改 `.env` 一行即可。
+  > 控损保留天数为 **3 天**，由 `.env` 的 `LOSS_CONTROL_DATA_EXPIRE_DAYS` 控制。
 - `.env` 含 SFTP 明文密码：仓库公开时建议加入 `.gitignore`，或部署时改用系统环境变量注入（不提交 `.env`）。
 - 本方案取代原待办「统一迁到 `config.yaml`」：不并入项目总配置，避免 tasks 与在线业务的配置耦合。
 
 ### 已有库目录迁移（改名后必做）
 
 任务 key 同时是 `tasks/sqlite_db/{任务名}/` 的目录名，改名后**不兼容旧目录**。
-部署到已有数据的机器时，先停掉 3 个任务进程，把旧目录搬成新名再启动：
+部署到已有数据的机器时，先停掉 2 个任务进程，把旧目录搬成新名再启动：
 
 ```bash
 cd tasks/sqlite_db
 mv f09554_opp   opportunity_recall
 mv f09591_loss  loss_control
-mv f09609_diag  customer_diagnosis
 ```
 
 `tasks/files/` 下的本地 AVL 目录同理，避免重新下载。
@@ -103,7 +100,6 @@ mv f09609_diag  customer_diagnosis
 ## 入库幂等
 
 - **回捞商机、控损**：`PRIMARY KEY (product_no)` + `INSERT OR REPLACE`，同一 `product_no` 只保留一条。
-- **诊断**：`PRIMARY KEY (product_no, product_id)` + `INSERT OR REPLACE`（一个手机号对应多个产品各一条）。
 - `product_no` 为 `TEXT NOT NULL`；空手机号记录在解析时跳过，跳过条数写进日志。
 - 主键自带索引，不再额外建 `(product_no, op_time)` 索引。
 - `REPLACE` 是后写覆盖先写。批量补跑历史文件按文件名日期**升序**执行（先旧后新）；
@@ -195,45 +191,6 @@ mv f09609_diag  customer_diagnosis
 - 量级：每个 AVL 约 7000 万逻辑记录；按 `product_no` 覆盖后实际行数取决于去重后的手机号数。
   PRAGMA 用 `synchronous = NORMAL`。
 
-# 诊断 AVL 入库（F09609）
-
-进程：`tasks/task_customer_diagnosis.py`；任务名 `customer_diagnosis`。
-
-## 文件日期与数据日期（待业务确认）
-
-op_time 直接取自文件第 1 列，代码不做日期改写。当前样例 `F0960920261110000000.AVL` 内的 op_time 是 **2026-11-08**，比文件名日期早 2 天（T-2）。
-
-## 字段（宽表展开后 5 列）
-
-| # | 字段 | 类型 | 说明 |
-|---|---|---|---|
-| 1 | op_time | TEXT | 数据日期 = 文件第 1 列原值；过期清理按此列 |
-| 2 | user_id | TEXT | 用户标识 |
-| 3 | product_no | TEXT NOT NULL | 手机号（分表键、查询键之一） |
-| 4 | product_id | TEXT NOT NULL | 产品 ID（与 product_no 联合主键） |
-| 5 | strategy_script | TEXT | 该产品对应的策略/话术（**含裸换行**） |
-
-## 续行与展开规则
-
-1. 以「行首是否 `YYYY-MM-DD`」区分新记录起始行与续行，续行合并进当前逻辑记录。
-2. 一条逻辑记录的所有物理行先收集齐，用 `\n` **join 成整段文本后统一按 `\t` 切列**
-   （即使 tab 被换行拆开也能正确切分）。
-3. 切列后第 1~3 列 = `op_time / user_id / product_no`；
-   **第 4 列起每两列一组 `(product_id, strategy_script)`**，每组生成一条入库记录。
-4. `product_id` 为空（纯空白）的组跳过；总列数 `< 3` 的逻辑记录整条跳过并告警。
-5. 行尾反斜杠处理同控损（只剥一个 ASCII 反斜杠）。
-
-## 库表与分表
-
-- 单库 `tasks/sqlite_db/customer_diagnosis/F09609.db`，128 张表 `data_F09609_0 … data_F09609_127`。
-- 路由同控损：`zlib.crc32(product_no) % NUM_TABLES`，与 `services/data_query.py` 的
-  `QUERY_SPECS["customer_diagnosis"]`（`single_db_multi_table` 单库多表）一致。
-- 主键 `PRIMARY KEY (product_no, product_id)`，入库 `INSERT OR REPLACE`。
-- 保留天数、批次大小、轮询间隔见 `.env`（`CUSTOMER_DIAGNOSIS_*`）。
-- 量级：拆分后每天约 3 亿条 → 每表日均约 234 万条；`synchronous = NORMAL`。
-  若单机入库速度不够，可增大 `.env` 的 `CUSTOMER_DIAGNOSIS_BATCH_SIZE` 或调低 `CUSTOMER_DIAGNOSIS_POLL_INTERVAL_SECONDS`。
-
-
 ---
 
 # 维表写入侧（Excel → SQLite）
@@ -255,11 +212,11 @@ op_time 直接取自文件第 1 列，代码不做日期改写。当前样例 `F
 
 | 进程 | 命令（项目根目录） | 职责 |
 |---|---|---|
-| SFTP 拉取 ×3 | `python -m tasks.task_xxx` | AVL → `tasks/sqlite_db/` |
+| SFTP 拉取 ×2 | `python -m tasks.task_xxx` | AVL → `tasks/sqlite_db/` |
 | 维表写入 ×1 | `python -m excel2consts.dim_watcher` | xlsx → `dimensions.db` |
 | 在线 API ×1 | `python main.py` | 只读业务库与维表；另按阈值写调用量到 `log/call_sum.db`（见 `Missions_reader.md`） |
 
-**部署时 5 个进程都要起**。`main.py` 不含任何定时任务，只有一个 `lifespan` 生命周期钩子（见 `Missions_reader.md`），除调用量统计外不写业务库/维表；
+**部署时 4 个进程都要起**。`main.py` 不含任何定时任务，只有一个 `lifespan` 生命周期钩子（见 `Missions_reader.md`），除调用量统计外不写业务库/维表；
 `dim_watcher` 不依赖 `.env` / `tasks/config.py` / 项目总 `config.yaml`，自包含于 `excel2consts/`。
 
 ## 文件清单（写入侧）
@@ -390,7 +347,7 @@ python -m excel2consts.dim_watcher --once --force # 忽略指纹强制重导并�
 python -m excel2consts.dim_watcher --config /path/to/registry.json --interval 300
 ```
 
-生产建议 systemd/nohup 起一个常驻进程，与 `tasks/` 三个任务并列。
+生产建议 systemd/nohup 起一个常驻进程，与 `tasks/` 两个任务并列。
 `--force` 通常只配合 `--once` 使用。
 
 ### 单轮流程（逐表执行）

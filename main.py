@@ -39,7 +39,7 @@ async def lifespan(app: FastAPI):
         call_stat.flush()
 
 
-# 数据更新（SFTP 拉取 → SQLite 入库）由 tasks/ 下的 3 个独立进程负责；
+# 数据更新（SFTP 拉取 → SQLite 入库）由 tasks/ 下的 2 个独立进程负责；
 # 维表更新由 excel2consts.dim_watcher 独立进程负责；
 # 本进程对业务库与维表一律只读 SQLite，唯一写入是调用量统计（log/call_sum.db）。
 app = FastAPI(lifespan=lifespan)

@@ -1,10 +1,10 @@
 # 在线业务读取与重组说明（FastAPI）
 
-> 写入侧（SFTP 拉取 3 个进程、维表写入 1 个进程）见 `Missions_writer.md`。
+> 写入侧（SFTP 拉取 2 个进程、维表写入 1 个进程）见 `Missions_writer.md`。
 > 在线 API（`python main.py`）无任何定时任务，只有一个 `lifespan` 生命周期钩子
 > （启动时恢复调用量基数、关闭时落库，见「调用量统计」）；
 > 业务库与维表一律只读 SQLite，唯一写入是调用量统计（本地 `log/call_sum.db`）。
-> 三个任务的业务命名与配置键前缀见 `Missions_writer.md` 的「任务命名」。
+> 两个任务的业务命名与配置键前缀见 `Missions_writer.md` 的「任务命名」。
 
 ## 架构与数据流向
 
@@ -16,10 +16,10 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 
 | 进程 | 数量 | 职责 |
 |---|---|---|
-| 写入侧进程 | 4 | 3 个 SFTP 拉取 + 1 个 `dim_watcher`，见 `Missions_writer.md` |
+| 写入侧进程 | 3 | 2 个 SFTP 拉取 + 1 个 `dim_watcher`，见 `Missions_writer.md` |
 | 在线 API | 1 | 只读业务库与维表、按路由选业务对象并拼装话术；另在内存累计调用量并按阈值写入 `log/call_sum.db` |
 
-**部署时 5 个进程都要起**。库未就绪时 API 按「无业务记录 / 无维表」降级，不会 500。
+**部署时 4 个进程都要起**。库未就绪时 API 按「无业务记录 / 无维表」降级，不会 500。
 维表更新后无需重启在线进程，下一次请求即读到新值。
 
 ## 请求处理与路由（`main.py::marketAssistant`）
@@ -32,9 +32,8 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 |---|---|---|---|
 | 1 | `OPPORTUNITY_RECALL_PRODUCT_IDS`（202608041615335173 / 172 / 174） | `data_query.get_opportunity_recall_latest(telnum, product_id)` | `ProductInfoBySpec9554` |
 | 2 | `LOSS_CONTROL_PRODUCT_IDS`（202609180955095402） | `data_query.get_loss_control_latest(telnum)`，有记录才命中 | `ProductInfoBySpec9591` |
-| 3 | 其余 ID | `data_query.get_customer_diagnosis_record(telnum, product_id)`，有记录才命中 | `ProductInfoBySpec9609` |
-| 4 | `load_product_selling_point()` 命中 business_id | 维表库 | `ProductInfoByExcel` |
-| 5 | 兜底 | 维表库 | `ProductInfoRaw` |
+| 3 | `load_product_selling_point()` 命中 business_id | 维表库 | `ProductInfoByExcel` |
+| 4 | 兜底 | 维表库 | `ProductInfoRaw` |
 
 前两组 ID 不再硬编码在 `main.py`，分别由
 `QUERY_SPECS["opportunity_recall"]["db_map"]` 的 key 与
@@ -523,7 +522,7 @@ import 时 `src/log_util.py` 会按既有行为创建 `log/` 目录与当日日�
 
 ## 业务库读取（`services/data_query.py`）
 
-三个任务原先各有一个 `data_query.py`，逻辑重复、改字段要同步三处。现在合并为
+两个任务原先各有一个 `data_query.py`，逻辑重复、改字段要同步两处。现在合并为
 **一个模块 + 一份配置**：查询的库目录、文件前缀、分表数、表列名、SQL 条件全部由
 `tasks/config.py` 派生，`services/data_query.py` 只负责按任务名派发和执行。
 
@@ -537,7 +536,7 @@ import 时 `src/log_util.py` 会按既有行为创建 `log/` 目录与当日日�
 | `db_dir(任务名)` | `tasks/config.py` | 固定指向 `tasks/sqlite_db/{任务名}/`，与写入路径一致 |
 
 `TASKS` / `DB_SCHEMAS` / `QUERY_SPECS` 三者 key 完全一致（`opportunity_recall` /
-`loss_control` / `customer_diagnosis`），导入时校验列与前缀的合法性，漂移即抛 `ValueError`。
+`loss_control`），导入时校验列与前缀的合法性，漂移即抛 `ValueError`。
 
 ### `mode` 的三种库表形式
 
@@ -550,7 +549,7 @@ import 时 `src/log_util.py` 会按既有行为创建 `log/` 目录与当日日�
 | `single_db_multi_table` | 单库多表 | `{FILE_PREFIXES[0]}.db` | `{TABLE_NAME_PREFIX}_{crc32 % NUM_TABLES}` | 无（用 `.env` 的分表配置） |
 | `single_db_single_table` | 单库单表 | `{FILE_PREFIXES[0]}.db` | `table_name` 指定的固定表 | `table_name` |
 
-当前三个任务只用到前两种；`single_db_single_table` 已实现但暂无任务使用，
+当前两个任务只用到前两种；`single_db_single_table` 已实现但暂无任务使用，
 新增单库单表任务时补 `table_name` 即可。`services/data_query.py::_resolve()` 按
 `mode` 走三个分支，各自算出 `(db_path, table_name, where 值列表)`。
 
@@ -569,22 +568,20 @@ import 时 `src/log_util.py` 会按既有行为创建 `log/` 目录与当日日�
 | `table_name` | 单库单表专用：固定表名 |
 | `product_ids` | 供 `main.py` 路由判断的业务 ID 列表 |
 
-### 三个任务的解析结果
+### 两个任务的解析结果
 
 | 任务名（= `TASKS` key） | mode | 库文件 | 表名 | 条件与排序 | 返回列 |
 |---|---|---|---|---|---|
 | `opportunity_recall` | `multi_db_single_table` | `tasks/sqlite_db/opportunity_recall/{库名}.db` | `data_{库名}`，库名来自 `db_map` | `product_no = telnum` + `ORDER BY op_time DESC` | 12 列（op_time…city_id） |
 | `loss_control` | `single_db_multi_table` | `tasks/sqlite_db/loss_control/F09591.db` | `data_F09591_{crc32 % NUM_TABLES}` | `product_no = telnum` + `ORDER BY op_time DESC` | 5 列（op_time, user_id, product_no, city_id, strategy_name） |
-| `customer_diagnosis` | `single_db_multi_table` | `tasks/sqlite_db/customer_diagnosis/F09609.db` | `data_F09609_{crc32 % NUM_TABLES}` | `product_no = telnum AND product_id = ?`，不排序 | 5 列（op_time, user_id, product_no, product_id, strategy_script） |
 
 ### 对外接口
 
 | 接口 | 说明 |
 |---|---|
 | `query(task_name, telnum, product_id=None)` | 通用派发；`task_name` 必须是 `QUERY_SPECS` 的 key |
-| `get_opportunity_recall_latest(telnum, product_id)` | 上表三行的薄封装，保持 `main.py` 调用点语义清晰 |
+| `get_opportunity_recall_latest(telnum, product_id)` | 上表两行的薄封装，保持 `main.py` 调用点语义清晰 |
 | `get_loss_control_latest(telnum)` | 同上 |
-| `get_customer_diagnosis_record(telnum, product_id)` | 同上 |
 | `OPPORTUNITY_RECALL_PRODUCT_IDS` / `LOSS_CONTROL_PRODUCT_IDS` | 由 `db_map` / `product_ids` 派生的不可变集合，供路由判断 |
 
 均为 `async` 函数、内部同步 `sqlite3`；表名与列名来自代码内配置，用户输入只走参数绑定。
@@ -602,13 +599,12 @@ import 时 `src/log_util.py` 会按既有行为创建 `log/` 目录与当日日�
 
 主键、分表数与库表定义的完整口径见 `Missions_writer.md`。
 
-## 业务库话术重组（3 个 spec 子类）
+## 业务库话术重组（2 个 spec 子类）
 
 | 子类 | 读取字段 | 重组规则 |
 |---|---|---|
 | `rewrite_by_spec_f09554` | `content_abstract` / `type_xl` / `cust_demand` / `rec_strategy` / `reject_reason` / `reason_note` | 拼【通话总结】【用户需求】【已推荐政策】【拒绝原因】四段，标题加粗、部分蓝色，缺值写「无」；末尾拼 `auxiliary_portrait`，换行统一替换为 `<br>` |
 | `rewrite_by_spec_f09591` | `strategy_name` | 自定义标签 `<$B>` / `<$I>` / `<$U>` / `<#RRGGBB>` / `<$B$I#RRGGBB>` → `<b>` / `<i>` / `<u>` / `<span style="color: #RRGGBB">`，`</>` 按栈逆序闭合；空内容返回「无历史话术记录」 |
-| `rewrite_by_spec_f09609` | `strategy_script` | 按 `\n` 拆行、按 `[：:]` 切一次，「标题：」蓝色加粗；标题为「资费摘要」时标题与内容均红色加粗；换行替换为 `<br>`；空内容返回「无话术记录」 |
 
 这些格式化都在业务侧执行，库里保存的是原始文本。
 
@@ -849,11 +845,11 @@ curl "http://host:8989/api/callStat?month=2026-11"
   且不创建任何文件。
 - `import main` 正常，`app.router.on_startup` 为空（无定时任务）。
 - 只改卖点表中的 `product_name` 后直接请求接口，下一次调用即读到新名字。
-- `services/data_query.py`、三个 spec 子类、`dim_reader` 均可独立导入。
+- `services/data_query.py`、两个 spec 子类、`dim_reader` 均可独立导入。
 - `TASKS` / `DB_SCHEMAS` / `QUERY_SPECS` 三者 key 一致；改 `.env` 的
   `LOSS_CONTROL_NUM_TABLES` 后，`get_loss_control_latest()` 解析出的表名后缀同步变化。
-- `QUERY_MODES` 恰为三种；`_resolve()` 对三个任务分别解析出
-  `{库名}.db` + `data_{库名}`、`F09591.db` + `data_F09591_N`、`F09609.db` + `data_F09609_N`。
+- `QUERY_MODES` 恰为三种；`_resolve()` 对两个任务分别解析出
+  `{库名}.db` + `data_{库名}`、`F09591.db` + `data_F09591_N`。
   把 `mode` 改成多库多表等非法值，import `tasks.config` 应抛 `ValueError`。
 - `app.router.on_startup` / `on_shutdown` 均为 0，`router.lifespan_context` 已设置
   （确认走 lifespan 而非 `on_event`）；startup 日志有「调用量统计已恢复」。

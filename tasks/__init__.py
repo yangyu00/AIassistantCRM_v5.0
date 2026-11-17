@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""定时任务包：3 个 SFTP 拉取/入库任务各自作为独立进程运行。
+"""定时任务包：2 个 SFTP 拉取/入库任务各自作为独立进程运行。
 
     python -m tasks.task_opportunity_recall    回捞商机（F09554/55/56，12 列，无续行）
     python -m tasks.task_loss_control          控损（F09591，5 逻辑列 + 续行 + 128 分表）
