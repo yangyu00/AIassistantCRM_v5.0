@@ -112,7 +112,6 @@ def _multi_table_task(prefix):
 TASKS = {
     "opportunity_recall": _task("OPPORTUNITY_RECALL"),
     "loss_control": _multi_table_task("LOSS_CONTROL"),
-    "customer_diagnosis": _multi_table_task("CUSTOMER_DIAGNOSIS"),
 }
 
 # ---------------------------------------------------------------------------
@@ -145,13 +144,6 @@ DB_SCHEMAS = {
         ("city_id", "TEXT"),
         ("strategy_name", "TEXT"),
     ],
-    "customer_diagnosis": [
-        ("op_time", "TEXT"),
-        ("user_id", "TEXT"),
-        ("product_no", "TEXT NOT NULL"),
-        ("product_id", "TEXT NOT NULL"),
-        ("strategy_script", "TEXT"),
-    ],
 }
 
 # key 与 TASKS 一致；在线查询按任务名派发。
@@ -183,11 +175,6 @@ QUERY_SPECS = {
         "product_ids": ["202609180955095402"],  # 控损专用
         "where": ["product_no"],
         "order_by": "op_time DESC",
-    },
-    "customer_diagnosis": {
-        "mode": "single_db_multi_table",
-        "where": ["product_no", "product_id"],
-        "order_by": None,
     },
 }
 
