@@ -108,21 +108,21 @@ async def marketAssistant(args: Args):
     product_selling_point_match_dict = load_product_selling_point()
     product_obj_list = []
     for one_product_obj in args.productId:
-        # 1. 特殊业务
+        # 1. 回捞商机
         # 号卡业务、套餐业务、宽带业务（ID 与库表映射见 tasks/config.py）
         if one_product_obj.id in data_query.OPPORTUNITY_RECALL_PRODUCT_IDS:
             record = await data_query.get_opportunity_recall_latest(args.telnum, one_product_obj.id)
             product_obj_list.append(ProductInfoBySpec9554(one_product_obj.id, custom_label_info, record))
             continue
 
-        # 2. 数据库中业务(控损专用)
+        # 2. 控损专用
         if one_product_obj.id in data_query.LOSS_CONTROL_PRODUCT_IDS:
             record = await data_query.get_loss_control_latest(args.telnum)
             if record:
                 product_obj_list.append(ProductInfoBySpec9591(one_product_obj.id, custom_label_info, record))
                 continue
 
-        # 数据库中业务(客户诊断)
+        # 3. 客户诊断
         record = await data_query.get_customer_diagnosis_record(args.telnum, one_product_obj.id)
         if record:
             product_obj_list.append(ProductInfoBySpec9609(one_product_obj.id, custom_label_info, record))
