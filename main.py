@@ -128,15 +128,14 @@ class IopLabelProvider:
         self.telnum = telnum
         self._labels = None
         self._fetched = False
-        self.fetch_count = 0
 
     async def labels(self):
         if self._fetched:
             return self._labels
-        self._fetched = True
-        self.fetch_count += 1
+
         try:
             self._labels = await iop_client.get_customer_labels(self.telnum)
+            self._fetched = True
         except Exception as e:
             my_log.error(e)
             self._labels = {}
