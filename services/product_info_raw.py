@@ -25,7 +25,7 @@ def build_auxiliary_portrait(queried_label_nvs):
 
     queried_label_nvs 由调用方按产品 ID 预先取好；商机回捞的标签子集固定，
     这 5 个标签的名称直接取上游返回值即可。函数只读入参、不访问对象状态，
-    可按业务需要决定是否计算，也便于复用同一份结果。
+    只在声明需要画像的业务分支调用，结果按 product_id 在一次请求内复用。
     """
     portrait_str = ""
     for label_nv in queried_label_nvs:
@@ -45,7 +45,7 @@ def build_auxiliary_portrait(queried_label_nvs):
 
 
 class ProductInfoRaw(object):
-    def __init__(self, product_id, custom_label_info, selling_points):
+    def __init__(self, product_id, custom_label_info, selling_points, portrait_cache=None):
         self.product_id = product_id
         self.custom_label_info = custom_label_info
         # 卖点维表由调用方在一次请求开始时读入并传入，避免每个产品对象各读一次
@@ -53,8 +53,20 @@ class ProductInfoRaw(object):
         self.product_name = self.__get_product_name()
         self.queried_label_ids = self.__get_queried_label_ids()
         self.queried_label_nvs = self.__get_queried_label_nvs()
-        self.auxiliary_portrait = build_auxiliary_portrait(self.queried_label_nvs)
+        # portrait_cache 是调用方在一次请求内创建的空 dict，按 product_id 复用
+        # 画像结果：同一 ID 在列表里出现多次也只拼一次。传 None 表示该对象
+        # 不需要画像，连计算都不发生。缓存只在函数内创建、不跨请求共享。
+        self._portrait_cache = portrait_cache
         self.output_script = "无"
+
+    @property
+    def auxiliary_portrait(self):
+        if self._portrait_cache is None:
+            return ""
+        key = self.product_id
+        if key not in self._portrait_cache:
+            self._portrait_cache[key] = build_auxiliary_portrait(self.queried_label_nvs)
+        return self._portrait_cache[key]
 
     def __get_product_name(self):
         if self.product_id not in self.product_selling_point_match_dict:

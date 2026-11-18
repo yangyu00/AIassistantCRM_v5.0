@@ -4,8 +4,9 @@ from services.product_info_raw import ProductInfoRaw
 
 
 class ProductInfoRewrite(ProductInfoRaw):
-    def __init__(self, product_id, custom_label_info, selling_points, record=None):
-        super().__init__(product_id, custom_label_info, selling_points)
+    def __init__(self, product_id, custom_label_info, selling_points, record=None,
+                 portrait_cache=None):
+        super().__init__(product_id, custom_label_info, selling_points, portrait_cache)
         self.product_name = "控损业务专用"
         self.record = record
         self.output_script = self.__get_output_script()

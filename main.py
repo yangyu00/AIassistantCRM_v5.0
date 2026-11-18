@@ -145,6 +145,9 @@ async def marketAssistant(args: Args):
     # 标签提供者按请求创建：标签属于单个手机号，不能放在模块级或 app.state
     # 缓存，否则会把上一个用户的标签带给下一个用户且不会报错
     label_provider = IopLabelProvider(args.telnum)
+    # 画像按 product_id 在一次请求内共享：同一 ID 重复出现只拼一次。
+    # 只在请求处理函数内创建，避免把某个用户的画像串给下一个用户
+    portrait_cache = {}
 
     # 2. 建立产品对象列表
     # 卖点维表一次请求只读一次，传给每个产品对象复用
@@ -156,13 +159,16 @@ async def marketAssistant(args: Args):
         need = iop_need(one_product_obj.id)
         custom_label_info = (await label_provider.labels()
                              if need != IopNeed.NONE else {})
+        # 只有声明 PORTRAIT 的业务需要画像；其余传 None，连拼装都不发生
+        portrait_cache_for_obj = portrait_cache if need == IopNeed.PORTRAIT else None
 
         # 1. 特殊业务
         # 号卡业务、套餐业务、宽带业务（ID 与库表映射见 tasks/config.py）
         if one_product_obj.id in data_query.OPPORTUNITY_RECALL_PRODUCT_IDS:
             record = await data_query.get_opportunity_recall_latest(args.telnum, one_product_obj.id)
             product_obj_list.append(ProductInfoBySpec9554(one_product_obj.id, custom_label_info,
-                                                          product_selling_point_match_dict, record))
+                                                          product_selling_point_match_dict, record,
+                                                          portrait_cache_for_obj))
             continue
 
         # 2. 数据库中业务(控损专用)
@@ -170,14 +176,16 @@ async def marketAssistant(args: Args):
             record = await data_query.get_loss_control_latest(args.telnum)
             if record:
                 product_obj_list.append(ProductInfoBySpec9591(one_product_obj.id, custom_label_info,
-                                                              product_selling_point_match_dict, record))
+                                                              product_selling_point_match_dict, record,
+                                                              portrait_cache_for_obj))
                 continue
 
         # 3. 诊断兜底
         # 不属于上述两类的产品 ID 全部落到这里。新线输出待完成，当前
         # 统一输出 code=2 空话术；等新线实现后再切换。
         product_obj_list.append(ProductInfoRaw(one_product_obj.id, custom_label_info,
-                                               product_selling_point_match_dict))
+                                               product_selling_point_match_dict,
+                                               portrait_cache_for_obj))
 
     # 3. 输出话术
     # 诊断兜底统一输出 code=2 空话术。这里不能再靠 product_name 是否为空判定：
