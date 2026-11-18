@@ -1,25 +1,16 @@
 # -*- coding: utf-8 -*-
-"""TokenManager：``get_token.py`` 的 333 行逻辑**原样平移**成实例方法。
+"""token 的获取、有效期与并发保护。
 
-第 2 步：本文件与 ``endpoints_spec.py`` 均为**新增**，存量 4 文件一行未改。
+``TokenState`` 持有 token 值与有效期，``TokenManager`` 负责单飞刷新、重试
+退避、失败冷却与响应校验。全部状态都在实例内，不同实例互不干扰。
 
-平移规则（不重写算法，只搬函数体）
---------------------------------
-* 原 ``TOKENS`` 模块级单例 → ``TokenState`` 实例，由 ``TokenManager`` 持有。
-* 原模块级可变全局（``_COOLDOWN_UNTIL`` / ``_COOLDOWN_WARNED_UNTIL`` /
-  ``_REFRESH_LOCK`` / ``_REFRESH_LOCK_LOOP`` / ``_REFRESH_GEN``）→ 实例字段，
-  把 ``global X`` 改成 ``self._x``。
-* ``_retry_profile()`` / ``_lifetime_profile()`` / ``client_timeout()`` 的容
-  错与默认值已在第 0 步搬进 ``IOPConfig``，这里直接读 ``self._config.retry``
-  / ``self._config.lifetime``；``RETRY`` / ``LIFETIME`` 两个模块级 dict 不再存在。
-* ``my_log.*`` → ``self._logger.*``，文案与级别逐字保留；构造时注入，
-  未注入 → ``NullLogger`` 完全静默。IOP 包内不 import ``src.log_util``。
-* ``session_context() + client.post()`` → ``await self._transport.post()``，
-  返回 ``HttpResponse``；网络异常原样外抛、JSON 解析异常由 ``resp.json()``
-  重抛，因此下面各条 ``try / except`` 分支与旧代码一一对应。
+并发规则：
+* ``asyncio.Lock`` 按当前 event loop 懒创建/重建，跨 ``asyncio.run()`` 安全；
+* 拿锁前后各检查一次 token 有效性，并用刷新代次让同批并发共享一轮结果；
+* 失败冷却在拿锁之前短路，一个冷却周期只打一条 INFO 提示。
 
-单飞锁按当前 event loop 懒创建/重建、拿锁前后二次检查、刷新代次、失败
-冷却在拿锁前短路、一个冷却周期只一条 INFO——全部逐字保留。
+参数取自 ``IOPConfig``；HTTP 通过注入的 ``Transport`` 发出；日志由构造时
+注入，未注入则完全静默。
 """
 from __future__ import annotations
 
@@ -40,11 +31,11 @@ _INVALID_DEADLINE = datetime.datetime.min
 
 
 class TokenState:
-    """原模块级 ``Tokens`` 单例，改成实例状态。
+    """token 值与有效期的实例状态。
 
     不变量：``deadline`` 恒为 ``datetime``（初始/失败均为
-    ``_INVALID_DEADLINE``）；``access_token is not None`` 是「拿没拿到」的业务
-    条件。第 4 步兼容层的 ``TOKENS`` 代理对象转发到这里。
+    ``_INVALID_DEADLINE``）；``access_token is not None`` 是「拿没拿到」的
+    业务条件。
     """
 
     def __init__(self) -> None:
@@ -89,14 +80,14 @@ class TokenManager:
         # 代次，拿锁后若代次已变，说明已有请求替大家刷过一轮，直接复用结果。
         self._refresh_gen = 0
 
-    # -- 暴露给第 4 步兼容层 / 第 3 步 IOPClient ------------------------------
+    # -- 对外只读视图 -------------------------------------------------------
     @property
     def state(self) -> TokenState:
         return self._state
 
     @property
     def tokens(self) -> TokenState:
-        """``state`` 的别名，方便兼容层 ``TOKENS`` 代理逐字转发。"""
+        """``state`` 的别名。"""
         return self._state
 
     @property
@@ -105,12 +96,12 @@ class TokenManager:
 
     @property
     def retry(self):
-        """原模块级 ``RETRY`` dict 的等价物（``RetryPolicy`` 实例）。"""
+        """重试与退避策略。"""
         return self._config.retry
 
     @property
     def lifetime(self):
-        """原模块级 ``LIFETIME`` dict 的等价物（``TokenLifetime`` 实例）。"""
+        """token 有效期换算参数。"""
         return self._config.lifetime
 
     @property
@@ -121,7 +112,7 @@ class TokenManager:
         """第 attempt 次失败后的退避秒数（从 1 起），指数增长并封顶。"""
         return self._config.retry.backoff_seconds(attempt)
 
-    # -- 有效期换算（原 effective_lifetime 逐字平移） -------------------------
+    # -- 有效期换算 ----------------------------------------------------------
     def effective_lifetime(self, raw):
         """把上游 ``expires_in`` 换算成写入 ``state.deadline`` 的实际秒数。
 
@@ -167,7 +158,7 @@ class TokenManager:
         return (self._state.access_token is not None
                 and datetime.datetime.now() <= self._state.deadline)
 
-    # -- 编排入口（原 ensure_token 逐字平移） ---------------------------------
+    # -- 编排入口 -----------------------------------------------------------
     async def ensure_token(self):
         """确保 state 里有有效 access_token，业务侧统一调用本方法。
 
@@ -186,8 +177,7 @@ class TokenManager:
         if now < self._cooldown_until:
             if self._cooldown_warned_until != self._cooldown_until:
                 self._cooldown_warned_until = self._cooldown_until
-                # src/log_util.py 只落盘 INFO / ERROR，WARNING 不会写进日志文件。
-                # 冷却是预期内的快速降级，用 INFO；不加级别则生产侧看不到这条提示。
+                # 冷却是预期内的快速降级，用 INFO 提示，避免每个请求刷屏。
                 self._logger.info(
                     f"IOP token 处于失败冷却期 | remain={self._cooldown_until - now:.1f}s | "
                     f"本轮请求直接降级为空标签"
@@ -217,8 +207,8 @@ class TokenManager:
                         return
                     if attempt < n:
                         delay = self.backoff_seconds(attempt)
-                        # 同样用 ERROR：WARNING 不落盘，且这确实是一次失败尝试，
-                        # 应与 token2global 的 IOP token 请求失败 一起出现在 ERROR 日志里。
+                        # 记 ERROR：这是一次失败尝试，便于与「IOP token 请求失败」
+                        # 一起检索。
                         self._logger.error(
                             f"IOP token 刷新重试 | attempt={attempt}/{n} | "
                             f"backoff={delay:.2f}s"
@@ -233,25 +223,26 @@ class TokenManager:
             finally:
                 self._refresh_gen += 1
 
-    # -- 失败统一收口（原 _fail_token 逐字平移） ------------------------------
+    # -- 失败统一收口 -------------------------------------------------------
     def _fail_token(self, status_code, reason):
-        """所有失败分支统一清空 state 并记 ERROR，绝不沿用可能已过期的旧值。
+        """所有失败分支统一清空 state 并记 ERROR，绝不沿用可能已过期的 token 值。
 
         ``deadline`` 置回 ``_INVALID_DEADLINE``（过去时间），保持「恒为
         datetime」的不变量。日志前缀为 ``IOP token 请求失败``，附带 status
-        与具体原因；项目只落盘 INFO / ERROR，故用 ERROR。
+        与具体原因，级别用 ERROR。
         """
         self._state.access_token = None
         self._state.deadline = _INVALID_DEADLINE
         self._logger.error(f"IOP token 请求失败 | status={status_code} | {reason}")
 
-    # -- 单次刷新原语（原 token2global 逐字平移） -----------------------------
+    # -- 单次刷新原语 -------------------------------------------------------
     async def token2global(self):
         """单次刷新 token 并写入 state。
 
         只由 ``ensure_token()`` 在单飞锁内调用；业务侧请勿直接调用，否则绕开
         并发保护。先查状态码，再校验响应结构；所有失败分支统一走
-        ``_fail_token()``，不让「既无 access_token 也无 error」的响应沿用旧 token。
+        ``_fail_token()``，不让「既无 access_token 也无 error」的响应沿用
+        已有的 token 值。
         """
         url, body = self._spec.token_request()
 
@@ -315,5 +306,5 @@ class TokenManager:
             return
 
         # 既无 access_token 也无 error（如网关返回的业务错误 JSON），
-        # 不能沿用旧的、可能已过期的 access_token。
+        # 不能沿用已有的、可能已过期的 access_token。
         self._fail_token(status_code, "响应缺少 access_token 且无 error 字段")

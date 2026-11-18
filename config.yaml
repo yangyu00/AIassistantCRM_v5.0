@@ -15,48 +15,6 @@ call_stat:
   flush_threshold: 100
   url: "/api/callStat"
 
-# IOP 运行配置已迁至 IOP/config.py（模块内自包含）。本段保留作历史参考，
-# 第 4 步起在线进程不再读取此处；改地址/凭据/超时/重试请改 IOP/config.py。
-# 详见 IOP模块重构方案.md。删除本段不影响运行。
-IOP:
-  TOKEN:
-    host: "134.80.220.55"
-    port: "80"
-    id: "202408131154527921000059"
-    secret: "8bd777c80673af7833105f5bf4219a84"
-  CustInfo:
-    host: "134.80.220.55"
-    port: "80"
-    version: "1.0.1"
-    type: "M"
-
-  # token 与标签查询两个端点共用的 HTTP 超时（秒）
-  # 缺该段时代码用默认值 total=3 / connect=1 / sock_read=2
-  timeout:
-    total: 3
-    connect: 1
-    sock_read: 2
-
-  # 单轮 token 刷新的次数、指数退避与全失败后的冷却（秒）
-  # max_attempts 是「单轮请求总次数」，不是「重试次数」；上限 20
-  # 缺该段时代码用默认值 max_attempts=4 / backoff_base=0.2 /
-  # backoff_factor=2 / backoff_max=2 / cooldown=5
-  retry:
-    max_attempts: 4
-    backoff_base: 0.2
-    backoff_factor: 2
-    backoff_max: 2
-    cooldown: 5
-
-  # token 有效期计算（秒）。expires_in 缺失/非法时按 default_expires_in 兜底，
-  # 实际有效期 = min(max(expires_in - refresh_buffer, min_lifetime), expires_in)；
-  # max_expires_in 截断离谱值，防 datetime 溢出。缺该段时代码用下列默认值。
-  token_lifetime:
-    default_expires_in: 600
-    refresh_buffer: 360
-    min_lifetime: 60
-    max_expires_in: 86400
-
 sftp:
   host: "134.80.199.252"
   username: "wangsi"

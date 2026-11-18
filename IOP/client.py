@@ -1,17 +1,16 @@
 # -*- coding: utf-8 -*-
-"""``IOPClient``：IOP 的面向对象门面。
+"""``IOPClient``：IOP 的业务门面。
 
-第 3 步新增。``get_custinfo.py`` 的编排逻辑（确保 token → 不可用降级 → 构造
-请求 → 超时/解析异常就地收口 → 逐层校验 → ``{}`` 降级）**原样平移**到这里，
-只把模块级函数/全局换成实例方法/字段，把 ``my_log`` 换成注入的 logger。
+``get_customer_labels(tel)`` 编排：确保 token → 不可用降级 → 构造请求 →
+超时/解析异常就地收口 → 逐层校验 → 统一降级 ``{}``。
 
 零参数可用：``async with IOPClient() as client:``
-- ``config=None``  → ``IOPConfig.from_module_defaults()``（模块内常量，零外部依赖）
+- ``config=None``  → ``IOPConfig.from_module_defaults()``
 - ``transport=None`` → 自建 ``AiohttpTransport``
 - ``logger=None`` → ``NullLogger``，未注入则不记录日志
 
-``TokenManager`` 与门面**显式共享同一个** transport / spec / logger，不会各自
-再建第二套会话；因此一次 ``start()`` / ``aclose()` 覆盖 token 与标签两端点。
+``TokenManager`` 与门面共享同一个 transport / spec / logger，一次
+``start()`` / ``aclose()`` 覆盖 token 与标签两端点。
 """
 from __future__ import annotations
 
@@ -49,7 +48,7 @@ class IOPClient:
             logger=self._logger,
         )
 
-    # -- 只读属性（第 4 步兼容层 / 自检用） ----------------------------------
+    # -- 只读属性 -----------------------------------------------------------
     @property
     def config(self) -> IOPConfig:
         return self._config
@@ -68,7 +67,7 @@ class IOPClient:
 
     @property
     def tokens(self):
-        """原模块级 ``TOKENS`` 的等价物（``TokenState`` 实例）。"""
+        """当前 token 状态（``TokenState`` 实例）。"""
         return self._tokens.state
 
     # -- 生命周期 ------------------------------------------------------------
@@ -91,12 +90,12 @@ class IOPClient:
     async def __aexit__(self, exc_type, exc, tb) -> None:
         await self.aclose()
 
-    # -- 业务入口（原 get_custom_info_in_global 逐字平移） --------------------
+    # -- 业务入口 -----------------------------------------------------------
     async def get_customer_labels(self, tel: str) -> dict:
         """查询客户标签画像；任何失败统一降级为 ``{}``，绝不外抛。
 
-        返回 ``{ITEMCODE: [ITEMNAME, ITEMVALUE]}``。与旧函数一致：成功但 0 标签
-        也返回 ``{}``，区分靠注入的 logger（成功 INFO / 失败 ERROR）。
+        返回 ``{ITEMCODE: [ITEMNAME, ITEMVALUE]}``。成功但 0 标签也返回
+        ``{}``，与降级返回值相同；区分靠注入的 logger（成功 INFO / 失败 ERROR）。
         """
         await self._tokens.ensure_token()
 

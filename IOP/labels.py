@@ -1,15 +1,12 @@
 # -*- coding: utf-8 -*-
-"""标签响应解析：``get_custinfo.py`` 后半段（逐层校验 + BUSIINFO 组装）平移。
+"""标签响应的逐层校验与 BUSIINFO 组装。
 
-第 3 步新增。**纯函数**、无状态、无 I/O：logger 由调用方注入，``cost_ms``
-由编排层算好传入，函数本身不 import aiohttp / 日志模块 / 配置模块，便于单独
-喂任意 dict 验证。
+**纯函数**、无状态、无 I/O：logger 由调用方注入，``cost_ms`` 由编排层算好
+传入，喂任意 dict 就能单独验证。
 
-失败分支记 ERROR 并返回 ``{}``，成功分支记 INFO 并返回标签 dict。文案、级别、
-字段顺序与旧 ``get_custom_info_in_global()`` 逐字一致。
-
-⚠️ 成功但 ``BUSIINFO`` 为空同样返回 ``{}``，与降级返回值相同——旧代码即如此，
-   区分只能靠日志（成功 INFO / 失败 ERROR）。本次不「顺手修好」。
+失败分支记 ERROR 并降级为 ``{}``，成功分支记 INFO 并返回标签 dict。
+成功但 ``BUSIINFO`` 为空时同样返回 ``{}``，与降级返回值相同；两者靠日志
+区分（成功 INFO / 失败 ERROR）。
 """
 from __future__ import annotations
 
@@ -25,8 +22,8 @@ def parse_custinfo_response(
 ) -> dict:
     """把已解析的响应体逐层校验，组装成 ``{ITEMCODE: [ITEMNAME, ITEMVALUE]}``。
 
-    校验顺序与旧代码一致：HTTP 状态 → 响应体类型 → ``res_code`` → ``BUSIINFO``
-    → 逐项组装。任一环节失败即记 ERROR 并降级为 ``{}``。
+    校验顺序：HTTP 状态 → 响应体类型 → ``res_code`` → ``BUSIINFO`` →
+    逐项组装。任一环节失败即记 ERROR 并降级为 ``{}``。
     """
     if status_code != 200:
         logger.error(f"IOP 标签查询失败 | status={status_code} | cost={cost_ms:.0f}ms")

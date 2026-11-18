@@ -1,28 +1,18 @@
 # -*- coding: utf-8 -*-
 """IOP 的 HTTP 传输层：把 aiohttp 会话与请求收口到一个可替换的对象里。
 
-第 1 步：本文件为**新增**，旧 4 个文件一行未改，仍按原路径工作。
+* ``Transport`` 是最小协议，只有一个 ``post()``。任何满足该协议的对象都能
+  注入（例如内存里的假响应），不需要真实网络或全局状态。
+* ``AiohttpTransport`` 是唯一依赖 aiohttp 的地方，持有共享 ``ClientSession``
+  的生命周期、``skip_auto_headers`` 与临时 session 降级逻辑。
+* ``HttpResponse`` 在退出 aiohttp 响应上下文之前把 JSON 读好，再以
+  ``async json()`` 暴露；解析异常存下来由 ``json()`` 重抛，让上层按自己的
+  分支处理。
+* 日志由构造时注入；未注入 → ``NullLogger``，零输出。import 本文件不创建
+  目录、不读外部配置。
 
-设计要点
---------
-* ``Transport`` 是最小协议，只有一个 ``post()``。测试或别的项目可以传入任何
-  满足该协议的对象（例如内存里的假响应），不必起真实服务、不必打桩模块全局。
-* ``AiohttpTransport`` 是唯一依赖 aiohttp 的地方，把原 ``http_session.py`` 的
-  共享 ``ClientSession`` 生命周期、``skip_auto_headers``、临时 session 降级
-  **原样平移**成实例方法/实例字段；模块级 ``global`` 全部改成 ``self.``。
-* ``HttpResponse`` 在退出 aiohttp 响应上下文之前就把 JSON 读好，再以
-  ``async json()`` 暴露，使上层（第 2/3 步）的
-  ``try: res_data = await response.json(content_type=None) except ...``
-  几乎逐字不变，只需把变量名换成 ``resp``。
-* 日志：构造时注入；未注入 → ``NullLogger``，零输出。IOP 包内不 import
-  ``src.log_util``，import 本文件不建目录、不读外部配置。
-
-请求形状（url / data / json / headers）不由本层决定，仍由调用方按
-``endpoints.py`` 的契约传入，保证与旧调用点发给服务端的字节逐字一致。
-
-与方案 §4.1 的一处微调：``logging_adapter.py`` 本步暂不单独建文件，
-``NullLogger`` 先住在 transport.py；第 3 步做 ``client.py`` 时再决定是否抽出，
-避免本步多一个文件。
+请求形状（url / data / json / headers）由调用方按 ``endpoints.py`` 的契约
+传入，本层不改写。
 """
 from __future__ import annotations
 
@@ -63,12 +53,9 @@ class NullLogger:
 class HttpResponse:
     """``post()`` 的结果：状态码 + 已读好的 JSON（或解析异常）。
 
-    比方案里「``(status, json)``」多了 ``parse_error`` 一个字段，原因是：
-    旧代码在 ``await response.json(content_type=None)`` 处分别有
-    ``_fail_token(..., "响应解析失败")``（token）和「降级 ``{}``」（标签）两条
-    分支。aiohttp 的响应对象在退出 ``async with`` 后就读不到 body 了，所以
-    ``AiohttpTransport.post()`` 必须在上下文内完成解析；把异常**存下来**交给
-    ``json()`` 重抛，既不让本层吞异常，也让上层那两条分支逐字保留。
+    aiohttp 的响应对象在退出 ``async with`` 后就读不到 body 了，因此
+    ``post()`` 必须在上下文内完成解析。解析异常存进 ``parse_error``，由
+    ``json()`` 重抛：本层不吞异常，上层可以按自己的失败分支处理。
 
     ``FakeTransport`` 可直接构造：``HttpResponse(status=200, payload={...})``
     或 ``HttpResponse(status=502, parse_error=ValueError("..."))``。
@@ -92,9 +79,9 @@ class HttpResponse:
 class Transport(Protocol):
     """IOP 需要的唯一传输能力。
 
-    参数刻意与 ``aiohttp.ClientSession.post`` 的子集一致：``data`` 用于 token
-    的表单串，``json`` / ``headers`` 用于标签查询。这样新旧两条路径发给服务端
-    的字节可以逐字比对；实现纯内存假传输层也很直接。
+    参数与 ``aiohttp.ClientSession.post`` 的子集一致：``data`` 用于 token
+    的表单串，``json`` / ``headers`` 用于标签查询。实现纯内存传输层也只需
+    满足这一个方法。
     """
 
     async def post(
@@ -109,7 +96,7 @@ class Transport(Protocol):
 
 
 # ---------------------------------------------------------------------------
-# 默认实现：原 http_session.py 平移
+# 默认实现：aiohttp 共享会话
 # ---------------------------------------------------------------------------
 class AiohttpTransport:
     """共享 aiohttp ``ClientSession`` 及其生命周期。
@@ -119,7 +106,7 @@ class AiohttpTransport:
     - ``session_context()`` 共享 session 已就绪时直接 yield 且**绝不在此关闭**；
       否则降级为本次请求临时 session，只告警一次。
     - ``post()`` 收口一次请求，返回 ``HttpResponse``。网络异常原样向外抛，
-      由上层就地捕获记录，与旧代码一致。
+      由上层就地捕获记录；本层不吞异常。
     """
 
     def __init__(self, config: IOPConfig | None = None, logger: Any = None) -> None:
@@ -127,7 +114,7 @@ class AiohttpTransport:
         self._config = config if config is not None else IOPConfig.from_module_defaults()
         self._logger = logger if logger is not None else NullLogger()
 
-        # 原 http_session.py 的模块级全局，全部改为实例字段
+        # 共享会话状态，全部为实例字段
         self._session = None
         self._loop = None
         self._warned = False
@@ -150,14 +137,14 @@ class AiohttpTransport:
         )
 
     def client_timeout(self) -> aiohttp.ClientTimeout:
-        """返回本实例使用的超时对象，供自检与兼容层比对。"""
+        """返回本实例使用的超时对象。"""
         t: TimeoutCfg = self._config.timeout
         return aiohttp.ClientTimeout(
             total=t.total, connect=t.connect, sock_read=t.sock_read)
 
     # -- 生命周期 ------------------------------------------------------------
     async def start(self):
-        """原 ``init_session()``：在当前 event loop 创建共享 session，幂等。
+        """在当前 event loop 创建共享 session，幂等。
 
         构造失败只记日志、不外抛：服务照常启动，后续请求由
         ``session_context()`` 降级为临时 session。
@@ -178,7 +165,7 @@ class AiohttpTransport:
         return self._session
 
     async def aclose(self):
-        """原 ``close_session()``：关闭共享 session，幂等，异常不外抛。"""
+        """关闭共享 session，幂等，异常不外抛。"""
         if self._session is None:
             return
         loop = asyncio.get_running_loop()
@@ -200,7 +187,7 @@ class AiohttpTransport:
 
     @asynccontextmanager
     async def session_context(self):
-        """原 ``session_context()``：两个端点统一取会话的上下文。"""
+        """两个端点统一取会话的上下文。"""
         session = self._session
         if session is not None and not session.closed:
             yield session
@@ -224,12 +211,11 @@ class AiohttpTransport:
     ) -> HttpResponse:
         """发一次请求并收口响应，返回 ``HttpResponse``。
 
-        * 网络异常（``aiohttp.ClientError`` / ``asyncio.TimeoutError``）**原样向
-          外抛**，由上层就地捕获并记录，与旧代码一致；本层不吞异常。
-        * JSON 解析异常不向外抛，存进 ``HttpResponse.parse_error``，交给上层按
-          既有分支处理，保住「响应解析失败」的日志与 ``{}`` 降级。
-        * 只把非 ``None`` 的参数传给 aiohttp，使实际调用形状与旧调用点
-          （token 只传 ``data``、标签只传 ``json`` + ``headers``）逐字一致。
+        * 网络异常（``aiohttp.ClientError`` / ``asyncio.TimeoutError``）原样向
+          外抛，由上层就地捕获；本层不吞异常。
+        * JSON 解析异常存进 ``HttpResponse.parse_error``，交给上层处理。
+        * 只把非 ``None`` 的参数传给 aiohttp：token 请求只传 ``data``，
+          标签请求只传 ``json`` + ``headers``。
         """
         kwargs = {}
         if data is not None:

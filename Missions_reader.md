@@ -126,18 +126,16 @@ token 侧任一失败都会清空 `TOKENS` 并记 ERROR，按配置重试/退避
 
 ### 配置读取
 
-`global_config = ImmutableYamlConfig()` 只在 `IOP/http_session.py` 里读一次，
-`get_token.py` / `get_custinfo.py` 直接复用同一个只读对象。`ImmutableYamlConfig`
-是单例且返回只读配置，但每次调用其构造函数都会重新 `open` + `yaml.load` 并
-重建字典，原先每请求至少一次磁盘 I/O + yaml 解析（token 刷新时再多一次）。
-现在请求路径为 0 次，IOP 侧 import 阶段的读盘也由两次收敛为一次。
-运行期修改 `config.yaml` 不会热生效，需重启进程。`client_timeout()` 复用同一份
-模块级只读配置，构造 `aiohttp.ClientTimeout`，无磁盘 I/O。
-`RETRY = _retry_profile()` 与 `LIFETIME = _lifetime_profile()` 同样在
-`get_token.py` import 时各读一次并归一化，`backoff_seconds()` /
-`effective_lifetime()` 只做算术、不读盘。改 `IOP.retry.*` 或
-`IOP.token_lifetime.*` 需重启在线进程。接口路径、`method`、`grant_type`、
-请求头等契约常量不读配置，集中在 `IOP/endpoints.py`（见「请求契约集中」小节）。
+IOP 的运行参数全部定义在 `IOP/config.py`，以模块级常量和冻结 dataclass 提供，
+不读配置文件、不读环境变量、不依赖项目里的其它模块。`IOPClient()` 默认取
+`IOPConfig.from_module_defaults()`；需要换地址、凭据或策略时，用
+`IOPConfig.from_mapping({...})` 显式覆盖。
+
+`IOPConfig` 在构造时完成缺键、类型错、NaN/inf/越界的回落校验；
+`AiohttpTransport.client_timeout()` 用它构造 `aiohttp.ClientTimeout`，
+`backoff_seconds()` / `effective_lifetime()` 只做算术。请求路径 0 次 I/O，
+改参数需重启进程。接口路径、`method`、`grant_type`、请求头等契约常量集中在
+`IOP/endpoints.py`（见「请求契约集中」小节）。
 
 ### 异步与超时
 
@@ -171,8 +169,7 @@ token 侧任一失败都会清空 `TOKENS` 并记 ERROR，按配置重试/退避
 
 共享 `ClientSession`、token 单飞、重试/退避/冷却、
 响应校验、有效期换算、`deadline` 恒为 datetime 均已实现，
-分见后续六个小节。`IOPClient` 类已于第 3 步实现（见文末 `IOPClient` 条目与
-`IOP模块重构方案.md`）；上述机制原样平移为实例方法，行为逐条对照保持不变。
+分见后续六个小节。这些机制由 `IOPClient` 及其组件承载，见文末 `IOPClient` 条目。
 `test_local/test_iop.py` 是单次画像查询脚本：命令行给电话号，复用生产模块
 真实查询 IOP 并打印客户标签画像，见「单次画像查询脚本」小节。
 
@@ -497,10 +494,9 @@ _INVALID_DEADLINE = datetime.datetime.min
 两个端点的 URL 路径、查询参数名、OAuth2 固定参数与请求头集中在
 `IOP/endpoints.py`；`get_token.py` / `get_custinfo.py` 只调用
 `token_request(cfg)` / `custinfo_request(cfg, tel, access_token)`，不再各自拼接
-字符串。部署与业务参数**改由 `IOP/config.py` 模块内常量提供**（第 4 步起，
-根 `config.yaml` 的 `IOP` 段不再读取）；`EndpointSpec` 把 `IOPConfig` 适配成下表
-同形状的输入后复用 `endpoints.py` 的公开函数，契约仍是单点。下表「位置」列沿用
-`config.yaml` 的键名便于对照，实际来源是 `IOP/config.py`：
+字符串。部署与业务参数由 `IOP/config.py` 提供；`EndpointSpec` 把 `IOPConfig`
+适配成下表同形状的输入后复用 `endpoints.py` 的公开函数，契约仍是单点。
+下表「位置」列是参数分组，实际来源是 `IOP/config.py`：
 
 | 位置 | 内容 |
 |---|---|
@@ -1056,30 +1052,12 @@ curl "http://host:8989/api/callStat?month=2026-11"
 - 状态不变量已处理：`Tokens.deadline` 恒为 datetime，无有效 token 时统一为
   `_INVALID_DEADLINE`（过去时间），见「Token 状态不变量」小节。
   IOP 侧已无待办的隐式类型依赖。
-- **`IOPClient` 类：已实现（第 3 步），原「已决定不做」的记录按审核决议解除**。
-  当时不做针对的是「并发正确性」（已由单飞 + 代次解决）；这次类化针对的是
-  **实例隔离、配置自包含、依赖注入与独立复用**，模块级全局恰好是硬障碍。
-  为规避当年列出的「同时改 4 个文件 + 重验并发」风险，采用新类并存 + 旧壳不动
-  + 逐条影子对照：第 0–3 步只新增文件，并发逻辑原样平移函数体、不重写；
-  第 4 步才把 `get_custinfo.py` / `get_token.py` / `http_session.py` 改成薄壳
-  （`endpoints.py` 本就是零外部依赖的契约单点，保持原样），由 `IOP/_compat.py`
-  的进程级默认实例转发旧符号，`main.py` 与 `test_local/test_iop.py` **一行未改**。
-  公开 API 收口在包顶层：`from IOP import IOPClient`，
+- **`IOPClient`**：包顶层公开入口 `from IOP import IOPClient`，零参数可用：
   `async with IOPClient() as c: await c.get_customer_labels(tel)`。
-
-  随之变更的两处约定：
-  1. **配置**：全部定义在 `IOP/config.py` 模块内，核心层不读项目根 `config.yaml`、
-     不 import 根 `config` / `src.*`；根 `config.yaml` 的 `IOP` 段保留作历史参考，
-     **第 4 步起在线进程不再读取**。
-  2. **日志**：改为创建对象时注入；**未注入则完全静默**（默认实例即不注入）。
-     想恢复生产日志，在启动代码里调一次 `IOP._compat.configure_logger(my_log)`。
-     注入后文案、级别与薄壳化前逐条一致。
-
-  ⚠️ 本文其余章节（「配置读取」「请求契约集中」「自检要点」等）描述的是
-  **薄壳化前的实现细节**：涉及 `ImmutableYamlConfig` 读盘、模块级 `RETRY` /
-  `LIFETIME` 全局、`src.log_util` 落盘规则处，请以当前代码与
-  `IOP模块重构方案.md` 为准。所有业务行为（统一降级 `{}`、单飞、重试退避冷却、
-  有效期换算、7 类响应校验、请求逐字一致）均已用新旧影子对照逐条验证保持不变。
+  配置全部定义在 `IOP/config.py`，日志由构造时注入，未注入则完全静默。
+  模块划分：`config.py` 参数、`endpoints.py` 请求契约、`transport.py` 会话、
+  `token.py` 单飞与重试、`labels.py` 响应解析、`client.py` 门面。
+  统一降级 `{}`、单飞、重试退避冷却、有效期换算、7 类响应校验均保持不变。
 - 重试已配好次数/退避/冷却，有效期换算已完成，响应校验已覆盖状态码与
   结构校验，状态不变量已消除 `deadline=None` 的隐式短路依赖；但**冷却是进程内状态**：
   多实例部署时各实例各自冷却，不做跨进程共享。
@@ -1089,8 +1067,7 @@ curl "http://host:8989/api/callStat?month=2026-11"
   的问题已随复用生产模块解决。
 - 请求契约已集中：URL 路径 / `method` / `grant_type` / `charset=gbk` 请求头等
   契约常量集中在 `IOP/endpoints.py`；`version` / `type` / host / port /
-  超时 / 重试 / 有效期**改由 `IOP/config.py` 模块内常量提供**（第 4 步起），
-  根 `config.yaml` 的 `IOP` 段不再生效。`EndpointSpec` 复用 `endpoints.py` 的
-  公开函数构造请求，契约仍是单点，见「请求契约集中」小节与上文 `IOPClient` 条目。
+  超时 / 重试 / 有效期由 `IOP/config.py` 提供。`EndpointSpec` 复用 `endpoints.py`
+  的公开函数构造请求，契约仍是单点，见「请求契约集中」小节与上文 `IOPClient` 条目。
 - 另：根目录 `test_online.py` 的请求体里仍写有 `18866816199`，
   属在线接口测试脚本，不在本次调试脚本范围内。

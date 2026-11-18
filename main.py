@@ -8,8 +8,7 @@ import uvicorn
 from fastapi import FastAPI
 from pydantic import BaseModel, Field, field_validator
 
-from IOP.get_custinfo import get_custom_info_in_global
-from IOP.http_session import init_session, close_session
+from IOP import IOPClient
 from config import ImmutableYamlConfig
 from excel2consts.dim_reader import load_product_selling_point
 from services.product_info_raw import ProductInfoRaw as ProductInfoRaw
@@ -20,22 +19,26 @@ from src import call_stat
 from src.exceptions import telnumError, productIdError, register_errors_handlers
 from src.log_util import my_log
 
+# 进程内共享一个客户端：token 状态与 HTTP 会话由它自持，标签结果仍按请求隔离。
+iop_client = IOPClient()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """启动时恢复调用量基数并创建 IOP 共享 ClientSession，关闭时收尾。
+    """启动时恢复调用量基数并创建 IOP 会话，关闭时收尾。
 
-    IOP 会话必须在同一个 event loop 内创建/关闭，故挂在 lifespan 而非模块级
-    或 atexit（atexit 拿不到运行中的 loop）。uvicorn 的 SIGTERM 退出路径不经过
-    atexit，由 yield 之后显式收尾；src.call_stat 仍注册 atexit 作为非 ASGI
-    运行方式的兜底，两处幂等。startup 里不做任何定时任务，只做一次性初始化。
+    IOP 会话必须在同一个 event loop 内创建/关闭，故挂在 lifespan 而非 atexit
+    （atexit 拿不到运行中的 loop）。uvicorn 的 SIGTERM 退出路径不经过 atexit，
+    由 yield 之后显式收尾；src.call_stat 仍注册 atexit 作为非 ASGI 运行方式的
+    兜底，两处幂等。startup 里不做任何定时任务，只做一次性初始化。
     """
     base = call_stat.startup()
     my_log.info(f"调用量统计已恢复：当天已累计 {base} 次（重启后继续计数）")
-    await init_session()
+    await iop_client.start()
     try:
         yield
     finally:
-        await close_session()
+        await iop_client.aclose()
         call_stat.flush()
 
 
@@ -133,7 +136,7 @@ class IopLabelProvider:
         self._fetched = True
         self.fetch_count += 1
         try:
-            self._labels = await get_custom_info_in_global(self.telnum)
+            self._labels = await iop_client.get_customer_labels(self.telnum)
         except Exception as e:
             my_log.error(e)
             self._labels = {}

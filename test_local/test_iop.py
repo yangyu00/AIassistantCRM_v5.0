@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """单次查询指定电话号的客户画像（IOP 标签）。
 
-跑一次、给一个电话号、把查到的客户画像打印出来。会向 ``config.yaml``
-里的 IOP 地址发起真实请求，不做任何打桩。
+跑一次、给一个电话号、把查到的客户画像打印出来。会向 IOP 配置的地址发起
+真实请求，不做任何打桩。
 
 用法（项目根目录）：
 
@@ -11,10 +11,8 @@
 
 不想每次敲参数的话，把号码填进下面的 ``DEFAULT_TEL``，然后不带参数运行。
 
-这里不自己拼 URL / headers / post_data，也不自己算 token 有效期，而是复用
-生产模块 ``IOP.get_custinfo.get_custom_info_in_global()``：token 刷新、重试与
-冷却、有效期换算、响应校验、超时与会话生命周期都自动带上，生产侧改了这里
-不会漏。
+这里复用 ``IOPClient``：token 刷新、重试与冷却、有效期换算、响应校验、
+超时与会话生命周期都由它负责，脚本只负责打印。
 """
 from __future__ import annotations
 
@@ -34,17 +32,13 @@ DEFAULT_TEL = ""
 async def _query(tel):
     """发起一次真实查询并返回客户标签画像 dict。
 
-    独立脚本不进 uvicorn 的 lifespan，这里显式 init/close 一次共享 session，
-    既不走「临时 session 降级」告警，也保证会话在同一个 event loop 内关闭。
+    独立脚本不经过服务生命周期，用 ``async with`` 显式管理会话，保证在同一
+    event loop 内创建与关闭。
     """
-    from IOP.get_custinfo import get_custom_info_in_global
-    from IOP.http_session import close_session, init_session
+    from IOP import IOPClient
 
-    await init_session()
-    try:
-        return await get_custom_info_in_global(tel)
-    finally:
-        await close_session()
+    async with IOPClient() as client:
+        return await client.get_customer_labels(tel)
 
 
 def _render(tel, profile):
@@ -52,7 +46,7 @@ def _render(tel, profile):
     print(f"客户画像查询结果 | 电话号 {tel}")
     if not profile:
         print("  未查到标签画像（IOP 返回空，或本次查询已降级）。")
-        print("  常见原因：token 不可用 / 上游非 200 / 超时，详见 log/ERROR_*.log")
+        print("  常见原因：token 不可用 / 上游非 200 / 超时")
         return
 
     print(f"  共 {len(profile)} 项标签：")

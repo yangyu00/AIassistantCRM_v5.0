@@ -1,23 +1,16 @@
 # -*- coding: utf-8 -*-
-"""IOP 全部运行配置：定义在模块内，不从外部导入。
+"""IOP 运行配置。
 
-本文件是 IOP 包唯一的「配置来源」。值逐项搬迁自项目根 ``config.yaml`` 的
-``IOP`` 段（第 18–55 行），以及原 ``http_session.py`` / ``get_token.py`` 里的
-兜底默认值。核心层不读盘、不 import 项目根 ``config``、不 import ``src.*``、
-不读环境变量、不创建任何目录。
+本模块是 IOP 唯一的配置来源：全部参数以模块级常量直接定义，不读配置文件、
+不读环境变量、不依赖项目里的其它模块。改地址、凭据或策略就改这里；需要在
+运行时换一套参数时，用 ``IOPConfig.from_mapping({...})`` 显式覆盖。
 
-第 0 步说明：本文件与 ``IOP/__init__.py`` 均为**新增**，旧 4 个文件本次不改，
-仍按原路径读根 ``config.yaml`` 继续工作。待第 4 步旧文件退化成薄壳后，
-模块内常量才成为生效中的唯一数据源。
+``IOPClient()`` 零参数构造即使用 ``IOPConfig.from_module_defaults()``，
+取值完全来自下面的常量，不经过任何外部输入。
 
-调用方可用 ``IOPConfig.from_mapping({...})`` 显式覆盖任意分组（形状与
-``config.yaml`` 的 ``IOP`` 段一致，未给的键沿用模块内常量）；但默认路径
-``IOPConfig.from_module_defaults()``（即后续 ``IOPClient()`` 零参数）完全取自
-下面这些常量，不经过任何外部输入。
-
-⚠️ ``TOKEN_ID`` / ``TOKEN_SECRET`` 是生产明文凭据，从 ``config.yaml`` 原样搬迁，
-   未新增暴露面。``IOPConfig.__repr__`` 已屏蔽 ``secret``。独立分发本目录前，
-   应改由调用方通过 ``from_mapping`` 注入或改用环境变量，并注意仓库可见性。
+⚠️ ``TOKEN_ID`` / ``TOKEN_SECRET`` 是生产明文凭据。``IOPConfig.__repr__``
+   已屏蔽 ``secret``。分发本目录前应改由调用方通过 ``from_mapping`` 注入，
+   并注意仓库可见性。
 """
 from __future__ import annotations
 
@@ -26,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 # ---------------------------------------------------------------------------
-# 1. 端点部署参数（config.yaml: IOP.TOKEN / IOP.CustInfo，原值搬迁）
+# 1. 端点部署参数
 # ---------------------------------------------------------------------------
 TOKEN_HOST = "134.80.220.55"
 TOKEN_PORT = "80"
@@ -39,14 +32,14 @@ CUSTINFO_VERSION = "1.0.1"
 CUSTINFO_TYPE = "M"
 
 # ---------------------------------------------------------------------------
-# 2. 超时（config.yaml: IOP.timeout；同时是 http_session._DEFAULT_TIMEOUT）
+# 2. 超时（秒）
 # ---------------------------------------------------------------------------
 TIMEOUT_TOTAL = 3.0
 TIMEOUT_CONNECT = 1.0
 TIMEOUT_SOCK_READ = 2.0
 
 # ---------------------------------------------------------------------------
-# 3. 重试 / 退避 / 冷却（config.yaml: IOP.retry；同时是 get_token._DEFAULT_RETRY）
+# 3. 重试 / 退避 / 冷却
 # ---------------------------------------------------------------------------
 RETRY_MAX_ATTEMPTS = 4          # 单轮刷新「请求总次数」，不是「重试次数」
 RETRY_BACKOFF_BASE = 0.2        # 第 1 次失败后的退避秒数
@@ -56,7 +49,7 @@ RETRY_COOLDOWN = 5.0            # 一轮全失败后的冷却秒数
 MAX_ATTEMPTS_CAP = 20           # 防止配错导致长时间串行循环
 
 # ---------------------------------------------------------------------------
-# 4. token 有效期（config.yaml: IOP.token_lifetime；同时是 get_token._DEFAULT_LIFETIME）
+# 4. token 有效期（秒）
 # ---------------------------------------------------------------------------
 LIFETIME_DEFAULT_EXPIRES_IN = 600.0
 LIFETIME_REFRESH_BUFFER = 360.0
@@ -64,8 +57,8 @@ LIFETIME_MIN_LIFETIME = 60.0
 LIFETIME_MAX_EXPIRES_IN = 86400.0
 
 
-# 形状与 config.yaml 的 IOP 段完全一致：便于逐值比对，也便于 from_mapping 覆盖。
-# 下划线前缀表示私有；_merge() 每次都复制，不会就地修改这份默认表。
+# 默认参数表；形状与 from_mapping() 的入参一致，未给的键沿用这里的值。
+# _merge() 每次都复制，不会就地修改这份默认表。
 _DEFAULTS_MAPPING: dict[str, Any] = {
     "TOKEN": {
         "host": TOKEN_HOST, "port": TOKEN_PORT,
@@ -94,14 +87,14 @@ _DEFAULTS_MAPPING: dict[str, Any] = {
 
 
 # ---------------------------------------------------------------------------
-# 数值容错：与原 get_token._retry_profile / _lifetime_profile 内的 num() 逐字等价
+# 数值容错：缺键 / 类型错 / NaN / inf / 越界一律回落默认值
 # ---------------------------------------------------------------------------
 def _num(cfg, key, default, minimum, integer=False):
     """缺键 / 类型错 / NaN / inf / 低于 minimum → 回落 default。
 
-    与原代码一致：用 ``float()`` 转换，只捕获 ``TypeError`` / ``ValueError``；
-    ``bool`` 会被 ``float()`` 接受（``True → 1.0``），此处不额外排除；
-    是否允许 0 由各字段的 ``minimum`` 决定，不统一按「零非法」处理。
+    用 ``float()`` 转换，只捕获 ``TypeError`` / ``ValueError``；``bool``
+    会被 ``float()`` 接受（``True → 1.0``），此处不额外排除；是否允许 0
+    由各字段的 ``minimum`` 决定。
     """
     try:
         v = float(cfg.get(key, default))
@@ -160,8 +153,7 @@ class RetryPolicy:
     def backoff_seconds(self, attempt: int) -> float:
         """第 attempt 次失败后的退避秒数（从 1 起），指数增长并封顶。
 
-        与原 ``get_token.backoff_seconds()`` 一致，只是从读模块级 ``RETRY``
-        改为读实例字段。
+        指数增长并封顶 ``backoff_max``。
         """
         return min(self.backoff_base * (self.backoff_factor ** (attempt - 1)),
                    self.backoff_max)
@@ -198,10 +190,9 @@ class IOPConfig:
 
     @classmethod
     def from_mapping(cls, overrides: Mapping[str, Any] | None = None) -> "IOPConfig":
-        """调用方显式覆盖。``overrides`` 形状与 ``config.yaml`` 的 ``IOP`` 段相同。
+        """调用方显式覆盖。``overrides`` 形状与 ``_DEFAULTS_MAPPING`` 相同。
 
-        注意：这里只接受**传进来的值**，模块自身不主动去读任何配置源，
-        因此与「配置不从外部导入」的决议不冲突。
+        未给的键沿用默认值；模块自身不主动读取任何配置源。
         """
         raw = _merge(_DEFAULTS_MAPPING, overrides or {})
         return cls._from_raw(raw)
@@ -227,14 +218,13 @@ class IOPConfig:
                 version=ci.get("version", CUSTINFO_VERSION),
                 type=ci.get("type", CUSTINFO_TYPE),
             ),
-            # 与原 http_session.client_timeout() 一致：仅 float() 转换 + 缺键回落，
-            # 不带 NaN/inf/负数校验；非法值会抛 ValueError。此为既有行为，本次不改。
+            # 仅 float() 转换 + 缺键回落；非法值会抛 ValueError。
             timeout=TimeoutCfg(
                 total=float(tmo.get("total", TIMEOUT_TOTAL)),
                 connect=float(tmo.get("connect", TIMEOUT_CONNECT)),
                 sock_read=float(tmo.get("sock_read", TIMEOUT_SOCK_READ)),
             ),
-            # 与原 get_token._retry_profile() 一致，含 max_attempts 上限 20。
+            # max_attempts 上限 20，防止配错导致长时间串行循环。
             retry=RetryPolicy(
                 max_attempts=int(min(
                     _num(rt, "max_attempts", RETRY_MAX_ATTEMPTS, 1, True),
@@ -244,7 +234,7 @@ class IOPConfig:
                 backoff_max=_num(rt, "backoff_max", RETRY_BACKOFF_MAX, 0.0),
                 cooldown=_num(rt, "cooldown", RETRY_COOLDOWN, 0.0),
             ),
-            # 与原 get_token._lifetime_profile() 一致。
+            # 有效期换算参数。
             lifetime=TokenLifetime(
                 default_expires_in=_num(lt, "default_expires_in",
                                         LIFETIME_DEFAULT_EXPIRES_IN, 1.0),
