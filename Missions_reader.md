@@ -24,9 +24,12 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 
 ## 请求处理与路由（`main.py::marketAssistant`）
 
-1. `IOP.get_custinfo` 取用户标签 `custom_label_info`；函数内所有失败分支统一返回
-   `{}`，调用点另有 `try/except` 兜底。详见「用户标签获取（IOP）」。
-2. 按 `productId` 列表逐个建对象，命中即 `continue`（顺序不可调换）：
+1. 在请求处理函数内创建 `IopLabelProvider`（标签惰性提供者）与空的
+   `portrait_cache`；二者都是函数局部变量，不跨请求共享。
+2. 卖点维表在循环外读入 1 次，作为同一份 dict 显式传给每个产品对象。
+3. 按 `productId` 列表逐个建对象：先由 `iop_need(product_id)` 声明该 ID 对
+   IOP 标签的依赖，非 `NONE` 时经提供者取标签（整请求最多 1 次），
+   再按路由命中即 `continue`（顺序不可调换）：
 
 | 顺序 | 条件（ID 来自配置） | 数据源 | 业务对象 |
 |---|---|---|---|
@@ -40,18 +43,43 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 
 第 3 类是唯一的兜底：不属于商机回捞 / 控损的产品 ID 全部落到这里，当前统一
 输出 `code: "2"` 空话术，等客户诊断新线实现后再切换。维表业务路由已下线，
-`load_product_selling_point()` 的读取暂留（`main.py` 注释写明后续统一收敛读取
-时机），不再参与路由判断。
+卖点表读取不再参与路由判断，只用于产品名与非商机 ID 的标签子集。
 
-3. 输出：仅 `ProductInfoBySpec9554` / `ProductInfoBySpec9591` 返回 `code: "0"`
+**按业务声明 IOP / 画像依赖**（`main.py::iop_need()`，由 `data_query` 的路由集合
+派生；判定按全部 `productId` 取并集，不短路到第一个）：
+
+| 业务 | 声明 | IOP 标签 | 画像 |
+|---|---|---|---|
+| 商机回捞 3 个 ID | `PORTRAIT` | 取 | 取，按 `product_id` 在一次请求内复用 |
+| 控损 | `NONE` | **不取** | 不计算 |
+| 其余全部（诊断兜底） | `RAW_LABELS` | 取（当前输出未消费，属新线预留） | 不计算 |
+
+一次请求内的次数（不含 token 刷新，刷新次数另见「Token 单飞」）：
+
+| 待查 `productId` 列表 | IOP 标签查询 | 画像拼装 | 卖点表读取 |
+|---|---|---|---|
+| 纯控损 | **0** | **0** | 1 |
+| 纯商机 / 纯兜底 / 控损+商机 / 控损+兜底 / 三混合 | 1 | 商机不同 ID 数 | 1 |
+| 3 个不同商机 | 1 | 3 | 1 |
+| 同一商机 ID 重复 3 次 | 1 | 1 | 1 |
+
+`custom_label_info` 与 `portrait_cache` 都只在 `marketAssistant` 函数体内创建：
+标签属于单个手机号，放模块级或 `app.state` 缓存会把上一个用户的标签带给
+下一个用户，不报错、只在话术里悄悄错。
+
+4. 输出：仅 `ProductInfoBySpec9554` / `ProductInfoBySpec9591` 返回 `code: "0"`
    带话术；兜底返回 `code: "2"`、产品名与话术为空。这里不能靠 `product_name`
    是否为空判定：维表命中的 ID 落到兜底后 `product_name` 仍会从维表取到非空值，
    只看它会返回 `code: "0"` + 空话术，看起来成功、实际没有内容。
 
 ## 用户标签获取（IOP）
 
-`IOP/get_custinfo.py::get_custom_info_in_global(tel)` 一次请求只调用一次，结果在
-`productId` 循环内复用。返回 `{ITEMCODE: [ITEMNAME, ITEMVALUE], ...}`。
+`IOP/get_custinfo.py::get_custom_info_in_global(tel)` 由
+`main.py::IopLabelProvider.labels()` 惰性调用：一次请求内最多调用一次，结果在
+该请求的 `productId` 循环内复用；是否调用由各产品 ID 的 `iop_need()` 声明
+决定（纯控损请求为 0 次，其余为 1 次）。返回
+`{ITEMCODE: [ITEMNAME, ITEMVALUE], ...}`。提供者只在请求处理函数内实例化，
+异常仍走 `my_log.error(e)` 并降级 `{}`，本请求内保持该结果、不再重试。
 入口处先 `await ensure_token()`（token 单飞 + 重试/退避/冷却 + 响应校验 +
 有效期换算，见后续四节），再发标签查询；token 刷新对同一批并发请求
 只发生一次，持续失败时冷却期内的请求直接降级、不再打认证服务。
@@ -622,7 +650,7 @@ import 时 `src/log_util.py` 会按既有行为创建 `log/` 目录与当日日�
 | 函数 | 返回形状 | 在线消费方 |
 |---|---|---|
 | `load_lookup("label_name_mapping")` | `{label_id: display_name}` | 无（辅助画像不再做名称映射，能力保留供新线复用） |
-| `load_product_selling_point()` | `{business_id: (product_name, selling_point, label_id)}` | `ProductInfoRaw` 的产品名与日志；`main.py` 的空转读取暂留 |
+| `load_product_selling_point()` | `{business_id: (product_name, selling_point, label_id)}` | `main.py` 循环外读入 1 次并显式传参，供 `ProductInfoRaw` 取产品名与非商机 ID 的标签子集 |
 | `load_cut_in_script()` | `{business_id: {标签ID / 兜底话术: [切入, 挽留] 或 ""}}` | 无（维表业务已下线，定义保留供新线复用） |
 
 `load_cut_in_script()` 用 `ORDER BY rowid` 取
@@ -642,8 +670,9 @@ import 时 `src/log_util.py` 会按既有行为创建 `log/` 目录与当日日�
 | 注册 xlsx 缺失 | 写入侧告警跳过，库保留上次成功版本 |
 
 返回 `{}` 时业务行为：`ProductInfoRaw` 的产品名为 `None`、其余 ID 的
-`queried_label_ids` 为 `[]`；商机回捞的标签子集是代码内固定值，辅助画像仍由
-IOP 标签拼装，不受维表影响；兜底统一返回 `code: "2"` 空话术。
+`queried_label_ids` 为 `[]`；商机回捞的标签子集是代码内固定值，辅助画像由
+IOP 标签拼装、不受维表影响；控损与诊断兜底不计算画像；兜底统一返回
+`code: "2"` 空话术。
 **维表侧出任何问题都不会让 API 500**。同一类告警每进程只打印一次（`_WARNED` 集合），避免刷屏。
 
 ### 读取次数
@@ -651,9 +680,8 @@ IOP 标签拼装，不受维表影响；兜底统一返回 `code: "2"` 空话术
 不做进程级缓存，每次调用读一次全表，天然读到 `dim_watcher` 写入的最新值，
 无缓存失效或脏读问题。一次请求内：
 
-- `main.py` 的 `marketAssistant` 循环**外**加载 1 次卖点表；维表业务下线后
-  已不参与路由判断，属暂留的空转读取，后续统一收敛读取时机；
-- 每个 `ProductInfoRaw` 实例加载 1 次卖点表（循环外各一次）；
+- `main.py::marketAssistant` 在循环**外**读 1 次卖点表，把同一份 dict
+  显式传给每个产品对象；三个构造点都接收该参数，**每请求恰好 1 次**；
 - `label_name_mapping` 与 `cut_in_script` 在线侧均不再加载。
 
 卖点表 1361 行，本地 SQLite 开销可忽略。
@@ -714,8 +742,8 @@ IOP 标签拼装，不受维表影响；兜底统一返回 `code: "2"` 空话术
 
 | 位置 | 加载函数 | 消费方式 |
 |---|---|---|
-| `main.py::marketAssistant` | `load_product_selling_point()` | 循环外读取 1 次，属暂留的空转读取，不参与路由判断 |
-| `services/product_info_raw.py::__init__` | 同上，存 `self.product_selling_point_match_dict` | `[0]` 取产品名（仅用于日志）；商机回捞的 `queried_label_ids` 改由代码内固定集提供，其余 ID 才从 `[2].split("\n")` 取 |
+| `main.py::marketAssistant` | `load_product_selling_point()` | 循环外读入 1 次，作为请求级共享 dict 显式传给三个构造点，不参与路由判断 |
+| `services/product_info_raw.py::__init__` | 无（由调用方传入 `selling_points`） | 存 `self.product_selling_point_match_dict`；`[0]` 取产品名（仅用于日志）；商机回捞的 `queried_label_ids` 由代码内固定集提供，其余 ID 才从 `[2].split("\n")` 取 |
 
 `load_cut_in_script()` 与 `load_lookup("label_name_mapping")` 仍由 `dim_reader`
 提供，但在线侧无调用方；维表库、`registry.json` 与 `dim_transform` 的加工能力
@@ -723,20 +751,25 @@ IOP 标签拼装，不受维表影响；兜底统一返回 `code: "2"` 空话术
 
 ## 公共画像拼装（`services/product_info_raw.py`）
 
-所有业务对象都继承 `ProductInfoRaw`，构造时固定走这段重组：
+所有业务对象都继承 `ProductInfoRaw`。构造时完成两项：
 
 - `queried_label_ids`：商机回捞的 3 个 ID 取代码内固定集（号卡 / 套餐共用
   3 个标签、宽带 4 个，两组重叠 2 个、合计 5 个；元组顺序即画像拼接顺序）；
   其余 ID 从卖点维表元组的 `[2]` 经 `.split("\n")` 得到（读取侧不提前拆、
   不过滤空串、不额外 strip 每项）。
 - `queried_label_nvs`：按 `queried_label_ids` 顺序与 `custom_label_info` 对齐，缺失填 `None`。
-- `auxiliary_portrait`：按上游返回的名称与原值逐项拼
-  `标签名: <strong><span style="color:blue;">值</span></strong>; `，保留空值跳过
-  与同名去重，最后补 `【辅助画像】` 前缀。固定标签集里的 5 个标签都不涉及
-  名称映射或按标签 ID 硬编码的值转换，这两类规则已一并取消。
 
-控损与诊断兜底不使用画像，但构造时仍会算出 `auxiliary_portrait` 并写进
-`__str__` 日志。
+`auxiliary_portrait` 是 **property，懒执行**：模块级纯函数
+`build_auxiliary_portrait(queried_label_nvs)` 按上游返回的名称与原值逐项拼
+`标签名: <strong><span style="color:blue;">值</span></strong>; `，保留空值跳过
+与同名去重，最后补 `【辅助画像】` 前缀与 `rstrip`。固定标签集里的 5 个标签
+都不涉及名称映射或按标签 ID 硬编码的值转换，这两类规则已一并取消。
+
+只有声明 `PORTRAIT` 的商机对象会拿到 `portrait_cache`（`main.py` 在请求内
+创建的空 dict），按 `product_id` 查/算并写入；控损与诊断兜底拿到 `None`，
+property 直接返回 `""`，**连 `build_auxiliary_portrait()` 都不进**。`__str__`
+仍打印 `auxiliary_portrait` 一行，这两类业务该行为空字符串。缓存只在函数内
+创建、不跨请求共享，同一商机 ID 在一次请求里重复出现也只拼一次。
 
 ## 调用量统计（`src/call_stat.py` + GET `/api/callStat`）
 
@@ -848,8 +881,8 @@ curl "http://host:8989/api/callStat?month=2026-11"
 
 **维表侧出任何问题都不会让 API 500**：`ProductInfoRaw` 的产品名为 `None`、
 商机回捞的标签子集仍取代码内固定值、其余 ID 的 `queried_label_ids` 为 `[]`，
-兜底统一 `code: "2"` 空话术；辅助画像只由 IOP 标签决定，不受维表影响。
-同一类告警每进程只打印一次（`_WARNED` 集合），避免刷屏。
+兜底统一 `code: "2"` 空话术；商机辅助画像只由 IOP 标签决定，不受维表影响，
+控损与兜底不计算画像。同一类告警每进程只打印一次（`_WARNED` 集合），避免刷屏。
 
 不做进程级缓存，每次调用读一次全表，天然读到写入侧的最新值，
 无缓存失效或脏读问题；改库后下一次请求即生效，无需重启。
@@ -865,6 +898,23 @@ curl "http://host:8989/api/callStat?month=2026-11"
   不能因为 `product_name` 非空而返回 `code: "0"` + 空话术。
 - 商机回捞的 `queried_label_ids` 是代码内固定集，改卖点维表的 `label_id` 列
   不影响画像；`label_name_mapping` 与 `cut_in_script` 在线侧不再被加载。
+- **按业务声明 IOP / 画像依赖**：`iop_need()` 对商机 3 个 ID 返回
+  `PORTRAIT`、控损返回 `NONE`、其余（含维表里存在的业务 ID）返回
+  `RAW_LABELS`；判定按全部 `productId` 取并集，把控损 ID 排在商机之前也不能
+  漏查。
+- **IOP 次数**：纯控损请求打桩后 `get_custom_info_in_global()` 应为 **0** 次；
+  纯商机 / 纯兜底 / 控损+商机 / 控损+兜底 / 三混合均为 **1** 次；同一请求内
+  多个产品 ID 不会各查一次。纯控损请求即使 IOP 服务不可用也不打 ERROR 日志、
+  响应照常返回。
+- **画像次数**：打桩 `build_auxiliary_portrait()`，控损 / 兜底 / 维表 ID 落兜底
+  应为 **0** 次；纯商机 **1** 次；3 个不同商机 **3** 次；同一商机 ID 重复 3 次
+  仍 **1** 次；混合请求等于该请求里不同的商机 `product_id` 数。
+- **请求内隔离**：`IopLabelProvider` 与 `portrait_cache` 都在 `marketAssistant`
+  函数体内创建，模块级 / `app.state` 不应有标签或画像缓存；连续两个不同手机号
+  请求，响应互不串标签值、画像缓存也不串。提供者同实例第二次 `labels()`
+  不再发起查询、异常仍降级 `{}` 且不抛 500。
+- **维表读取次数**：打桩 `load_product_selling_point()`，一次请求应为 **1** 次，
+  与列表里产品个数无关；三个构造点都显式接收同一份 dict。
 - `services/data_query.py`、两个 spec 子类、`dim_reader` 均可独立导入。
 - `TASKS` / `DB_SCHEMAS` / `QUERY_SPECS` 三者 key 一致；改 `.env` 的
   `LOSS_CONTROL_NUM_TABLES` 后，`get_loss_control_latest()` 解析出的表名后缀同步变化。
@@ -991,6 +1041,11 @@ curl "http://host:8989/api/callStat?month=2026-11"
   代码、配置、文档或样例。维表业务下线后，不属于商机回捞 / 控损的产品 ID
   全部作为诊断兜底，当前统一输出 `code: "2"` 空话术，等新线实现后再切换；
   维表库、`registry.json`、`dim_reader` / `dim_transform` 的加工能力均保留供复用。
+  诊断兜底声明 `RAW_LABELS`、一定触发 IOP；当前输出尚未消费标签，属已确认的
+  预留，不是遗漏的浪费。
+- 按业务声明 IOP / 画像依赖已落地，不再是待办：三态声明、请求级惰性标签提供者、
+  画像按 `product_id` 懒执行缓存、卖点表每请求 1 次，见「请求处理与路由」
+  「公共画像拼装」与「自检要点」。
 - 基于 `version` 的进程级缓存、版本回滚、历史版本查询、灰度切换。
 - 加工规则的完全配置化：当前 `cut_in_str2tuple` 与分组规则写在 `dim_transform.py`，
   `registry.json` 只声明列角色与列顺序。
