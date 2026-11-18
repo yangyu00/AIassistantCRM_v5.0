@@ -1,5 +1,3 @@
-from excel2consts.dim_reader import load_product_selling_point
-
 # 商机回捞的标签子集固定，不随卖点维表变动。号卡 / 套餐共用 3 个，宽带 4 个；
 # 元组顺序即辅助画像的拼接顺序。其余产品 ID 仍按维表 label_id 列取。
 _OPP_LABEL_IDS = {
@@ -30,7 +28,6 @@ def build_auxiliary_portrait(queried_label_nvs):
     可按业务需要决定是否计算，也便于复用同一份结果。
     """
     portrait_str = ""
-    exist_label_name_list = []
     for label_nv in queried_label_nvs:
         if label_nv is None:
             continue
@@ -38,16 +35,7 @@ def build_auxiliary_portrait(queried_label_nvs):
         if not label_value:
             continue
 
-        # 涉及是否的重复标签去重
-        if label_name in exist_label_name_list:
-            if label_value == "是":
-                portrait_str.replace(f"{label_name}: 否; ", f"{label_name}: 是; ")
-                continue
-            else:
-                continue
-
         portrait_str += f'{label_name}: <strong><span style="color:blue;">{label_value}</span></strong>; '
-        exist_label_name_list.append(label_name)
 
     if portrait_str:
         portrait_str = "【辅助画像】" + portrait_str
@@ -57,12 +45,11 @@ def build_auxiliary_portrait(queried_label_nvs):
 
 
 class ProductInfoRaw(object):
-    def __init__(self, product_id, custom_label_info):
+    def __init__(self, product_id, custom_label_info, selling_points):
         self.product_id = product_id
         self.custom_label_info = custom_label_info
-        # 一次请求内只读一次；维表业务下线后仅兜底与日志还会用到，读取时机
-        # 将在后续统一收敛
-        self.product_selling_point_match_dict = load_product_selling_point()
+        # 卖点维表由调用方在一次请求开始时读入并传入，避免每个产品对象各读一次
+        self.product_selling_point_match_dict = selling_points
         self.product_name = self.__get_product_name()
         self.queried_label_ids = self.__get_queried_label_ids()
         self.queried_label_nvs = self.__get_queried_label_nvs()

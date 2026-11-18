@@ -102,7 +102,7 @@ async def marketAssistant(args: Args):
         custom_label_info = {}
 
     # 2. 建立产品对象列表
-    # 维表读取暂留，后续步骤统一收敛读取时机；当前不再参与路由判断
+    # 卖点维表一次请求只读一次，传给每个产品对象复用
     product_selling_point_match_dict = load_product_selling_point()
     product_obj_list = []
     for one_product_obj in args.productId:
@@ -110,20 +110,23 @@ async def marketAssistant(args: Args):
         # 号卡业务、套餐业务、宽带业务（ID 与库表映射见 tasks/config.py）
         if one_product_obj.id in data_query.OPPORTUNITY_RECALL_PRODUCT_IDS:
             record = await data_query.get_opportunity_recall_latest(args.telnum, one_product_obj.id)
-            product_obj_list.append(ProductInfoBySpec9554(one_product_obj.id, custom_label_info, record))
+            product_obj_list.append(ProductInfoBySpec9554(one_product_obj.id, custom_label_info,
+                                                          product_selling_point_match_dict, record))
             continue
 
         # 2. 数据库中业务(控损专用)
         if one_product_obj.id in data_query.LOSS_CONTROL_PRODUCT_IDS:
             record = await data_query.get_loss_control_latest(args.telnum)
             if record:
-                product_obj_list.append(ProductInfoBySpec9591(one_product_obj.id, custom_label_info, record))
+                product_obj_list.append(ProductInfoBySpec9591(one_product_obj.id, custom_label_info,
+                                                              product_selling_point_match_dict, record))
                 continue
 
         # 3. 诊断兜底
         # 不属于上述两类的产品 ID 全部落到这里。新线输出待完成，当前
         # 统一输出 code=2 空话术；等新线实现后再切换。
-        product_obj_list.append(ProductInfoRaw(one_product_obj.id, custom_label_info))
+        product_obj_list.append(ProductInfoRaw(one_product_obj.id, custom_label_info,
+                                               product_selling_point_match_dict))
 
     # 3. 输出话术
     # 诊断兜底统一输出 code=2 空话术。这里不能再靠 product_name 是否为空判定：
