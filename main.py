@@ -103,13 +103,14 @@ class IopNeed(Enum):
 def iop_need(product_id):
     """按产品 ID 声明标签依赖，业务归属由 data_query 的路由集合派生。
 
-    控损业务当前与其它分支共享同一次标签查询，归 RAW_LABELS；关闭它只需
-    把这一个分支改为 NONE，调用点无需改动。
+    控损话术只由数据库字段拼装，不依赖用户标签，声明为 NONE；商机回捞
+    需要标签拼装用户画像；其余产品 ID 作为诊断兜底，只取原始标签、
+    不做画像规则转换。
     """
     if product_id in data_query.OPPORTUNITY_RECALL_PRODUCT_IDS:
         return IopNeed.PORTRAIT
     if product_id in data_query.LOSS_CONTROL_PRODUCT_IDS:
-        return IopNeed.RAW_LABELS
+        return IopNeed.NONE
     return IopNeed.RAW_LABELS
 
 
