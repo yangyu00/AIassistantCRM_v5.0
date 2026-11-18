@@ -1,6 +1,7 @@
 import datetime
 import re
 from contextlib import asynccontextmanager
+from enum import Enum
 from typing import List, Optional
 
 import uvicorn
@@ -92,20 +93,69 @@ class Args(BaseModel):
         return value
 
 
+class IopNeed(Enum):
+    """各业务对 IOP 标签的依赖。"""
+    NONE = "none"              # 完全不取标签
+    PORTRAIT = "portrait"      # 取标签并据此计算用户画像
+    RAW_LABELS = "raw_labels"  # 只取原始标签，不做画像规则转换
+
+
+def iop_need(product_id):
+    """按产品 ID 声明标签依赖，业务归属由 data_query 的路由集合派生。
+
+    控损业务当前与其它分支共享同一次标签查询，归 RAW_LABELS；关闭它只需
+    把这一个分支改为 NONE，调用点无需改动。
+    """
+    if product_id in data_query.OPPORTUNITY_RECALL_PRODUCT_IDS:
+        return IopNeed.PORTRAIT
+    if product_id in data_query.LOSS_CONTROL_PRODUCT_IDS:
+        return IopNeed.RAW_LABELS
+    return IopNeed.RAW_LABELS
+
+
+class IopLabelProvider:
+    """一次请求内的标签惰性提供者，负责同请求只查一次并隔离不同请求。
+
+    实例必须在请求处理函数内创建：标签属于单个手机号，放到模块级或
+    app.state 缓存会把上一个用户的标签带给下一个用户，且不会报错。
+    """
+
+    def __init__(self, telnum):
+        self.telnum = telnum
+        self._labels = None
+        self._fetched = False
+        self.fetch_count = 0
+
+    async def labels(self):
+        if self._fetched:
+            return self._labels
+        self._fetched = True
+        self.fetch_count += 1
+        try:
+            self._labels = await get_custom_info_in_global(self.telnum)
+        except Exception as e:
+            my_log.error(e)
+            self._labels = {}
+        return self._labels
+
+
 @app.post(str(global_config['marketAssistant']['url']))
 async def marketAssistant(args: Args):
-    # 1. 根据 手机号 获取 用户标签
-    try:
-        custom_label_info = await get_custom_info_in_global(args.telnum)
-    except Exception as e:
-        my_log.error(e)
-        custom_label_info = {}
+    # 标签提供者按请求创建：标签属于单个手机号，不能放在模块级或 app.state
+    # 缓存，否则会把上一个用户的标签带给下一个用户且不会报错
+    label_provider = IopLabelProvider(args.telnum)
 
     # 2. 建立产品对象列表
     # 卖点维表一次请求只读一次，传给每个产品对象复用
     product_selling_point_match_dict = load_product_selling_point()
     product_obj_list = []
     for one_product_obj in args.productId:
+        # 逐产品 ID 声明标签依赖；提供者保证整请求最多查一次 IOP。
+        # 逐个判断等价于对全部 ID 取并集，不会因首个 ID 不需要而漏查
+        need = iop_need(one_product_obj.id)
+        custom_label_info = (await label_provider.labels()
+                             if need != IopNeed.NONE else {})
+
         # 1. 特殊业务
         # 号卡业务、套餐业务、宽带业务（ID 与库表映射见 tasks/config.py）
         if one_product_obj.id in data_query.OPPORTUNITY_RECALL_PRODUCT_IDS:
