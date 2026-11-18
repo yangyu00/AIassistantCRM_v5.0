@@ -171,7 +171,8 @@ token 侧任一失败都会清空 `TOKENS` 并记 ERROR，按配置重试/退避
 
 共享 `ClientSession`、token 单飞、重试/退避/冷却、
 响应校验、有效期换算、`deadline` 恒为 datetime 均已实现，
-分见后续六个小节。`IOPClient` 类已明确不做（见文末「未实现」）。
+分见后续六个小节。`IOPClient` 类已于第 3 步实现（见文末 `IOPClient` 条目与
+`IOP模块重构方案.md`）；上述机制原样平移为实例方法，行为逐条对照保持不变。
 `test_local/test_iop.py` 是单次画像查询脚本：命令行给电话号，复用生产模块
 真实查询 IOP 并打印客户标签画像，见「单次画像查询脚本」小节。
 
@@ -496,7 +497,10 @@ _INVALID_DEADLINE = datetime.datetime.min
 两个端点的 URL 路径、查询参数名、OAuth2 固定参数与请求头集中在
 `IOP/endpoints.py`；`get_token.py` / `get_custinfo.py` 只调用
 `token_request(cfg)` / `custinfo_request(cfg, tel, access_token)`，不再各自拼接
-字符串。仍由 `config.yaml` 提供的是部署与业务参数：
+字符串。部署与业务参数**改由 `IOP/config.py` 模块内常量提供**（第 4 步起，
+根 `config.yaml` 的 `IOP` 段不再读取）；`EndpointSpec` 把 `IOPConfig` 适配成下表
+同形状的输入后复用 `endpoints.py` 的公开函数，契约仍是单点。下表「位置」列沿用
+`config.yaml` 的键名便于对照，实际来源是 `IOP/config.py`：
 
 | 位置 | 内容 |
 |---|---|
@@ -1052,11 +1056,30 @@ curl "http://host:8989/api/callStat?month=2026-11"
 - 状态不变量已处理：`Tokens.deadline` 恒为 datetime，无有效 token 时统一为
   `_INVALID_DEADLINE`（过去时间），见「Token 状态不变量」小节。
   IOP 侧已无待办的隐式类型依赖。
-- **`IOPClient` 类：已决定不做**。其并发正确性目标已由单飞 + 代次、
-  lifespan 共享 session、失败冷却覆盖，统一失败契约由
-  空 dict 降级 / 日志字段 / 响应校验提供，不再单独收敛为类。类化需同时改动 `main.py`、
-  `get_custinfo.py`、`get_token.py`、`http_session.py`，并重新验证
-  单飞跨 event loop 与共享 session 同 loop 约束，风险收益比不划算。
+- **`IOPClient` 类：已实现（第 3 步），原「已决定不做」的记录按审核决议解除**。
+  当时不做针对的是「并发正确性」（已由单飞 + 代次解决）；这次类化针对的是
+  **实例隔离、配置自包含、依赖注入与独立复用**，模块级全局恰好是硬障碍。
+  为规避当年列出的「同时改 4 个文件 + 重验并发」风险，采用新类并存 + 旧壳不动
+  + 逐条影子对照：第 0–3 步只新增文件，并发逻辑原样平移函数体、不重写；
+  第 4 步才把 `get_custinfo.py` / `get_token.py` / `http_session.py` 改成薄壳
+  （`endpoints.py` 本就是零外部依赖的契约单点，保持原样），由 `IOP/_compat.py`
+  的进程级默认实例转发旧符号，`main.py` 与 `test_local/test_iop.py` **一行未改**。
+  公开 API 收口在包顶层：`from IOP import IOPClient`，
+  `async with IOPClient() as c: await c.get_customer_labels(tel)`。
+
+  随之变更的两处约定：
+  1. **配置**：全部定义在 `IOP/config.py` 模块内，核心层不读项目根 `config.yaml`、
+     不 import 根 `config` / `src.*`；根 `config.yaml` 的 `IOP` 段保留作历史参考，
+     **第 4 步起在线进程不再读取**。
+  2. **日志**：改为创建对象时注入；**未注入则完全静默**（默认实例即不注入）。
+     想恢复生产日志，在启动代码里调一次 `IOP._compat.configure_logger(my_log)`。
+     注入后文案、级别与薄壳化前逐条一致。
+
+  ⚠️ 本文其余章节（「配置读取」「请求契约集中」「自检要点」等）描述的是
+  **薄壳化前的实现细节**：涉及 `ImmutableYamlConfig` 读盘、模块级 `RETRY` /
+  `LIFETIME` 全局、`src.log_util` 落盘规则处，请以当前代码与
+  `IOP模块重构方案.md` 为准。所有业务行为（统一降级 `{}`、单飞、重试退避冷却、
+  有效期换算、7 类响应校验、请求逐字一致）均已用新旧影子对照逐条验证保持不变。
 - 重试已配好次数/退避/冷却，有效期换算已完成，响应校验已覆盖状态码与
   结构校验，状态不变量已消除 `deadline=None` 的隐式短路依赖；但**冷却是进程内状态**：
   多实例部署时各实例各自冷却，不做跨进程共享。
@@ -1065,7 +1088,9 @@ curl "http://host:8989/api/callStat?month=2026-11"
   按明确要求**不做自动化单元测试**，不再列为待办；最初「复制两份请求实现」
   的问题已随复用生产模块解决。
 - 请求契约已集中：URL 路径 / `method` / `grant_type` / `charset=gbk` 请求头等
-  契约常量集中在 `IOP/endpoints.py`，`version` / `type` / host / port /
-  超时 / 重试 / 有效期仍由 `config.yaml` 提供，见「请求契约集中」小节。
+  契约常量集中在 `IOP/endpoints.py`；`version` / `type` / host / port /
+  超时 / 重试 / 有效期**改由 `IOP/config.py` 模块内常量提供**（第 4 步起），
+  根 `config.yaml` 的 `IOP` 段不再生效。`EndpointSpec` 复用 `endpoints.py` 的
+  公开函数构造请求，契约仍是单点，见「请求契约集中」小节与上文 `IOPClient` 条目。
 - 另：根目录 `test_online.py` 的请求体里仍写有 `18866816199`，
   属在线接口测试脚本，不在本次调试脚本范围内。

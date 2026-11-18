@@ -15,6 +15,9 @@ call_stat:
   flush_threshold: 100
   url: "/api/callStat"
 
+# IOP 运行配置已迁至 IOP/config.py（模块内自包含）。本段保留作历史参考，
+# 第 4 步起在线进程不再读取此处；改地址/凭据/超时/重试请改 IOP/config.py。
+# 详见 IOP模块重构方案.md。删除本段不影响运行。
 IOP:
   TOKEN:
     host: "134.80.220.55"
