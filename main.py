@@ -42,7 +42,8 @@ async def lifespan(app: FastAPI):
         call_stat.flush()
 
 
-# 数据更新（SFTP 拉取 → SQLite 入库）由 tasks/ 下的 2 个独立进程负责；
+# 数据更新（SFTP 拉取 → SQLite 入库）由 sftp_avl2db 的 2 个独立进程负责
+# （运行时数据目录仍为 tasks/）；
 # 维表更新由 excel2consts.dim_watcher 独立进程负责；
 # 本进程对业务库与维表一律只读 SQLite，唯一写入是调用量统计（log/call_sum.db）。
 app = FastAPI(lifespan=lifespan)
@@ -165,7 +166,7 @@ async def marketAssistant(args: Args):
         portrait_cache_for_obj = portrait_cache if need == IopNeed.PORTRAIT else None
 
         # 1. 特殊业务
-        # 号卡业务、套餐业务、宽带业务（ID 与库表映射见 tasks/config.py）
+        # 号卡业务、套餐业务、宽带业务（ID 与库表映射见 crm_dbspec.py）
         if one_product_obj.id in data_query.OPPORTUNITY_RECALL_PRODUCT_IDS:
             record = await data_query.get_opportunity_recall_latest(args.telnum, one_product_obj.id)
             product_obj_list.append(ProductInfoBySpec9554(one_product_obj.id, custom_label_info,

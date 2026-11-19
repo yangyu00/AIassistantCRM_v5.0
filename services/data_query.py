@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """在线业务库只读查询（统一入口）。
 
-两个 SFTP 任务的库目录、文件前缀、分表数、表结构与查询声明全部取自
-``tasks.config.TASKS[...]``，本模块不含硬编码的表名/列名/路径。
-新增或调整任务只需改 ``tasks/config.py`` 的 DB_SCHEMAS / QUERY_SPECS。
+库目录 / 文件前缀 / 分表数取自运行时配置 ``sftp_avl2db.config.load_profiles()``
+构造的 ``TaskProfileConfig``；表结构与查询声明取自顶层静态契约
+``crm_dbspec``。写入侧与读取侧共用这两处定义，本模块不含硬编码的表名/列名/路径。
+新增或调整任务只需改 ``crm_dbspec.py`` 的 DB_SCHEMAS / QUERY_SPECS 与配置声明。
 
 ``QUERY_SPECS[任务名]["mode"]`` 决定库表形式，共三种：
 多库单表（db_map 选库名）、单库多表（crc32 分表）、单库单表（table_name 固定表）；
@@ -18,7 +19,13 @@ import os
 import sqlite3
 import zlib
 
-from tasks.config import TASKS, QUERY_SPECS, db_dir
+from crm_dbspec import QUERY_SPECS, db_columns, query_spec, validate_specs
+from sftp_avl2db.config import load_profiles
+
+# 在线侧启动时显式加载一次运行时配置（与旧 tasks/config.py 模块级加载等价），
+# 并显式跑配置漂移校验；写入侧从同一份 profile 取值，读写不会各算一套。
+PROFILES = load_profiles()
+validate_specs(PROFILES)
 
 OPPORTUNITY_RECALL_PRODUCT_IDS = frozenset(QUERY_SPECS["opportunity_recall"]["db_map"])
 LOSS_CONTROL_PRODUCT_IDS = frozenset(QUERY_SPECS["loss_control"]["product_ids"])
@@ -34,9 +41,9 @@ def _error(msg):
 
 def _resolve(task_name, product_no, product_id=None):
     """由配置算出 (db_path, table_name, where 值列表)；未映射时返回 None。"""
-    conf = TASKS[task_name]
-    spec = conf["QUERY"]
-    qdir = db_dir(task_name)
+    conf = PROFILES[task_name]
+    spec = query_spec(task_name)
+    qdir = conf.db_dir
 
     mode = spec["mode"]
     if mode == "multi_db_single_table":
@@ -48,14 +55,14 @@ def _resolve(task_name, product_no, product_id=None):
         db_path = qdir / f"{db_name}.db"
         table = f"data_{db_name}"
     elif mode == "single_db_multi_table":
-        # 单库多表：单库按 crc32(product_no) 路由到 NUM_TABLES 张表之一
-        db_path = qdir / f"{conf['FILE_PREFIXES'][0]}.db"
+        # 单库多表：单库按 crc32(product_no) 路由到 num_tables 张表之一
+        db_path = qdir / f"{conf.file_prefixes[0]}.db"
         p_no = product_no if product_no else "NULL"
-        idx = zlib.crc32(p_no.encode("utf-8")) % conf["NUM_TABLES"]
-        table = f"{conf['TABLE_NAME_PREFIX']}_{idx}"
+        idx = zlib.crc32(p_no.encode("utf-8")) % conf.num_tables
+        table = f"{conf.table_name_prefix}_{idx}"
     elif mode == "single_db_single_table":
         # 单库单表：单库一张固定表
-        db_path = qdir / f"{conf['FILE_PREFIXES'][0]}.db"
+        db_path = qdir / f"{conf.file_prefixes[0]}.db"
         table = spec["table_name"]
     else:
         # 配置校验在 import 时已拒绝非法 mode；运行时仍降级，避免异常冒泡到业务侧
@@ -77,9 +84,8 @@ def _query(task_name, product_no, product_id=None):
         _warn(f"数据库文件不存在: {db_path}")
         return {}
 
-    conf = TASKS[task_name]
-    spec = conf["QUERY"]
-    columns = [c[0] for c in conf["DB_SCHEMA"]]
+    spec = query_spec(task_name)
+    columns = db_columns(task_name)
     where_sql = " AND ".join(f"{col} = ?" for col in spec["where"])
     order_sql = f" ORDER BY {spec['order_by']}" if spec["order_by"] else ""
     sql = f"SELECT * FROM {table} WHERE {where_sql}{order_sql} LIMIT 1"

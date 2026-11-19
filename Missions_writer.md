@@ -1,22 +1,25 @@
 # 定时数据更新任务说明（SFTP AVL 拉取 → SQLite 入库）
 
-> 2 个任务各自独立进程运行，代码在 `tasks/`；在线业务（FastAPI）对业务库与维表只读 SQLite
+> 2 个任务各自独立进程运行，**代码在 `sftp_avl2db/`**，运行时数据目录仍是 `tasks/`
+> （`log/` `state/` `files/` `sqlite_db/`）；在线业务（FastAPI）对业务库与维表只读 SQLite
 > （唯一例外是调用量统计，见 `Missions_reader.md`）。
-> 原随 `main.py` 启动的拉取实现与原先分散的 `sftp_workdir_*/data_query.py` 均已删除；
-> 在线查询统一由 `services/data_query.py` 按 `tasks/config.py` 的配置派发。
+> 原随 `main.py` 启动的拉取实现、原先分散的 `sftp_workdir_*/data_query.py`、
+> 以及 `tasks/*.py` 的旧任务代码壳均已删除；在线查询统一由
+> `services/data_query.py` 按 `crm_dbspec.py` 的静态契约 +
+> `sftp_avl2db.config.load_profiles()` 的运行时配置派发。
 
 > 在线业务（FastAPI）的读取与重组逻辑见 `Missions_reader.md`。
 
 ## 任务命名
 
 两个任务按业务含义命名，不再用「AVL 前缀 + 缩写」组合。同一个英文名同时作为
-`TASKS` / `DB_SCHEMAS` / `QUERY_SPECS` 的 key、`tasks/sqlite_db/{任务名}/` 库目录名、
-`.env` 键前缀、日志与状态文件名前缀。
+`TaskProfileConfig.name` / `crm_dbspec.DB_SCHEMAS` / `QUERY_SPECS` 的 key、
+`tasks/sqlite_db/{任务名}/` 库目录名、`.env` 键前缀、日志与状态文件名前缀。
 
-| 中文业务名 | 任务 key | `.env` 键前缀 | 进程脚本 | AVL 前缀 |
+| 中文业务名 | 任务 key | `.env` 键前缀 | 启动命令（`--task` 值） | AVL 前缀 |
 |---|---|---|---|---|
-| 回捞商机 | `opportunity_recall` | `OPPORTUNITY_RECALL_` | `tasks/task_opportunity_recall.py` | F09554 / F09555 / F09556 |
-| 控损 | `loss_control` | `LOSS_CONTROL_` | `tasks/task_loss_control.py` | F09591 |
+| 回捞商机 | `opportunity_recall` | `OPPORTUNITY_RECALL_` | `python -m sftp_avl2db --task opportunity_recall` | F09554 / F09555 / F09556 |
+| 控损 | `loss_control` | `LOSS_CONTROL_` | `python -m sftp_avl2db --task loss_control` | F09591 |
 
 > `F09554` 等 AVL 文件前缀与 `data_F09554` 等表名属于外部数据约定，保持不变；
 > 只有任务自身的 key、脚本名、配置键前缀、库目录与文件名前缀采用业务英文名。
@@ -26,7 +29,8 @@
 1. **远程文件**：连接参数见 `.env` 的 `SFTP_*`。
    每天生成 `{业务前缀}{YYYYMMDD}000000.AVL`，制表符分隔，UTF-8。
 2. **不重复拉取**：每个任务维护 `tasks/state/{任务名}.fetched`，记录已成功入库的远程文件名；
-   每轮先跳过清单里的文件，**入库成功后才登记**。本地已存在同名 `.AVL` 也跳过。
+   每轮先跳过清单里的文件，**入库成功后才登记**。本地已有同名 `.AVL` 不会跳过，
+   清单未命中时会重新下载并覆盖（`--force-reload` 则连清单命中也强制重下）。
 3. **失败重试**：入库失败不登记清单，下一轮自动重试；本地文件保留。
 4. **跨天兜底**：每轮同时检查「昨天 + 今天」两天的文件名。
    > ⚠️ **文件名日期 ≠ 数据日期（op_time）**：`{YYYYMMDD}` 是文件生成日，`op_time` 是业务数据日，各任务偏移量见下文。
@@ -37,29 +41,76 @@
 8. **日志**：`tasks/log/{任务名}_INFO|ERROR_日期.log`，每天轮转，保留 7 天。
 9. **运行方式**（在项目根目录执行，用 `-m` 保证包内相对导入生效）：
    ```bash
-   python -m tasks.task_opportunity_recall
-   python -m tasks.task_loss_control --date 20261110
+   python -m sftp_avl2db --task opportunity_recall
+   python -m sftp_avl2db --task loss_control --date 20261110
+   python -m sftp_avl2db --task loss_control --date 20261110 --force-reload
    ```
-   生产建议用 systemd/nohup 各起一个常驻进程；单机单实例。
+   `--date YYYYMMDD` 单次模式（拉完指定**文件名日期**后退出，不传则常驻轮询）；
+   `--force-reload` 强制重下重入库。旧命令 `python -m tasks.task_xxx` 已随代码壳删除而失效。
+   离线复跑 / 验证可加 `--local-dir io_samples`（把本地目录当远程，不连 SFTP）、
+   `--env` / `--project-root` 指定配置与运行时根目录。
+   生产建议用 systemd/nohup 各起一个常驻进程；单机单实例（`tasks/state/{任务名}.lock`）。
+
+---
+
+## 组件分层与独立复用（`sftp_avl2db/`）
+
+写入侧拆成 5 层，**每层都能单独 import、单独测试、单独替换**；`import sftp_avl2db`
+本身零 I/O、零第三方依赖（不读 `.env`、不连网、不建目录、不改宿主 logger）。
+
+| 层 | 模块 | 主要类 / 函数 | 第三方依赖 |
+|---|---|---|---|
+| 配置 | `sftp_avl2db/config.py` + 顶层 `crm_dbspec.py` | `TaskProfileConfig`（冻结 dataclass）、`load_profiles()`、`from_mapping()`、`DB_SCHEMAS` / `QUERY_SPECS` / `QUERY_MODES` / `validate_specs()` | 无 |
+| 解析 | `sftp_avl2db/parsers/` | `FlatColumnParser` / `ContinuationParser`（生成器 `yield`，不装全量记录）、`build_parser()` | 无 |
+| 写入 | `sftp_avl2db/sink/` | `TableSchema`（DDL / `INSERT OR REPLACE` / 过期 DELETE）、`TableLayout`（`per_prefix` / `crc32_shards` / `fixed_table`）、`SqliteSink`（建表 / 分桶分批 / 过期清理）、`build_sink()` | 仅标准库 `sqlite3` |
+| I/O | `sftp_avl2db/remote.py` / `state.py` / `logging.py` | `SftpRemoteSource` / `LocalDirRemoteSource`、`FetchedManifest` / `SingleInstanceLock`、`TaskLogger` / `InMemoryLogger` | 延迟导入；离线组件零依赖 |
+| 编排 | `sftp_avl2db/runner.py` / `profiles.py` / `cli.py` | `Avl2DbRunner`（`import_one` / `run_once_for_date` / `serve_forever` / `cleanup_expired`）、`build_task()` | 无 |
+
+在其他项目里按需取用，不必接整条链路：
+
+```python
+from sftp_avl2db import TaskProfileConfig, build_parser, build_sink, build_layout
+p = TaskProfileConfig.from_mapping({...})          # 不需要 .env
+layout = build_layout(p)
+sink = build_sink(p, layout=layout)
+sink.ensure_schema()
+sink.write("F09591xxx.AVL", build_parser(p).parse(path), router=layout)
+```
+
+两段「看起来像 bug」的既有行为刻意保真，不要顺手优化：商机编码探测带
+`errors="ignore"` 实际恒走 utf-8；控损 `_strip_eol()` 只剥**一个**反斜杠，
+且 `>=5` 列时丢弃第 6 列起。分表口径 `zlib.crc32(product_no) % NUM_TABLES`
+必须与读取侧 `services/data_query.py::_resolve()` 一致。
 
 ---
 
 ## 配置
 
-- 两个任务的配置统一由 `tasks/config.py` 读取并解析项目根目录 `.env`，脚本从 `TASKS[...]` 取值。
-- **不沿用项目总的 `config.yaml` / `config.py`**；配置只在 `tasks/config.py` 一处定义。
-- 在线查询 `services/data_query.py` 复用同一份 `TASKS[...]`，库目录由 `db_dir(任务名)`
-  统一指向 `tasks/sqlite_db/{任务名}/`，与两个任务脚本的写入路径一致，读写不再各算一套。
-- `tasks/config.py` 里还有两张与 `TASKS` 同 key 的静态表，**写入侧建表与读取侧查询共用**：
+- 配置分两处，**都是显式加载，import 时零 I/O**：
+  - `crm_dbspec.py`（顶层静态契约）：`DB_SCHEMAS[任务名]` / `QUERY_SPECS[任务名]` /
+    `QUERY_MODES`，纯数据、不读 `.env`，写入侧建表与读取侧查询共用。
+  - `sftp_avl2db/config.py`（运行时）：`parse_dotenv()` / `load_values()` 解析项目根 `.env`，
+    `load_profiles()` 构造冻结的 `TaskProfileConfig`（`name` / `file_prefixes` / `sftp` /
+    `schema` / `parser` / `routing` / `num_tables` / `table_name_prefix` / `retention` /
+    `log_dir` / `state_dir` / `local_dir` / `db_dir` / `fetched_path` / `lock_path`）。
+- **不沿用项目总的 `config.yaml` / `config.py`**；运行时配置只在
+  `sftp_avl2db/config.py` 一处定义，静态契约只在 `crm_dbspec.py` 一处定义。
+- `services/data_query.py` 在模块加载时 `load_profiles()` 一次，从同一份
+  `TaskProfileConfig.db_dir` 取库目录（固定指向 `tasks/sqlite_db/{任务名}/`），
+  与写入侧路径一致，读写不再各算一套。
+- 静态契约的内容与校验：
   - `DB_SCHEMAS[任务名]`：`(列名, 类型)` 列表，即建表列定义，也是 `SELECT *` 结果的 `dict` 组装顺序；
-    两个任务脚本的 `DB_SCHEMA` 直接引用它，不再各写一份。
+    `TableSchema.from_profile()` 直接引用它，不再各写一份。
   - `QUERY_SPECS[任务名]`：在线查询声明（`mode` / `where` / `order_by` / `db_map` / `table_name` / `product_ids`）；
     `mode` 分多库单表 / 单库多表 / 单库单表三种形式（多库多表不存在），详见 `Missions_reader.md`。
-  - 二者在 `config.py` 导入时校验：`where` 列必须存在于 `DB_SCHEMAS`、
-    `db_map` 的库名必须存在于 `FILE_PREFIXES`、单库多表模式必须有 `NUM_TABLES` / `TABLE_NAME_PREFIX`、
+  - `crm_dbspec.validate_specs(profiles)` 显式校验：`where` 列必须存在于 `DB_SCHEMAS`、
+    `db_map` 的库名必须存在于 `file_prefixes`、单库多表模式必须有 `num_tables` / `table_name_prefix`、
     单库单表模式必须有 `table_name`，`mode` 不在三种形式内也直接抛 `ValueError`。
-- 优先级：**系统环境变量 > `.env`**；设置 `TASKS_ENV_FILE` 可指向其他 `.env` 路径。
+    写入侧 `load_profiles()` 与读取侧 `data_query` 各自调用一次；**import 时不再自动校验**。
+- 优先级：**系统环境变量 > `.env`**；设置 `TASKS_ENV_FILE` 可指向其他 `.env` 路径，
+  CLI 也可用 `--env` / `--project-root` 指定。
   `.env` 支持 `#` 注释、行内注释、`export`、`${VAR}` 插值、单/双引号；缺必需键会在启动时报错，不会静默连错服务器。
+  其他项目不带 `.env` 时用 `TaskProfileConfig.from_mapping({...})` 直接构造。
 - 分组：SFTP 公共 5 项（`SFTP_HOST/PORT/USERNAME/PASSWORD/REMOTE_PATH`），
   每个任务一组 `<业务前缀>_*`（前缀列表、批次大小、库/本地文件保留天数、轮询间隔；业务前缀见「任务命名」），
   控损另有 `NUM_TABLES`、`TABLE_NAME_PREFIX`。
@@ -77,7 +128,10 @@
 
   > 控损保留天数为 **3 天**，由 `.env` 的 `LOSS_CONTROL_DATA_EXPIRE_DAYS` 控制。
 - `.env` 含 SFTP 明文密码：仓库公开时建议加入 `.gitignore`，或部署时改用系统环境变量注入（不提交 `.env`）。
-- 本方案取代原待办「统一迁到 `config.yaml`」：不并入项目总配置，避免 tasks 与在线业务的配置耦合。
+- 本方案取代原待办「统一迁到 `config.yaml`」：不并入项目总配置，避免写入侧与在线业务的配置耦合。
+- `tests/fixtures/legacy_specs.json` 是旧 `tasks/config.py` 的**去敏感冻结快照**（不含密码），
+  用于回归锁定「配置逐字段不漂移」；`baseline/` 下 5 个脚本可从 pristine 副本恢复旧代码，
+  在零第三方依赖环境下复跑 golden 与阶段 2~5 的全量比对。
 
 ### 已有库目录迁移（改名后必做）
 
@@ -104,14 +158,14 @@ mv f09591_loss  loss_control
 - 主键自带索引，不再额外建 `(product_no, op_time)` 索引。
 - `REPLACE` 是后写覆盖先写。批量补跑历史文件按文件名日期**升序**执行（先旧后新）；
   常驻轮询按「昨天 → 今天」跑，天然符合。
-- 在线查询的表名、列名、分表路由键由 `services/data_query.py` 从同一份 `TASKS[...]` /
-  `DB_SCHEMAS` / `QUERY_SPECS` 派生，库路径见「配置」小节。
+- 在线查询的表名、列名、分表路由键由 `services/data_query.py` 从同一份
+  `PROFILES[任务名]` / `crm_dbspec.DB_SCHEMAS` / `QUERY_SPECS` 派生，库路径见「配置」小节。
 
 ---
 
 # 回捞商机（号卡 / 套餐 / 宽带）AVL 入库（F09554 / F09555 / F09556）
 
-进程：`tasks/task_opportunity_recall.py`；任务名 `opportunity_recall`。
+进程：`python -m sftp_avl2db --task opportunity_recall`；任务名 `opportunity_recall`。
 
 ## 文件日期与数据日期
 
@@ -149,7 +203,7 @@ mv f09591_loss  loss_control
 
 # 控损 AVL 入库（F09591）
 
-进程：`tasks/task_loss_control.py`；任务名 `loss_control`。
+进程：`python -m sftp_avl2db --task loss_control`；任务名 `loss_control`。
 
 ## 文件日期与数据日期
 
@@ -212,12 +266,12 @@ mv f09591_loss  loss_control
 
 | 进程 | 命令（项目根目录） | 职责 |
 |---|---|---|
-| SFTP 拉取 ×2 | `python -m tasks.task_xxx` | AVL → `tasks/sqlite_db/` |
+| SFTP 拉取 ×2 | `python -m sftp_avl2db --task xxx` | AVL → `tasks/sqlite_db/` |
 | 维表写入 ×1 | `python -m excel2consts.dim_watcher` | xlsx → `dimensions.db` |
 | 在线 API ×1 | `python main.py` | 只读业务库与维表；另按阈值写调用量到 `log/call_sum.db`（见 `Missions_reader.md`） |
 
 **部署时 4 个进程都要起**。`main.py` 不含任何定时任务，只有一个 `lifespan` 生命周期钩子（见 `Missions_reader.md`），除调用量统计外不写业务库/维表；
-`dim_watcher` 不依赖 `.env` / `tasks/config.py` / 项目总 `config.yaml`，自包含于 `excel2consts/`。
+`dim_watcher` 不依赖 `.env` / `crm_dbspec.py` / `sftp_avl2db/config.py` / 项目总 `config.yaml`，自包含于 `excel2consts/`。
 
 ## 文件清单（写入侧）
 
@@ -348,7 +402,7 @@ python -m excel2consts.dim_watcher --once --force # 忽略指纹强制重导并�
 python -m excel2consts.dim_watcher --config /path/to/registry.json --interval 300
 ```
 
-生产建议 systemd/nohup 起一个常驻进程，与 `tasks/` 两个任务并列。
+生产建议 systemd/nohup 起一个常驻进程，与 `sftp_avl2db` 的两个拉取任务并列。
 `--force` 通常只配合 `--once` 使用。
 
 ### 单轮流程（逐表执行）

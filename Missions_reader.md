@@ -4,15 +4,19 @@
 > 在线 API（`python main.py`）无任何定时任务，只有一个 `lifespan` 生命周期钩子
 > （启动时恢复调用量基数、关闭时落库，见「调用量统计」）；
 > 业务库与维表一律只读 SQLite，唯一写入是调用量统计（本地 `log/call_sum.db`）。
-> 两个任务的业务命名与配置键前缀见 `Missions_writer.md` 的「任务命名」。
+> 两个任务的业务命名与配置键前缀见 `Missions_writer.md` 的「任务命名」；
+> 写入侧代码包与组件分层见该文的「组件分层与独立复用（`sftp_avl2db/`）」。
 
 ## 架构与数据流向
 
 ```
 tasks/sqlite_db/{任务名}/*.db ──→ services/data_query.py ───────┐
-                                    ↑ 按 TASKS[...] + QUERY_SPECS 派发  ├─→ main.py（路由）→ services/（重组）→ output_script
+                                    ↑ PROFILES[...] + QUERY_SPECS 派发 ├─→ main.py（路由）→ services/（重组）→ output_script
 dimensions.db ──→ dim_reader.py ──→ dim_transform ───────────────┘
 ```
+
+> `tasks/` 是**运行时数据目录**（由 `sftp_avl2db` 写入侧产出：`log/` `state/`
+> `files/` `sqlite_db/`），代码本身在 `sftp_avl2db/`；在线侧只读这些库。
 
 | 进程 | 数量 | 职责 |
 |---|---|---|
@@ -558,25 +562,36 @@ import 时 `src/log_util.py` 会按既有行为创建 `log/` 目录与当日日�
 ## 业务库读取（`services/data_query.py`）
 
 两个任务原先各有一个 `data_query.py`，逻辑重复、改字段要同步两处。现在合并为
-**一个模块 + 一份配置**：查询的库目录、文件前缀、分表数、表列名、SQL 条件全部由
-`tasks/config.py` 派生，`services/data_query.py` 只负责按任务名派发和执行。
+**一个模块 + 两处配置定义**：库目录、文件前缀、分表数来自运行时配置
+`sftp_avl2db.config.load_profiles()` 构造的 `TaskProfileConfig`；表列名、SQL 条件与
+查询模式来自顶层静态契约 `crm_dbspec.py`。`services/data_query.py` 只负责按任务名
+派发和执行，`main.py` 一行未改。
 
 ### 配置来源（与写入侧共用）
 
 | 配置 | 位置 | 在线读取侧用途 |
 |---|---|---|
-| `.env` 各任务分组的 `*_FILE_PREFIXES` / `*_NUM_TABLES` / `*_TABLE_NAME_PREFIX`（业务前缀见 `Missions_writer.md`） | `TASKS[任务名]` | 库文件名、分表数、表名前缀；改 `.env` 读写两侧同时生效 |
-| `DB_SCHEMAS[任务名]` | `tasks/config.py` | `(列名, 类型)` 列表，既是写入侧建表定义，也是 `SELECT *` 结果的 `dict` 组装顺序 |
-| `QUERY_SPECS[任务名]` | `tasks/config.py` | 查询模式、条件列、排序、业务 ID 映射 |
-| `db_dir(任务名)` | `tasks/config.py` | 固定指向 `tasks/sqlite_db/{任务名}/`，与写入路径一致 |
+| `.env` 各任务分组的 `*_FILE_PREFIXES` / `*_NUM_TABLES` / `*_TABLE_NAME_PREFIX`（业务前缀见 `Missions_writer.md`） | `PROFILES[任务名]`（`TaskProfileConfig`） | 库文件名、分表数、表名前缀；改 `.env` 读写两侧同时生效 |
+| `DB_SCHEMAS[任务名]` | `crm_dbspec.py` | `(列名, 类型)` 列表，既是写入侧建表定义，也是 `SELECT *` 结果的 `dict` 组装顺序 |
+| `QUERY_SPECS[任务名]` | `crm_dbspec.py` | 查询模式、条件列、排序、业务 ID 映射 |
+| `TaskProfileConfig.db_dir` | `sftp_avl2db/config.py` | 固定指向 `tasks/sqlite_db/{任务名}/`，与写入路径一致 |
 
-`TASKS` / `DB_SCHEMAS` / `QUERY_SPECS` 三者 key 完全一致（`opportunity_recall` /
-`loss_control`），导入时校验列与前缀的合法性，漂移即抛 `ValueError`。
+`PROFILES`（运行时）/ `DB_SCHEMAS` / `QUERY_SPECS`（静态）三者 key 完全一致
+（`opportunity_recall` / `loss_control`）。`data_query` 在模块加载时显式调用
+`load_profiles()` + `validate_specs(PROFILES)` 校验列与前缀的合法性，漂移即抛
+`ValueError`；写入侧 `load_profiles()` 同样会校验。**import 配置模块本身零 I/O**，
+不再在模块导入时自动读 `.env` 或校验。
 
 ### `mode` 的三种库表形式
 
-`mode` 按「库数量 × 表数量」划分，枚举写在 `tasks/config.py` 的 `QUERY_MODES`。
-**多库多表场景不存在，不在支持范围内**，配置里出现任何其它值会在导入时抛 `ValueError`。
+`mode` 按「库数量 × 表数量」划分，枚举写在 `crm_dbspec.py` 的 `QUERY_MODES`。
+**多库多表场景不存在，不在支持范围内**，配置里出现任何其它值会在
+`validate_specs()` 时抛 `ValueError`。
+
+> 写入侧 `sftp_avl2db/sink/router.py` 的 `TableLayout` 用
+> `per_prefix` / `crc32_shards` / `fixed_table` 三种 `routing` 与这里的三种 `mode`
+> 一一对应；分表口径统一为 `zlib.crc32(product_no.encode("utf-8")) % NUM_TABLES`，
+> 改任一侧都要同步另一侧。
 
 | mode | 库表形式 | 库文件 | 表名 | 专用字段 |
 |---|---|---|---|---|
@@ -605,7 +620,7 @@ import 时 `src/log_util.py` 会按既有行为创建 `log/` 目录与当日日�
 
 ### 两个任务的解析结果
 
-| 任务名（= `TASKS` key） | mode | 库文件 | 表名 | 条件与排序 | 返回列 |
+| 任务名（= `PROFILES` / `QUERY_SPECS` key） | mode | 库文件 | 表名 | 条件与排序 | 返回列 |
 |---|---|---|---|---|---|
 | `opportunity_recall` | `multi_db_single_table` | `tasks/sqlite_db/opportunity_recall/{库名}.db` | `data_{库名}`，库名来自 `db_map` | `product_no = telnum` + `ORDER BY op_time DESC` | 12 列（op_time…city_id） |
 | `loss_control` | `single_db_multi_table` | `tasks/sqlite_db/loss_control/F09591.db` | `data_F09591_{crc32 % NUM_TABLES}` | `product_no = telnum` + `ORDER BY op_time DESC` | 5 列（op_time, user_id, product_no, city_id, strategy_name） |
@@ -623,13 +638,15 @@ import 时 `src/log_util.py` 会按既有行为创建 `log/` 目录与当日日�
 
 ### 加任务或改字段
 
-- 改列名/列顺序 → 只改 `DB_SCHEMAS[任务名]`（写入侧建表与读取侧 `dict` 组装同时生效）。
-- 改条件或排序 → 只改 `QUERY_SPECS[任务名]`。
+- 改列名/列顺序 → 只改 `crm_dbspec.DB_SCHEMAS[任务名]`（写入侧建表与读取侧 `dict` 组装同时生效）。
+- 改条件或排序 → 只改 `crm_dbspec.QUERY_SPECS[任务名]`。
 - 加分表数/换表名前缀/换文件前缀 → 改 `.env` 对应业务前缀分组的键，读写两侧同时生效。
 - 换库表形式 → 改 `QUERY_SPECS[任务名]["mode"]` 并补齐对应的专用字段
   （多库单表要 `db_map`、单库单表要 `table_name`、单库多表用 `.env` 分表配置），
-  三种形式的分支已经在 `services/data_query.py::_resolve()` 里实现。
-- 新增一个任务 → 在 `TASKS` / `DB_SCHEMAS` / `QUERY_SPECS` 各加一项并选好 `mode`，
+  三种形式的分支已经在 `services/data_query.py::_resolve()` 里实现，
+  写入侧 `sftp_avl2db/sink/router.py` 也已有对应的三种 `routing`。
+- 新增一个任务 → 在 `crm_dbspec.DB_SCHEMAS` / `QUERY_SPECS` 与
+  `sftp_avl2db/config.py` 的 profile 定义各加一项并选好 `mode` / `routing`，
   `main.py` 用 `query(任务名, ...)` 调用即可，无需新增查询模块。
 
 主键、分表数与库表定义的完整口径见 `Missions_writer.md`。
@@ -916,11 +933,14 @@ curl "http://host:8989/api/callStat?month=2026-11"
 - **维表读取次数**：打桩 `load_product_selling_point()`，一次请求应为 **1** 次，
   与列表里产品个数无关；三个构造点都显式接收同一份 dict。
 - `services/data_query.py`、两个 spec 子类、`dim_reader` 均可独立导入。
-- `TASKS` / `DB_SCHEMAS` / `QUERY_SPECS` 三者 key 一致；改 `.env` 的
-  `LOSS_CONTROL_NUM_TABLES` 后，`get_loss_control_latest()` 解析出的表名后缀同步变化。
+- `PROFILES` / `DB_SCHEMAS` / `QUERY_SPECS` 三者 key 一致；改 `.env` 的
+  `LOSS_CONTROL_NUM_TABLES` 后，`get_loss_control_latest()` 解析出的表名后缀同步变化，
+  写入侧 `Crc32ShardLayout` 的分表数也应同步。
 - `QUERY_MODES` 恰为三种；`_resolve()` 对两个任务分别解析出
   `{库名}.db` + `data_{库名}`、`F09591.db` + `data_F09591_N`。
-  把 `mode` 改成多库多表等非法值，import `tasks.config` 应抛 `ValueError`。
+  把 `mode` 改成多库多表等非法值，调用 `crm_dbspec.validate_specs(load_profiles())` 应抛 `ValueError`。
+- `import sftp_avl2db` 不读 `.env`、不加载 paramiko / loguru；
+  `python -m sftp_avl2db --help` 在空目录下可运行。
 - `app.router.on_startup` / `on_shutdown` 均为 0，`router.lifespan_context` 已设置
   （确认走 lifespan 而非 `on_event`）；startup 日志有「调用量统计已恢复」。
 - 把 `call_stat.flush_threshold` 设为 3：连续 3 次请求后才写一次 `call_sum.db`；
