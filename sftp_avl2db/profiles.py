@@ -8,7 +8,7 @@
                       logger=InMemoryLogger())            # 不装 loguru
     rc = task.runner.serve_forever(only_date="20261110")
 
-``build_all()`` 供 CLI 一次性加载仓库自带的两个任务（显式读 ``.env``）。
+``build_all()`` 供 CLI 一次性加载包内 ``.env`` 声明的两个任务。
 """
 from __future__ import annotations
 
@@ -79,9 +79,12 @@ def build_task(profile: TaskProfileConfig, *, logger=None, local_dir=None,
                          layout, sink, runner)
 
 
-def build_all(env_path=None, project_root=None, **kwargs) -> dict[str, AssembledTask]:
-    """加载仓库自带的两个任务并逐个装配（CLI 用）。"""
-    profiles = load_profiles(env_path=env_path, project_root=project_root)
+def build_all(runtime_dir=None, **kwargs) -> dict[str, AssembledTask]:
+    """加载包内 ``.env`` 声明的两个任务并逐个装配（CLI 用）。
+
+    ``runtime_dir`` 只改产出位置，不改配置来源；不传即包内 ``runtime/``。
+    """
+    profiles = load_profiles(runtime_dir=runtime_dir)
     return {name: build_task(profile, **kwargs)
             for name, profile in profiles.items()}
 

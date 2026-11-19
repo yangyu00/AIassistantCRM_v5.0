@@ -53,7 +53,7 @@ DB_SCHEMAS = {
 #
 # mode 是库表形式的唯一真源：TaskProfileConfig.mode 由 load_profiles() 从这里派生，
 # 写入侧 build_layout() 与读取侧 _resolve() 都按同一组值分支；validate_specs()
-# 会拦住 from_mapping() 手填导致的漂移。
+# 会拦住配置装配时手填 mode 导致的漂移。
 #
 #   db_map        : 多库单表专用，product_id → 库名（即 {库名}.db）；
 #                   表名按固定约定 data_{库名}，与写入侧建表一致
@@ -100,8 +100,8 @@ def query_spec(task_name: str) -> dict[str, Any]:
 def validate_specs(profiles: Mapping[str, Any]) -> None:
     """配置漂移在启动时暴露，避免读写两侧悄悄用错表 / 列。
 
-    运行时配置由参数 ``profiles`` 传入，因此其他项目用 ``from_mapping()``
-    自建的 profile 也能接受同一套校验。
+    运行时配置由参数 ``profiles`` 传入，因此显式构造的 profile 也接受
+    同一套校验。
 
     :raises ValueError: key 不一致 / where 列不存在 / mode 非法 /
                        多库单表的库名不在前缀列表 / 单库多表缺分表声明 /
@@ -140,7 +140,7 @@ def validate_specs(profiles: Mapping[str, Any]) -> None:
                 raise ValueError(f"{name}: 单库单表模式需要 table_name（固定表名）")
 
         # 放在既有校验之后，保证「非法 mode / 缺分表配置」等错误仍先暴露。
-        # load_profiles() 派生出的 profile 恒一致；这里拦的是 from_mapping()
+        # load_profiles() 派生出的 profile 恒一致；这里拦的是配置装配时
         # 手填 mode 与 QUERY_SPECS 漂移的情况。
         if conf.mode != mode:
             raise ValueError(

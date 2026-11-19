@@ -4,7 +4,7 @@
 > 三个可独立复用组件各有一份 `Readme.md`（用法、配置、流程、不变量与降级）：
 > - [`IOP/Readme.md`](IOP/Readme.md)（运行参数改同目录的 `IOP/.env`）
 > - [`local_excel2db/Readme.md`](local_excel2db/Readme.md)
-> - [`sftp_avl2db/Readme.md`](sftp_avl2db/Readme.md)
+> - [`sftp_avl2db/Readme.md`](sftp_avl2db/Readme.md)（运行参数改 `sftp_avl2db/.env`，产出落在包内 `runtime/`）
 
 > 原 `Missions_writer.md`（488 行）与 `Missions_reader.md`（1098 行）已按职责拆分：三个包的说明进各自目录，在线业务与全局视角留在本文件。**那次拆分只整理文档**，代码、配置、行为均未改动。
 
@@ -12,18 +12,19 @@
 > `main.py` 如何调用与编排组件——IOP 客户端的进程级共享、按业务决定是否查询、
 > 标签进入产品对象的路径——统一记在本文件「请求处理与路由」，不留在模块文档里。
 
-本仓库由 **4 个进程**组成：2 个 `sftp_avl2db` 拉取任务、1 个 `local_excel2db` 维表写入、1 个 `main.py` 在线 API；在线侧对业务库与维表一律只读 SQLite（唯一写入是调用量统计 `log/call_sum.db`）。`tasks/` 是 `sftp_avl2db` 产出的运行时数据目录，代码本身在包内。库未就绪时 API 按「无业务记录 / 无维表」降级，不会 500。
+本仓库由 **4 个进程**组成：2 个 `sftp_avl2db` 拉取任务、1 个 `local_excel2db` 维表写入、1 个 `main.py` 在线 API；在线侧对业务库与维表一律只读 SQLite（唯一写入是调用量统计 `log/call_sum.db`）。`sftp_avl2db/runtime/` 是写入侧产出的运行时数据目录，与配置和代码同在包内、用 `__file__` 定位，与启动 CWD 无关。库未就绪时 API 按「无业务记录 / 无维表」降级，不会 500。
 
 ## 架构与数据流向
 
 ```
-tasks/sqlite_db/{任务名}/*.db ──→ services/data_query.py ───────┐
-                                    ↑ PROFILES[...] + QUERY_SPECS 派发 ├─→ main.py（路由）→ services/（重组）→ output_script
-dimensions.db ──→ reader.DimensionReader ──→ transform ────────┘
+sftp_avl2db/runtime/sqlite_db/{任务名}/*.db ──→ services/data_query.py ─┐
+                                    ↑ PROFILES[...] + QUERY_SPECS 派发   ├─→ main.py（路由）→ services/（重组）→ output_script
+dimensions.db ──→ reader.DimensionReader ──→ transform ─────────────────┘
 ```
 
-> `tasks/` 是**运行时数据目录**（由 `sftp_avl2db` 写入侧产出：`log/` `state/`
-> `files/` `sqlite_db/`），代码本身在 `sftp_avl2db/`；在线侧只读这些库。
+> `sftp_avl2db/runtime/` 是**运行时数据目录**（写入侧产出：`log/` `state/`
+> `files/` `sqlite_db/`），同目录还有唯一的 `.env`；在线侧只读这些库。
+> 部署时不要整目录覆盖 `sftp_avl2db/`，可把 `runtime/` 做成指向数据盘的软链。
 
 | 进程 | 数量 | 职责 |
 |---|---|---|

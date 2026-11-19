@@ -1,18 +1,25 @@
 # -*- coding: utf-8 -*-
 """``sftp_avl2db``：SFTP AVL → SQLite 入库包。
 
-**import 本包零 I/O、零第三方依赖**：不读 ``.env``、不连网络、不建目录、
-不写日志、不改全局 logger。配置只在显式调用 ``load_profiles()`` 时加载。
+**配置与运行时产出都在包内，都用 ``__file__`` 定位，与 CWD 无关**：
 
-    from sftp_avl2db import TaskProfileConfig
-    profile = TaskProfileConfig.from_mapping({...})       # 其他项目：不带 .env
-    profiles = load_profiles()                            # 本仓库：显式加载
+- ``sftp_avl2db/.env``：唯一配置来源，改完重启进程；不读系统环境变量
+- ``sftp_avl2db/runtime/``：``sqlite_db`` / ``state`` / ``files`` / ``log``，
+  写入侧产出、在线侧只读；可换成指向数据盘的软链
 
-    from sftp_avl2db import build_task
-    task = build_task(profiles["loss_control"])
+唯一配置入口是 ``load_profiles()``：
+
+    from sftp_avl2db import load_profiles, build_task
+    profile = load_profiles()["loss_control"]     # 不传参 = 包内默认，读写同源
+    task = build_task(profile)
     task.runner.serve_forever(only_date="20261110")
 
-    python -m sftp_avl2db --task loss_control --date 20261110
+把包 copy 到别的项目时，请**排除 ``.env`` 与 ``runtime/``**，从
+``.env.example`` 起步，避免把 A 项目的凭据和业务库一起带走。
+
+``import sftp_avl2db`` 零 I/O、零第三方依赖：不读 ``.env``、不连网络、
+不建目录、不写日志、不改全局 logger。配置只在显式调用 ``load_profiles()``
+时加载。
 
 五个组件层可单独 import、单独测试、单独替换：
 
@@ -30,16 +37,13 @@
 """
 from . import dbspec                      # noqa: E402  (纯静态契约)
 from .config import (
-    RUNTIME_DIRNAME,
+    ENV_PATH,
+    RUNTIME_DIR,
     RetentionConfig,
     SftpConfig,
     TaskProfileConfig,
-    default_env_path,
-    default_project_root,
     iter_remote_names,
     load_profiles,
-    load_values,
-    parse_dotenv,
 )
 from .protocols import (
     ImportResult,
@@ -92,10 +96,9 @@ def __dir__():
 
 
 __all__ = [
-    # 配置
-    "dbspec", "RUNTIME_DIRNAME", "SftpConfig", "RetentionConfig", "TaskProfileConfig",
-    "load_profiles", "load_values", "parse_dotenv",
-    "default_project_root", "default_env_path", "iter_remote_names",
+    # 配置（唯一入口 load_profiles()，其余是它产出的冻结对象与常量）
+    "dbspec", "ENV_PATH", "RUNTIME_DIR", "SftpConfig", "RetentionConfig",
+    "TaskProfileConfig", "load_profiles", "iter_remote_names",
     # 契约
     "ParseStats", "ImportResult", "RemoteSource", "RecordParser",
     "TableLayout", "RecordSink", "StateStore",

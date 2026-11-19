@@ -13,8 +13,11 @@
 注入型选项（仅用于离线运行 / 单测，不改变生产默认）：
 
     --local-dir DIR          用本地目录当远程源，不连 SFTP、不需要 paramiko
-    --env PATH / --project-root PATH
+    --runtime-dir DIR       把运行时产出隔离到该目录，不碰包内 runtime/
     --max-rounds N          常驻模式最多跑 N 轮后退出
+
+配置只认包内 ``sftp_avl2db/.env``；``--runtime-dir`` 只改产出位置，
+不改配置来源。
 
 ``main()`` **返回 int 而不调用 ``sys.exit``**，方便单测直接断言退出码；
 真正的进程退出在 ``__main__.py`` 里做。
@@ -37,8 +40,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
                    help="单次模式：只拉取指定日期 YYYYMMDD 后退出；不传则常驻轮询")
     p.add_argument("--force-reload", action="store_true",
                    help="本地已存在 / 已在清单中的文件也强制重新下载并入库")
-    p.add_argument("--env", default=None, help="指定 .env 路径（覆盖 TASKS_ENV_FILE）")
-    p.add_argument("--project-root", default=None, help="项目根目录（配置路径派生用）")
+    p.add_argument("--runtime-dir", default=None,
+                   help="运行时产出目录（默认包内 runtime/；离线复跑可指到临时目录）")
     p.add_argument("--local-dir", default=None,
                    help="离线源目录：把该目录当远程，不连 SFTP")
     p.add_argument("--max-rounds", type=int, default=None,
@@ -60,8 +63,7 @@ def main(argv=None, *, profiles=None, logger=None, sleeper=None, now=None) -> in
 
     try:
         if profiles is None:
-            profiles = load_profiles(env_path=args.env,
-                                     project_root=args.project_root)
+            profiles = load_profiles(runtime_dir=args.runtime_dir)
         if args.task not in profiles:
             print(f"ERROR:: 未知任务 {args.task}；可选：{', '.join(sorted(profiles))}",
                   flush=True)

@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """在线业务库只读查询（统一入口）。
 
-库目录 / 文件前缀 / 分表数取自运行时配置 ``sftp_avl2db.config.load_profiles()``
-构造的 ``TaskProfileConfig``；表结构与查询声明取自顶层静态契约
-``sftp_avl2db.dbspec``。写入侧与读取侧共用这两处定义，本模块不含硬编码的表名/列名/路径。
+库目录 / 文件前缀 / 分表数取自 ``sftp_avl2db`` 包内 ``.env`` 经
+``load_profiles()`` 构造的 ``TaskProfileConfig``（库落在包内 ``runtime/``）；
+表结构与查询声明取自顶层静态契约 ``sftp_avl2db.dbspec``。写入侧与读取侧共用
+这两处定义，本模块不含硬编码的表名/列名/路径。
 新增或调整任务只需改 ``sftp_avl2db/dbspec.py`` 的 DB_SCHEMAS / QUERY_SPECS 与配置声明。
 
 ``QUERY_SPECS[任务名]["mode"]`` 决定库表形式，共三种：
@@ -22,8 +23,8 @@ import zlib
 from sftp_avl2db.dbspec import QUERY_SPECS, db_columns, query_spec, validate_specs
 from sftp_avl2db.config import load_profiles
 
-# 在线侧启动时显式加载一次运行时配置（与旧 tasks/config.py 模块级加载等价），
-# 并显式跑配置漂移校验；写入侧从同一份 profile 取值，读写不会各算一套。
+# 在线侧启动时显式加载一次包内 sftp_avl2db/.env（不传 runtime_dir，与写入侧
+# 默认同源），并显式跑配置漂移校验；读写两侧不会各算一套路径。
 PROFILES = load_profiles()
 validate_specs(PROFILES)
 

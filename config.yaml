@@ -15,11 +15,6 @@ call_stat:
   flush_threshold: 100
   url: "/api/callStat"
 
-sftp:
-  host: "134.80.199.252"
-  username: "wangsi"
-  port: 22
-  password: "<REDACTED_填入真实密码>"
+# SFTP 连接配置已移入 sftp_avl2db/.env（包内唯一来源），此处不再保留。
 
-
-  #  14上启动：docker run -itd --name crm4 -p 8989:8989 -v /app/lz/pythonproject/AIAssistant/AIassistantCRM_v4.0:/home/AIassistantCRM aicrm:v2 python /home/AIassistantCRM/main.py
+# 14上启动：docker run -itd --name crm4 -p 8989:8989 -v /app/lz/pythonproject/AIAssistant/AIassistantCRM_v4.0:/home/AIassistantCRM aicrm:v2 python /home/AIassistantCRM/main.py
