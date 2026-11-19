@@ -1,11 +1,9 @@
 # 定时数据更新任务说明（SFTP AVL 拉取 → SQLite 入库）
 
-> 2 个任务各自独立进程运行，**代码在 `sftp_avl2db/`**，运行时数据目录仍是 `tasks/`
+> 2 个任务各自独立进程运行，**代码在 `sftp_avl2db/`**，运行时数据目录为 `tasks/`
 > （`log/` `state/` `files/` `sqlite_db/`）；在线业务（FastAPI）对业务库与维表只读 SQLite
 > （唯一例外是调用量统计，见 `Missions_reader.md`）。
-> 原随 `main.py` 启动的拉取实现、原先分散的 `sftp_workdir_*/data_query.py`、
-> 以及 `tasks/*.py` 的旧任务代码壳均已删除；在线查询统一由
-> `services/data_query.py` 按 `crm_dbspec.py` 的静态契约 +
+> 在线查询由 `services/data_query.py` 按 `sftp_avl2db/dbspec.py` 的静态契约 +
 > `sftp_avl2db.config.load_profiles()` 的运行时配置派发。
 
 > 在线业务（FastAPI）的读取与重组逻辑见 `Missions_reader.md`。
@@ -13,7 +11,7 @@
 ## 任务命名
 
 两个任务按业务含义命名，不再用「AVL 前缀 + 缩写」组合。同一个英文名同时作为
-`TaskProfileConfig.name` / `crm_dbspec.DB_SCHEMAS` / `QUERY_SPECS` 的 key、
+`TaskProfileConfig.name` / `sftp_avl2db.dbspec.DB_SCHEMAS` / `QUERY_SPECS` 的 key、
 `tasks/sqlite_db/{任务名}/` 库目录名、`.env` 键前缀、日志与状态文件名前缀。
 
 | 中文业务名 | 任务 key | `.env` 键前缀 | 启动命令（`--task` 值） | AVL 前缀 |
@@ -46,7 +44,7 @@
    python -m sftp_avl2db --task loss_control --date 20261110 --force-reload
    ```
    `--date YYYYMMDD` 单次模式（拉完指定**文件名日期**后退出，不传则常驻轮询）；
-   `--force-reload` 强制重下重入库。旧命令 `python -m tasks.task_xxx` 已随代码壳删除而失效。
+   `--force-reload` 强制重下重入库。
    离线复跑 / 验证可加 `--local-dir io_samples`（把本地目录当远程，不连 SFTP）、
    `--env` / `--project-root` 指定配置与运行时根目录。
    生产建议用 systemd/nohup 各起一个常驻进程；单机单实例（`tasks/state/{任务名}.lock`）。
@@ -60,9 +58,9 @@
 
 | 层 | 模块 | 主要类 / 函数 | 第三方依赖 |
 |---|---|---|---|
-| 配置 | `sftp_avl2db/config.py` + 顶层 `crm_dbspec.py` | `TaskProfileConfig`（冻结 dataclass）、`load_profiles()`、`from_mapping()`、`DB_SCHEMAS` / `QUERY_SPECS` / `QUERY_MODES` / `validate_specs()` | 无 |
+| 配置 | `sftp_avl2db/config.py` + 包内 `sftp_avl2db/dbspec.py` | `TaskProfileConfig`（冻结 dataclass）、`load_profiles()`、`from_mapping()`、`DB_SCHEMAS` / `QUERY_SPECS` / `QUERY_MODES` / `validate_specs()` | 无 |
 | 解析 | `sftp_avl2db/parsers/` | `FlatColumnParser` / `ContinuationParser`（生成器 `yield`，不装全量记录）、`build_parser()` | 无 |
-| 写入 | `sftp_avl2db/sink/` | `TableSchema`（DDL / `INSERT OR REPLACE` / 过期 DELETE）、`TableLayout`（`per_prefix` / `crc32_shards` / `fixed_table`）、`SqliteSink`（建表 / 分桶分批 / 过期清理）、`build_sink()` | 仅标准库 `sqlite3` |
+| 写入 | `sftp_avl2db/sink/` | `TableSchema`（DDL / `INSERT OR REPLACE` / 过期 DELETE）、`TableLayout`（协议 + `PerPrefixLayout` / `Crc32ShardLayout` / `FixedTableLayout`，按 `mode` 分派）、`SqliteSink`（建表 / 分桶分批 / 过期清理）、`build_layout()` / `build_sink()` | 仅标准库 `sqlite3` |
 | I/O | `sftp_avl2db/remote.py` / `state.py` / `logging.py` | `SftpRemoteSource` / `LocalDirRemoteSource`、`FetchedManifest` / `SingleInstanceLock`、`TaskLogger` / `InMemoryLogger` | 延迟导入；离线组件零依赖 |
 | 编排 | `sftp_avl2db/runner.py` / `profiles.py` / `cli.py` | `Avl2DbRunner`（`import_one` / `run_once_for_date` / `serve_forever` / `cleanup_expired`）、`build_task()` | 无 |
 
@@ -74,27 +72,27 @@ p = TaskProfileConfig.from_mapping({...})          # 不需要 .env
 layout = build_layout(p)
 sink = build_sink(p, layout=layout)
 sink.ensure_schema()
-sink.write("F09591xxx.AVL", build_parser(p).parse(path), router=layout)
+sink.write("F09591xxx.AVL", build_parser(p).parse(path), layout=layout)
 ```
 
-两段「看起来像 bug」的既有行为刻意保真，不要顺手优化：商机编码探测带
-`errors="ignore"` 实际恒走 utf-8；控损 `_strip_eol()` 只剥**一个**反斜杠，
-且 `>=5` 列时丢弃第 6 列起。分表口径 `zlib.crc32(product_no) % NUM_TABLES`
-必须与读取侧 `services/data_query.py::_resolve()` 一致。
+以下行为刻意保留，不要顺手优化：商机编码探测带 `errors="ignore"` 实际恒走
+utf-8；控损 `_strip_eol()` 只剥**一个**反斜杠，且 `>=5` 列时丢弃第 6 列起。
+分表口径 `zlib.crc32(product_no) % NUM_TABLES` 必须与读取侧
+`services/data_query.py::_resolve()` 一致。
 
 ---
 
 ## 配置
 
 - 配置分两处，**都是显式加载，import 时零 I/O**：
-  - `crm_dbspec.py`（顶层静态契约）：`DB_SCHEMAS[任务名]` / `QUERY_SPECS[任务名]` /
+  - `sftp_avl2db/dbspec.py`（包内静态契约）：`DB_SCHEMAS[任务名]` / `QUERY_SPECS[任务名]` /
     `QUERY_MODES`，纯数据、不读 `.env`，写入侧建表与读取侧查询共用。
   - `sftp_avl2db/config.py`（运行时）：`parse_dotenv()` / `load_values()` 解析项目根 `.env`，
     `load_profiles()` 构造冻结的 `TaskProfileConfig`（`name` / `file_prefixes` / `sftp` /
-    `schema` / `parser` / `routing` / `num_tables` / `table_name_prefix` / `retention` /
+    `schema` / `parser` / `mode` / `num_tables` / `table_name_prefix` / `retention` /
     `log_dir` / `state_dir` / `local_dir` / `db_dir` / `fetched_path` / `lock_path`）。
 - **不沿用项目总的 `config.yaml` / `config.py`**；运行时配置只在
-  `sftp_avl2db/config.py` 一处定义，静态契约只在 `crm_dbspec.py` 一处定义。
+  `sftp_avl2db/config.py` 一处定义，静态契约只在 `sftp_avl2db/dbspec.py` 一处定义。
 - `services/data_query.py` 在模块加载时 `load_profiles()` 一次，从同一份
   `TaskProfileConfig.db_dir` 取库目录（固定指向 `tasks/sqlite_db/{任务名}/`），
   与写入侧路径一致，读写不再各算一套。
@@ -103,9 +101,12 @@ sink.write("F09591xxx.AVL", build_parser(p).parse(path), router=layout)
     `TableSchema.from_profile()` 直接引用它，不再各写一份。
   - `QUERY_SPECS[任务名]`：在线查询声明（`mode` / `where` / `order_by` / `db_map` / `table_name` / `product_ids`）；
     `mode` 分多库单表 / 单库多表 / 单库单表三种形式（多库多表不存在），详见 `Missions_reader.md`。
-  - `crm_dbspec.validate_specs(profiles)` 显式校验：`where` 列必须存在于 `DB_SCHEMAS`、
+    **它是库表形式的唯一真源**：`TaskProfileConfig.mode` 由 `load_profiles()` 从这里派生，
+    写入侧 `build_layout()` 与读取侧 `_resolve()` 按同一组值分支，不再有第二套名字。
+  - `sftp_avl2db.dbspec.validate_specs(profiles)` 显式校验：`where` 列必须存在于 `DB_SCHEMAS`、
     `db_map` 的库名必须存在于 `file_prefixes`、单库多表模式必须有 `num_tables` / `table_name_prefix`、
-    单库单表模式必须有 `table_name`，`mode` 不在三种形式内也直接抛 `ValueError`。
+    单库单表模式必须有 `table_name`，`mode` 不在三种形式内也直接抛 `ValueError`；
+    另外校验 `profile.mode` 与 `QUERY_SPECS[].mode` 一致，拦住 `from_mapping()` 手填漂移。
     写入侧 `load_profiles()` 与读取侧 `data_query` 各自调用一次；**import 时不再自动校验**。
 - 优先级：**系统环境变量 > `.env`**；设置 `TASKS_ENV_FILE` 可指向其他 `.env` 路径，
   CLI 也可用 `--env` / `--project-root` 指定。
@@ -128,26 +129,10 @@ sink.write("F09591xxx.AVL", build_parser(p).parse(path), router=layout)
 
   > 控损保留天数为 **3 天**，由 `.env` 的 `LOSS_CONTROL_DATA_EXPIRE_DAYS` 控制。
 - `.env` 含 SFTP 明文密码：仓库公开时建议加入 `.gitignore`，或部署时改用系统环境变量注入（不提交 `.env`）。
-- 本方案取代原待办「统一迁到 `config.yaml`」：不并入项目总配置，避免写入侧与在线业务的配置耦合。
-- `tests/fixtures/legacy_specs.json` 是旧 `tasks/config.py` 的**去敏感冻结快照**（不含密码），
-  用于回归锁定「配置逐字段不漂移」；`baseline/` 下 5 个脚本可从 pristine 副本恢复旧代码，
-  在零第三方依赖环境下复跑 golden 与阶段 2~5 的全量比对。
-
-### 已有库目录迁移（改名后必做）
-
-任务 key 同时是 `tasks/sqlite_db/{任务名}/` 的目录名，改名后**不兼容旧目录**。
-部署到已有数据的机器时，先停掉 2 个任务进程，把旧目录搬成新名再启动：
-
-```bash
-cd tasks/sqlite_db
-mv f09554_opp   opportunity_recall
-mv f09591_loss  loss_control
-```
-
-`tasks/files/` 下的本地 AVL 目录同理，避免重新下载。
-`tasks/state/*.fetched` 建议一并改名（否则新 key 从空清单开始，会重复拉取并
-覆盖入库一次，数据仍正确但多跑一轮）；`.lock` 无需搬，启动时按新 key 重新创建。
-日志只影响历史归档。`main.py` 与 `services/data_query.py` 只读库，不依赖旧目录名。
+- 运行时配置不并入项目总 `config.yaml`，避免写入侧与在线业务的配置耦合。
+- `tests/fixtures/legacy_specs.json` 是**去敏感的配置冻结快照**（不含密码），
+  用于回归锁定「配置逐字段不漂移」；交付包 `baseline/` 下的脚本可在零第三方
+  依赖环境下复跑 golden 与全量库表比对。
 
 ---
 
@@ -159,7 +144,7 @@ mv f09591_loss  loss_control
 - `REPLACE` 是后写覆盖先写。批量补跑历史文件按文件名日期**升序**执行（先旧后新）；
   常驻轮询按「昨天 → 今天」跑，天然符合。
 - 在线查询的表名、列名、分表路由键由 `services/data_query.py` 从同一份
-  `PROFILES[任务名]` / `crm_dbspec.DB_SCHEMAS` / `QUERY_SPECS` 派生，库路径见「配置」小节。
+  `PROFILES[任务名]` / `sftp_avl2db.dbspec.DB_SCHEMAS` / `QUERY_SPECS` 派生，库路径见「配置」小节。
 
 ---
 
@@ -271,7 +256,7 @@ mv f09591_loss  loss_control
 | 在线 API ×1 | `python main.py` | 只读业务库与维表；另按阈值写调用量到 `log/call_sum.db`（见 `Missions_reader.md`） |
 
 **部署时 4 个进程都要起**。`main.py` 不含任何定时任务，只有一个 `lifespan` 生命周期钩子（见 `Missions_reader.md`），除调用量统计外不写业务库/维表；
-`dim_watcher` 不依赖 `.env` / `crm_dbspec.py` / `sftp_avl2db/config.py` / 项目总 `config.yaml`，自包含于 `excel2consts/`。
+`dim_watcher` 不依赖 `.env` / `sftp_avl2db/dbspec.py` / `sftp_avl2db/config.py` / 项目总 `config.yaml`，自包含于 `excel2consts/`。
 
 ## 文件清单（写入侧）
 

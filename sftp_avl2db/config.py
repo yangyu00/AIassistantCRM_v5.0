@@ -5,16 +5,14 @@
 全局 logger。配置只在显式调用 ``load_profiles()`` / ``load_values()`` 时加载，
 其他项目也可直接用 ``TaskProfileConfig.from_mapping()`` 构造，完全不带 ``.env``。
 
-dotenv 解析（``parse_dotenv`` / ``load_values``）从原 ``tasks/config.py`` 原样
-平移，逐字未改：支持 ``#`` 注释、行内注释、``export``、单/双引号与 ``${VAR}``
-插值，优先级「系统环境变量 > .env」，``TASKS_ENV_FILE`` 可指向其他路径。
-唯一变化是从「模块级执行」改为「函数内执行」。
+dotenv 解析（``parse_dotenv`` / ``load_values``）支持 ``#`` 注释、行内注释、
+``export``、单/双引号与 ``${VAR}`` 插值，优先级「系统环境变量 > .env」，
+``TASKS_ENV_FILE`` 可指向其他路径；只在函数被调用时执行。
 
-路径约定：默认运行时数据目录取仓库根下的 ``RUNTIME_DIRNAME``（沿用现有
-``tasks/log`` / ``tasks/state`` / ``tasks/files`` / ``tasks/sqlite_db``）。
+路径约定：默认运行时数据目录取仓库根下的 ``RUNTIME_DIRNAME``
+（``tasks/log`` / ``tasks/state`` / ``tasks/files`` / ``tasks/sqlite_db``）。
 所有路径都是 ``TaskProfileConfig`` 的普通字段，由 ``from_mapping()`` 显式注入；
-换根目录只需改默认工厂一处，写入侧与在线读取侧从同一份 profile 取值，
-不需要任何迁移脚本。
+换根目录只需改默认工厂一处，写入侧与在线读取侧从同一份 profile 取值。
 """
 from __future__ import annotations
 
@@ -24,11 +22,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-# 运行时数据目录名。沿用日志目录约定；因为路径全部由配置对象派生，改名不涉及
-# 任何历史数据迁移逻辑，只是换一个默认值。
+# 运行时数据目录名；路径全部由配置对象派生。
 RUNTIME_DIRNAME = "tasks"
 
-# ---- 原 tasks/config.py 的 dotenv 解析，逐字平移 ----
+# ---- dotenv 解析 ----
 _VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 _QUOTED_RE = re.compile(r"""(?P<q>["'])(?P<v>.*?)(?<!\\)(?P=q)\s*(?:#.*)?$""", re.S)
 
@@ -83,9 +80,8 @@ def default_env_path(project_root: Path | None = None) -> Path:
 def load_values(env_path=None) -> dict:
     """读取配置值：系统环境变量 > .env；``TASKS_ENV_FILE`` 可覆盖 .env 路径。
 
-    与原 ``tasks/config.py::load_values()`` 行为一致；缺 ``.env`` 且系统环境
-    变量未提供 ``SFTP_HOST`` / ``SFTP_PASSWORD`` 时抛 ``FileNotFoundError``。
-    本函数**只在被显式调用时**执行，import 不会触发。
+    缺 ``.env`` 且系统环境变量未提供 ``SFTP_HOST`` / ``SFTP_PASSWORD`` 时抛
+    ``FileNotFoundError``。本函数**只在被显式调用时**执行，import 不会触发。
     """
     path = Path(env_path or os.environ.get("TASKS_ENV_FILE") or default_env_path())
     values = dict(os.environ)
@@ -121,9 +117,12 @@ class TaskProfileConfig:
     """一个 SFTP AVL 入库任务的完整声明（不可变）。
 
     字段分四组：任务身份（name / file_prefixes）、连接（sftp）、策略
-    （retention / parser / routing / num_tables / table_name_prefix）、
+    （retention / parser / mode / num_tables / table_name_prefix）、
     路径（local_dir / db_dir / state_dir / log_dir）与表结构（schema）。
     远程文件名模板也做成字段，方便其他项目接不同命名规则。
+
+    ``mode`` 取值与 ``dbspec.QUERY_SPECS[name]["mode"]`` 完全相同（唯一真源），
+    写入侧 ``build_layout()`` 与读取侧 ``_resolve()`` 都按同一组值分支。
     """
 
     name: str
@@ -136,7 +135,7 @@ class TaskProfileConfig:
     log_dir: Path
     schema: tuple[tuple[str, str], ...]
     parser: str                              # "flat" | "continuation"
-    routing: str                             # "per_prefix" | "crc32_shards" | "fixed_table"
+    mode: str                                # 同 dbspec.QUERY_SPECS[name]["mode"]
     num_tables: int = 0
     table_name_prefix: str = ""
     remote_name_tmpl: str = "{prefix}{date}000000.AVL"
@@ -160,7 +159,7 @@ class TaskProfileConfig:
     def from_mapping(cls, d: Mapping[str, Any]) -> "TaskProfileConfig":
         """从纯 dict 构造，**不读 .env、不依赖仓库内任何东西**（供其他项目 / 单测用）。
 
-        必填：``name``、``file_prefixes``、``sftp``、``schema``、``parser``、``routing``。
+        必填：``name``、``file_prefixes``、``sftp``、``schema``、``parser``、``mode``。
         可选：``retention``（子 dict 或扁平键 ``batch_size`` 等）、
         ``project_root`` / ``runtime_dir`` / 四个路径字段、``num_tables``、
         ``table_name_prefix``、``remote_name_tmpl``。缺路径时按默认约定派生。
@@ -209,7 +208,7 @@ class TaskProfileConfig:
             log_dir=_path("log_dir", "log"),
             schema=schema,
             parser=str(d["parser"]),
-            routing=str(d["routing"]),
+            mode=str(d["mode"]),
             num_tables=int(d.get("num_tables") or 0),
             table_name_prefix=str(d.get("table_name_prefix") or ""),
             remote_name_tmpl=str(d.get("remote_name_tmpl") or "{prefix}{date}000000.AVL"),
@@ -238,13 +237,13 @@ def _list(values: Mapping[str, str], key: str, env_path: Path) -> list[str]:
 def load_profiles(env_path=None, project_root=None) -> dict[str, TaskProfileConfig]:
     """构造 CRM 项目现成的两个任务配置，并在返回前做契约校验。
 
-    等价于原 ``tasks/config.py`` 模块级 ``TASKS`` + ``_validate_specs()`` +
-    ``db_dir()``，区别是**必须显式调用**：``import sftp_avl2db`` 不会读任何文件。
+    构造两个任务的完整配置并做契约校验；**必须显式调用**，
+    ``import sftp_avl2db`` 不会读任何文件。
 
-    ``crm_dbspec`` 只在函数内部延迟导入，因此把 ``sftp_avl2db`` 包单独 copy 到
-    其他项目、用 ``from_mapping()`` 构造时，不需要携带该文件。
+    ``dbspec`` 只在函数内部延迟导入，保持本模块加载时零依赖；其他项目用
+    ``from_mapping()`` 自建 profile 时不需要调用本函数。
     """
-    from crm_dbspec import DB_SCHEMAS, validate_specs
+    from .dbspec import DB_SCHEMAS, query_spec, validate_specs
 
     root = Path(project_root).resolve() if project_root else default_project_root()
     path = Path(env_path or os.environ.get("TASKS_ENV_FILE") or default_env_path(root))
@@ -277,14 +276,14 @@ def load_profiles(env_path=None, project_root=None) -> dict[str, TaskProfileConf
             "name": "opportunity_recall",
             "schema": DB_SCHEMAS["opportunity_recall"],
             "parser": "flat",
-            "routing": "per_prefix",
+            "mode": query_spec("opportunity_recall")["mode"],
         }),
         "loss_control": TaskProfileConfig.from_mapping({
             **base("LOSS_CONTROL"),
             "name": "loss_control",
             "schema": DB_SCHEMAS["loss_control"],
             "parser": "continuation",
-            "routing": "crc32_shards",
+            "mode": query_spec("loss_control")["mode"],
             "num_tables": _int(v, "LOSS_CONTROL_NUM_TABLES", path),
             "table_name_prefix": _str(v, "LOSS_CONTROL_TABLE_NAME_PREFIX", path),
         }),

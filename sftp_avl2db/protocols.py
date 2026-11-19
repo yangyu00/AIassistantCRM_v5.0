@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
 """``sftp_avl2db`` 的组件契约（纯 typing，零 I/O、零第三方依赖）。
 
-这里一次把五层接口全部定好，后续阶段只新增「实现」，不再改本文件：
+这里定义五层组件契约：
 
-    RemoteSource   SFTP / 本地目录源文件        （阶段 4）
-    RecordParser   AVL → 逻辑记录生成器          （阶段 2）
-    TableRouter    记录 → (库文件, 表名)         （阶段 3）
-    RecordSink     SQLite 建表 / 写入 / 清理     （阶段 3）
-    StateStore     断点清单 / 单实例锁的状态读写  （阶段 4）
+    RemoteSource   SFTP / 本地目录源文件
+    RecordParser   AVL → 逻辑记录生成器
+    TableLayout    库表布局：记录路由 + 全部库表枚举
+    RecordSink     SQLite 建表 / 写入 / 清理
+    StateStore     断点清单 / 单实例锁的状态读写
 
-协议只约束方法形状，不约束实现技术；``Avl2DbRunner``（阶段 5）通过构造器
-接收这些对象，因此任何一层都能换成测试替身或宿主项目自己的实现。
+协议只约束方法形状，不约束实现技术；``Avl2DbRunner`` 通过构造器接收这些对象，
+因此任何一层都能换成测试替身或宿主项目自己的实现。
 """
 from __future__ import annotations
 
@@ -23,11 +23,10 @@ Row = tuple
 
 @dataclass
 class ParseStats:
-    """单文件解析的统计信号（替代原解析循环里的 ``log.info`` / ``log.warning``）。
+    """单文件解析的统计信号。
 
-    解析层不写日志，把这些本来就要打印的计数留在这里，编排器按需记录：
-    ``rows`` 是产出的逻辑记录数（对应原日志「共 N 条」），
-    ``skipped`` 是空主键跳过数（对应「跳过空手机号 N 条」）。
+    解析层不写日志，把计数留在这里，编排器按需记录：``rows`` 是产出的逻辑记录数
+    （日志文本「共 N 条」），``skipped`` 是空主键跳过数（「跳过空手机号 N 条」）。
     其余字段是各解析器特有的诊断信号，便于离线断言，不影响产出记录。
     """
 
@@ -70,20 +69,22 @@ class RecordParser(Protocol):
 
 
 @runtime_checkable
-class TableRouter(Protocol):
-    """一条记录该写到哪个库文件的哪张表。"""
+class TableLayout(Protocol):
+    """库表布局：单条记录路由 + 全部库表枚举（建表 / 过期清理用）。"""
+
+    def all_targets(self) -> Iterator[tuple[Path, str]]: ...
 
     def target(self, filename: str, row: Row) -> tuple[Path, str]: ...
 
 
 @runtime_checkable
 class RecordSink(Protocol):
-    """记录落地：建表、按路由分批写、过期清理。"""
+    """记录落地：建表、按布局分批写、过期清理。"""
 
     def ensure_schema(self) -> None: ...
 
     def write(self, filename: str, rows: Iterable[Row],
-              router: TableRouter) -> int: ...
+              layout: TableLayout | None = None) -> int: ...
 
     def purge_expired(self, cutoff: str) -> int: ...
 
@@ -99,7 +100,7 @@ class StateStore(Protocol):
 
 @dataclass(frozen=True)
 class ImportResult:
-    """单个远程文件的单轮结果（阶段 5 编排器使用，先在此定义避免后续改文件）。"""
+    """单个远程文件的单轮结果。"""
 
     filename: str
     status: str                  # "skip" | "missing" | "failed" | "ok"
@@ -110,5 +111,5 @@ class ImportResult:
 
 __all__ = [
     "Row", "ParseStats", "ImportResult",
-    "RemoteSource", "RecordParser", "TableRouter", "RecordSink", "StateStore",
+    "RemoteSource", "RecordParser", "TableLayout", "RecordSink", "StateStore",
 ]

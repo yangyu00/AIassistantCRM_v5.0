@@ -1,28 +1,20 @@
 # -*- coding: utf-8 -*-
 """远程文件源：SFTP（生产）与本地目录（离线测试 / 其他项目复用）。
 
-从 ``tasks/base_task.py`` 的 ``_connect()`` / ``run_once_for_date()`` 里
-``sftp.stat()`` / ``sftp.get()`` / ``sftp.close()`` / ``ssh.close()`` 逐行照搬，
-只把它们收进 ``RemoteSource`` 协议的两个实现里。
-
-**关键取舍**：``paramiko`` 只在 ``SftpRemoteSource.connect()`` 时延迟导入，
-模块级零第三方依赖。因此 ``import sftp_avl2db.remote`` 在没有 paramiko 的
-环境里照样成功，``LocalDirRemoteSource`` 也不装任何东西就能用——这就实现了
-「解析 / 入库 / 状态」之外的第四层也能单独测试、单独拿走。
+``paramiko`` 只在 ``SftpRemoteSource.connect()`` 时延迟导入，模块级零第三方
+依赖；``LocalDirRemoteSource`` 不装任何东西就能用。
 
 连接生命周期：``connect()`` 惰性触发（``exists`` / ``fetch`` 会自动调），
-``close()`` 后可再次 ``connect()``，对应旧代码「每轮连一次、finally 关闭、
-下轮重连」。编排器阶段 5 可在轮次开始显式 ``connect()``，以复刻旧代码
-「连接失败 → 记 error → 整轮 return 0」的语义。
+``close()`` 后可再次 ``connect()``。编排器在每轮开始显式 ``connect()``，
+连接失败记为整轮失败、不处理任何文件。
 
-``exists()`` 的三态（与旧 ``try: sftp.stat(...)`` 的三个分支一一对应）：
+``exists()`` 三态：
 
 - 成功 → ``True``
-- ``FileNotFoundError`` → ``False``（旧代码记 INFO「远程文件尚未生成」后 continue）
-- 其他异常 → **透传**（旧代码记 ERROR「stat 远程文件出错」后 continue）
+- ``FileNotFoundError`` → ``False``（编排器记 INFO「远程文件尚未生成」）
+- 其他异常 → **透传**（编排器记 ERROR「stat 远程文件出错」）
 
-两种情况在旧代码里都是 continue，仅日志级别不同；这里让异常透传，由编排器
-统一记录，不在组件里吞掉。
+后两者都跳过该文件、不登记清单；异常不在组件里吞掉。
 """
 from __future__ import annotations
 
@@ -51,7 +43,7 @@ class SftpRemoteSource:
         conf = self._cfg
         return conf[key] if isinstance(conf, dict) else getattr(conf, key)
 
-    # ---- 连接（逐字照搬 BaseSftpTask._connect） ----
+    # ---- 连接 ----
     def connect(self):
         """建立 SSH + SFTP 连接；幂等，已连接则直接返回。"""
         if self._sftp is not None:
@@ -99,7 +91,7 @@ class SftpRemoteSource:
         self._sftp.get(remote_path, str(local_path))
 
     def close(self) -> None:
-        """先关 sftp 再关 ssh，异常一律吞掉（照搬旧 finally）。"""
+        """先关 sftp 再关 ssh，异常一律吞掉。"""
         for obj in (self._sftp, self._ssh):
             if obj is not None:
                 try:
@@ -145,7 +137,7 @@ class LocalDirRemoteSource:
 def build_remote_source(profile, *, local_dir=None) -> RemoteSource:
     """装配工厂：给了 ``local_dir`` 走离线源，否则按 ``profile.sftp`` 连 SFTP。
 
-    阶段 5 的 ``profiles.py`` 会复用；其他项目也可以直接构造两个实现类。
+    其他项目也可以直接构造两个实现类。
     """
     if local_dir is not None:
         return LocalDirRemoteSource(local_dir)

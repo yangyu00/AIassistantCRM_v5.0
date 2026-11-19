@@ -1,13 +1,10 @@
 # -*- coding: utf-8 -*-
 """控损 AVL 解析（逻辑 5 列，``strategy_name`` 内含裸换行、需续行重组）。
 
-本文件是 ``tasks/task_loss_control.py`` 解析部分的逐行照搬，唯一变化是把
-「写入 128 张分表」从循环里拿掉，改成 ``yield`` 五列元组：
+``parse()`` 是生成器，产出 5 列元组交给 ``RecordSink``；不碰 DB / 网络 / 日志，
+计数与诊断信号放在 ``stats`` 里供编排器按需记录。
 
-    原：self._route(buffer, batches) + self._flush_full(...)  → 分表 + 批量写库
-    新：yield tuple(buffer)                                  → 由阶段 3 的 Router/Sink 接手
-
-刻意保留的既有语义（**阶段 2 不做任何修正**，由 golden 基线与合成用例锁定）：
+以下行为刻意保真，不要顺手优化：
 
 1. 以行首 ``YYYY-MM-DD`` 判定新逻辑记录起始，其余物理行是上一条第 5 列的续行，
    用 ``\\n`` 拼回；
@@ -20,9 +17,6 @@
 5. 文件开头就出现续行、尚无 buffer → 丢弃；
 6. 读完时最后一条记录单独产出；``product_no`` 为空的记录跳过并计入
    ``stats.skipped``。
-
-解析层不连网络、不建库、不写日志；原循环里的 ``log.info`` / ``log.warning``
-信号换成 ``stats`` 字段，供编排器按需记录。
 """
 from __future__ import annotations
 
@@ -32,15 +26,12 @@ from typing import Iterator, List, Optional
 
 from ..protocols import ParseStats, Row
 
-# 远程文件名：以行首 YYYY-MM-DD 判定新记录起始
+# 以行首 YYYY-MM-DD 判定新记录起始
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
 
 
 def strip_eol(line: str) -> str:
-    """剥行尾：只去 ``\\n``，再只剥**一个** ASCII 反斜杠。
-
-    从 ``tasks/task_loss_control.py::_strip_eol`` 原样搬来，注释与逻辑逐字未改。
-    """
+    """剥行尾：只去 ``\\n``，再只剥**一个** ASCII 反斜杠。"""
     content = line.rstrip("\n")
     # 只剥一个 ASCII 反斜杠：rstrip('\\') 会误删 GBK 尾字节为 0x5C 的汉字。
     if content.endswith("\\"):
@@ -49,10 +40,7 @@ def strip_eol(line: str) -> str:
 
 
 def split_head(content: str) -> Optional[List[str]]:
-    """把日期起始行切成 5 列；第 5 列允许为空。不可用时返回 None。
-
-    从 ``LossControlTask._split_head`` 原样搬来（改成模块级纯函数）。
-    """
+    """把日期起始行切成 5 列；第 5 列允许为空。不可用时返回 None。"""
     parts = content.split("\t")
     if len(parts) >= 5:
         return [parts[0], parts[1], parts[2], parts[3], parts[4]]

@@ -1,24 +1,18 @@
 # -*- coding: utf-8 -*-
 """``Avl2DbRunner``：把五个可注入组件编成一轮「SFTP AVL → SQLite」。
 
-复刻 ``tasks/base_task.py`` 的 ``run_once_for_date()`` / ``serve_forever()`` /
-``cleanup_expired()`` 的**执行顺序与日志语义**，逐句对照见下方注释。
+流程：拿锁 → 按「昨天 + 今天」兜底跑单轮 → 每轮清理过期数据 → sleep → 释放锁。
 
-两个经审核的接线决策（阶段 5 用户确认按推荐执行）：
+两个行为约定：
 
-1. **未知前缀当作失败**：旧 ``OpportunityRecallTask.parse_and_save()`` 识别不到
-   前缀时 ``log.error + return``，上层不感知、仍会 ``manifest.add()`` +
-   ``imported += 1``（静默丢数据）。新 ``PerPrefixLayout`` 抛
-   ``UnknownPrefixError``，这里统一按「解析入库失败」处理：**不登记清单、
-   imported 不加、本地文件保留、下轮重试**。该分支实际不可达（上层只下发按
-   ``FILE_PREFIXES`` 拼出的文件名），不影响 golden 基线。
-2. **``exists()`` 三态沿用旧日志映射**：``False`` → INFO「远程文件尚未生成」；
-   其他异常 → ERROR「stat 远程文件出错」；两者都 continue、不登记清单。
+1. **未知前缀当作失败**：``PerPrefixLayout`` 抛 ``UnknownPrefixError`` 时统一按
+   「解析入库失败」处理：**不登记清单、imported 不加、本地文件保留、下轮重试**。
+   该分支实际不可达（上层只下发按 ``FILE_PREFIXES`` 拼出的文件名）。
+2. **``exists()`` 三态的日志映射**：``False`` → INFO「远程文件尚未生成」；
+   其他异常 → ERROR「stat 远程文件出错」；两者都跳过、不登记清单。
 
-**日志信号保真**：解析完成后按任务补记旧子类里那两类计数文本
-（``共 N 条`` / ``跳过空手机号 N 条``），保证 ``golden.json`` 的
-``log_signals`` 逐项对齐。逐批进度日志（如「已覆盖入库 N 条」「表 T 写入 N 条」）
-收敛为 ``WriteStats``，组件本身不写日志。
+**日志信号**：解析完成后按库表形式补记两类计数文本（``共 N 条`` /
+``跳过空手机号 N 条``）；逐批进度日志收敛为 ``WriteStats``，组件本身不写日志。
 
 **测试钩子**（不改变生产行为）：``max_rounds`` 限制常驻轮数、``sleeper`` 可注入
 假 sleep、``now`` / ``date_strings`` 可注入时钟，让守护循环也能离线单测。
@@ -53,7 +47,7 @@ class Avl2DbRunner:
         raw_now = now if now is not None else datetime.now
         self._now = raw_now if callable(raw_now) else (lambda: raw_now)
 
-    # ---- 路径与命名（与旧 _remote_name / run_once_for_date 一致） ----
+    # ---- 路径与命名 ----
     def _remote_path(self, remote_name: str) -> str:
         root = self.profile.sftp.remote_path.rstrip("/")
         return f"{root}/{remote_name}"
@@ -66,8 +60,7 @@ class Avl2DbRunner:
                    force: bool = False) -> ImportResult:
         """处理一个前缀在这一天的文件，返回结构化结果。
 
-        顺序逐句复刻旧 ``run_once_for_date`` 的 for 循环体：
-        拼名 → 清单命中且非 force 则 SKIP → stat → get → parse+write →
+        顺序：拼名 → 清单命中且非 force 则 SKIP → stat → get → parse+write →
         **成功后才** ``state.add()`` → imported += 1。
 
         生产上由 ``run_once_for_date()`` 调用，后者已先 ``sink.ensure_schema()``；
@@ -82,7 +75,7 @@ class Avl2DbRunner:
             self.log.info(f"SKIP 已在清单中，跳过: {remote_name}")
             return ImportResult(remote_name, "skip", detail="已在清单中")
 
-        # 旧代码：try sftp.stat(...) / except FileNotFoundError / except Exception
+        # stat 三态：存在 / 尚未生成 / 其他错误
         try:
             present = self.source.exists(remote_path)
         except FileNotFoundError:
@@ -104,7 +97,7 @@ class Avl2DbRunner:
         try:
             # 解析层是生成器；写入层按 BATCH_SIZE 分桶、逐批 commit
             rows = self.parser.parse(local_path)
-            self.sink.write(remote_name, rows, router=self.layout)
+            self.sink.write(remote_name, rows, layout=self.layout)
             self._log_import_done(remote_name, prefix)
             # ↑ 成功后才登记清单；下面任何异常都不 add，下轮会重试
             self.state.add(remote_name)
@@ -113,15 +106,15 @@ class Avl2DbRunner:
                                 rows=self.parser.stats.rows,
                                 skipped=self.parser.stats.skipped)
         except Exception as e:
-            # 含 UnknownPrefixError：按失败处理，不登记清单（接线决策 1）
+            # 含 UnknownPrefixError：按失败处理，不登记清单
             self.log.error(
                 f"解析入库失败 {remote_name}: {e}\n{traceback.format_exc()}")
             return ImportResult(remote_name, "failed", detail=f"import: {e}")
 
     def _log_import_done(self, filename: str, prefix: str) -> None:
-        """按旧子类的文本补记两类计数，保证 golden.log_signals 对齐。"""
+        """按库表形式补记两类计数（日志文本保持一致）。"""
         st = self.parser.stats
-        if self.profile.routing == "per_prefix":
+        if self.profile.mode == "multi_db_single_table":
             self.log.info(
                 f"[{prefix}] {filename} 覆盖完成，共 {st.rows} 条，"
                 f"跳过空手机号 {st.skipped} 条")
@@ -133,11 +126,11 @@ class Avl2DbRunner:
     # ---- 单轮 ----
     def run_once_for_date(self, date_str: str,
                           force_reload: bool = False) -> int:
-        """返回本轮真正新入库的文件数（旧方法同名同返回值）。"""
+        """返回本轮真正新入库的文件数。"""
         self.profile.local_dir.mkdir(parents=True, exist_ok=True)
-        self.sink.ensure_schema()          # 旧 init_db()，幂等
+        self.sink.ensure_schema()          # 幂等
 
-        # 旧代码：连接失败 → log.error → return 0（整轮不处理任何文件）
+        # 连接失败 → 整轮不处理任何文件
         try:
             self.source.connect()
             self.log.info("SFTP 连接成功")
@@ -152,7 +145,7 @@ class Avl2DbRunner:
                 if result.status == "ok":
                     imported += 1
         finally:
-            # 旧 finally：先关 sftp 再关 ssh，异常吞掉
+            # 无论成功失败都关闭连接，异常吞掉
             try:
                 self.source.close()
             except Exception:
@@ -161,10 +154,10 @@ class Avl2DbRunner:
 
     # ---- 过期清理 ----
     def cleanup_expired(self) -> dict:
-        """复刻旧 ``cleanup_expired()`` = 本地 AVL 清理 + 库表过期数据清理。"""
+        """本地 AVL 清理 + 库表过期数据清理。"""
         removed, errors = [], []
 
-        # 旧 _cleanup_local_files()：按 mtime 删 .AVL，异常记 ERROR 后继续
+        # 按 mtime 删过期 .AVL，异常记 ERROR 后继续
         local_dir = self.profile.local_dir
         expire = self._now() - timedelta(
             days=self.profile.retention.local_file_days)
@@ -182,7 +175,7 @@ class Avl2DbRunner:
                     errors.append(f"{name}: {e}")
                     self.log.error(f"删除过期本地文件失败 {name}: {e}")
 
-        # 旧 _cleanup_db()：cutoff = (now - DATA_EXPIRE_DAYS).strftime("%Y-%m-%d")
+        # cutoff = (now - DATA_EXPIRE_DAYS)
         cutoff = (self._now() - timedelta(
             days=self.profile.retention.data_days)).strftime("%Y-%m-%d")
         purged = self.sink.purge_expired(cutoff)
@@ -202,8 +195,8 @@ class Avl2DbRunner:
                       date_strings=None) -> int:
         """拿锁 → 单次 / 常驻 → 每轮清理 → sleep → 退出释放锁。
 
-        ``max_rounds`` / ``date_strings`` 仅用于离线测试；生产传默认（无限、
-        按「昨天 + 今天」兜底）与旧代码完全一致。
+        ``max_rounds`` / ``date_strings`` 仅用于离线测试；生产默认无限轮、
+        每轮按「昨天 + 今天」兜底。
         """
         if not self.lock.acquire():
             self.log.error(

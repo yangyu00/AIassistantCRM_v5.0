@@ -252,7 +252,7 @@ headers，共用同一份 `skip_auto_headers=("Content-Type",)`。该参数只�
 `RuntimeError`（与共享 ClientSession 同一个坑）。故 `_get_refresh_lock()` 按当前
 `asyncio.get_running_loop()` 懒创建/重建，不在模块级放裸锁；生产单 loop 下始终
 是同一把锁，TestClient / 独立脚本多次 `asyncio.run()` 也不会炸。不需要 lifespan
-接线，不改 `main.py`。
+接线。
 
 ### 重试、退避与失败冷却
 
@@ -564,7 +564,7 @@ import 时 `src/log_util.py` 会按既有行为创建 `log/` 目录与当日日�
 两个任务原先各有一个 `data_query.py`，逻辑重复、改字段要同步两处。现在合并为
 **一个模块 + 两处配置定义**：库目录、文件前缀、分表数来自运行时配置
 `sftp_avl2db.config.load_profiles()` 构造的 `TaskProfileConfig`；表列名、SQL 条件与
-查询模式来自顶层静态契约 `crm_dbspec.py`。`services/data_query.py` 只负责按任务名
+查询模式来自包内静态契约 `sftp_avl2db/dbspec.py`。`services/data_query.py` 只负责按任务名
 派发和执行，`main.py` 一行未改。
 
 ### 配置来源（与写入侧共用）
@@ -572,8 +572,8 @@ import 时 `src/log_util.py` 会按既有行为创建 `log/` 目录与当日日�
 | 配置 | 位置 | 在线读取侧用途 |
 |---|---|---|
 | `.env` 各任务分组的 `*_FILE_PREFIXES` / `*_NUM_TABLES` / `*_TABLE_NAME_PREFIX`（业务前缀见 `Missions_writer.md`） | `PROFILES[任务名]`（`TaskProfileConfig`） | 库文件名、分表数、表名前缀；改 `.env` 读写两侧同时生效 |
-| `DB_SCHEMAS[任务名]` | `crm_dbspec.py` | `(列名, 类型)` 列表，既是写入侧建表定义，也是 `SELECT *` 结果的 `dict` 组装顺序 |
-| `QUERY_SPECS[任务名]` | `crm_dbspec.py` | 查询模式、条件列、排序、业务 ID 映射 |
+| `DB_SCHEMAS[任务名]` | `sftp_avl2db/dbspec.py` | `(列名, 类型)` 列表，既是写入侧建表定义，也是 `SELECT *` 结果的 `dict` 组装顺序 |
+| `QUERY_SPECS[任务名]` | `sftp_avl2db/dbspec.py` | 查询模式、条件列、排序、业务 ID 映射 |
 | `TaskProfileConfig.db_dir` | `sftp_avl2db/config.py` | 固定指向 `tasks/sqlite_db/{任务名}/`，与写入路径一致 |
 
 `PROFILES`（运行时）/ `DB_SCHEMAS` / `QUERY_SPECS`（静态）三者 key 完全一致
@@ -584,14 +584,17 @@ import 时 `src/log_util.py` 会按既有行为创建 `log/` 目录与当日日�
 
 ### `mode` 的三种库表形式
 
-`mode` 按「库数量 × 表数量」划分，枚举写在 `crm_dbspec.py` 的 `QUERY_MODES`。
+`mode` 按「库数量 × 表数量」划分，枚举写在 `sftp_avl2db/dbspec.py` 的 `QUERY_MODES`。
 **多库多表场景不存在，不在支持范围内**，配置里出现任何其它值会在
 `validate_specs()` 时抛 `ValueError`。
 
-> 写入侧 `sftp_avl2db/sink/router.py` 的 `TableLayout` 用
-> `per_prefix` / `crc32_shards` / `fixed_table` 三种 `routing` 与这里的三种 `mode`
-> 一一对应；分表口径统一为 `zlib.crc32(product_no.encode("utf-8")) % NUM_TABLES`，
-> 改任一侧都要同步另一侧。
+> **这三个值就是唯一的 `mode` 取值**，不再有第二套名字：
+> `TaskProfileConfig.mode` 由 `load_profiles()` 从这里派生，写入侧
+> `sftp_avl2db/sink/router.py::build_layout()` 按同一组值分派到
+> `PerPrefixLayout` / `Crc32ShardLayout` / `FixedTableLayout`。
+> `validate_specs()` 会校验 `profile.mode` 与 `QUERY_SPECS[].mode` 一致，
+> 手填漂移在启动时就抛 `ValueError`。分表口径统一为
+> `zlib.crc32(product_no.encode("utf-8")) % NUM_TABLES`。
 
 | mode | 库表形式 | 库文件 | 表名 | 专用字段 |
 |---|---|---|---|---|
@@ -638,15 +641,16 @@ import 时 `src/log_util.py` 会按既有行为创建 `log/` 目录与当日日�
 
 ### 加任务或改字段
 
-- 改列名/列顺序 → 只改 `crm_dbspec.DB_SCHEMAS[任务名]`（写入侧建表与读取侧 `dict` 组装同时生效）。
-- 改条件或排序 → 只改 `crm_dbspec.QUERY_SPECS[任务名]`。
+- 改列名/列顺序 → 只改 `sftp_avl2db.dbspec.DB_SCHEMAS[任务名]`（写入侧建表与读取侧 `dict` 组装同时生效）。
+- 改条件或排序 → 只改 `sftp_avl2db.dbspec.QUERY_SPECS[任务名]`。
 - 加分表数/换表名前缀/换文件前缀 → 改 `.env` 对应业务前缀分组的键，读写两侧同时生效。
 - 换库表形式 → 改 `QUERY_SPECS[任务名]["mode"]` 并补齐对应的专用字段
   （多库单表要 `db_map`、单库单表要 `table_name`、单库多表用 `.env` 分表配置），
-  三种形式的分支已经在 `services/data_query.py::_resolve()` 里实现，
-  写入侧 `sftp_avl2db/sink/router.py` 也已有对应的三种 `routing`。
-- 新增一个任务 → 在 `crm_dbspec.DB_SCHEMAS` / `QUERY_SPECS` 与
-  `sftp_avl2db/config.py` 的 profile 定义各加一项并选好 `mode` / `routing`，
+  三种形式的分支已经在 `services/data_query.py::_resolve()` 与
+  写入侧 `sftp_avl2db/sink/router.py::build_layout()` 里按同一组值实现。
+- 新增一个任务 → 在 `sftp_avl2db.dbspec.DB_SCHEMAS` / `QUERY_SPECS` 与
+  `sftp_avl2db/config.py` 的 profile 定义各加一项；`mode` 只需在
+  `QUERY_SPECS` 里声明一次，`load_profiles()` 会自动派生到 profile，
   `main.py` 用 `query(任务名, ...)` 调用即可，无需新增查询模块。
 
 主键、分表数与库表定义的完整口径见 `Missions_writer.md`。
@@ -938,7 +942,7 @@ curl "http://host:8989/api/callStat?month=2026-11"
   写入侧 `Crc32ShardLayout` 的分表数也应同步。
 - `QUERY_MODES` 恰为三种；`_resolve()` 对两个任务分别解析出
   `{库名}.db` + `data_{库名}`、`F09591.db` + `data_F09591_N`。
-  把 `mode` 改成多库多表等非法值，调用 `crm_dbspec.validate_specs(load_profiles())` 应抛 `ValueError`。
+  把 `mode` 改成多库多表等非法值，调用 `sftp_avl2db.dbspec.validate_specs(load_profiles())` 应抛 `ValueError`。
 - `import sftp_avl2db` 不读 `.env`、不加载 paramiko / loguru；
   `python -m sftp_avl2db --help` 在空目录下可运行。
 - `app.router.on_startup` / `on_shutdown` 均为 0，`router.lifespan_context` 已设置

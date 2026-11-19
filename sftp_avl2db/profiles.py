@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""装配工厂：把阶段 1~4 的组件拼成一个可直接运行的任务。
+"""装配工厂：把各层组件拼成一个可直接运行的任务。
 
-``build_task(profile)`` 是唯一一处「接线」代码，其他项目若只想拿走某一层，
+``build_task(profile)`` 是唯一的装配入口，其他项目若只想拿走某一层，
 直接 import 对应模块即可，不必经过这里。全部依赖可替换：
 
     task = build_task(profile, local_dir="io_samples",   # 离线源

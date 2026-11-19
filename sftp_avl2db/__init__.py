@@ -18,7 +18,7 @@
 
 | 层 | 模块 | 顶层第三方依赖 |
 |---|---|---|
-| 配置 | ``config`` / 顶层 ``crm_dbspec`` | 无 |
+| 配置 | ``config`` / ``dbspec`` | 无 |
 | 解析 | ``parsers`` | 无 |
 | 写入 | ``sink`` | 无（只用标准库 sqlite3） |
 | I/O | ``remote`` / ``state`` / ``logging`` | 无（延迟导入 paramiko / loguru） |
@@ -28,6 +28,7 @@
 通过模块级 ``__getattr__`` **延迟导出**：``import sftp_avl2db`` 完全不碰它们，
 真正 ``from sftp_avl2db import build_task`` 时才加载对应模块。
 """
+from . import dbspec                      # noqa: E402  (纯静态契约)
 from .config import (
     RUNTIME_DIRNAME,
     RetentionConfig,
@@ -47,7 +48,7 @@ from .protocols import (
     RecordSink,
     RemoteSource,
     StateStore,
-    TableRouter,
+    TableLayout,
 )
 
 # 延迟导出表：(模块名, 属性名)。只在被 from ... import 时才加载模块，
@@ -74,7 +75,6 @@ _LAZY_EXPORTS = {
     "TableSchema": ("sink", "TableSchema"),
     "SqliteSink": ("sink", "SqliteSink"),
     "build_layout": ("sink", "build_layout"),
-    "build_router": ("sink", "build_router"),
     "build_sink": ("sink", "build_sink"),
 }
 
@@ -93,15 +93,15 @@ def __dir__():
 
 __all__ = [
     # 配置
-    "RUNTIME_DIRNAME", "SftpConfig", "RetentionConfig", "TaskProfileConfig",
+    "dbspec", "RUNTIME_DIRNAME", "SftpConfig", "RetentionConfig", "TaskProfileConfig",
     "load_profiles", "load_values", "parse_dotenv",
     "default_project_root", "default_env_path", "iter_remote_names",
     # 契约
     "ParseStats", "ImportResult", "RemoteSource", "RecordParser",
-    "TableRouter", "RecordSink", "StateStore",
+    "TableLayout", "RecordSink", "StateStore",
     # 组件（延迟）
     "FlatColumnParser", "ContinuationParser", "build_parser",
-    "TableSchema", "SqliteSink", "build_layout", "build_router", "build_sink",
+    "TableSchema", "SqliteSink", "build_layout", "build_sink",
     "SftpRemoteSource", "LocalDirRemoteSource", "build_remote_source",
     "FetchedManifest", "SingleInstanceLock", "build_state",
     "TaskLogger", "InMemoryLogger", "build_logger",

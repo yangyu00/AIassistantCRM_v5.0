@@ -23,7 +23,7 @@ PARSER_KINDS = ("flat", "continuation")
 
 
 def build_parser(profile) -> RecordParser:
-    """按任务装配声明选解析器（阶段 5 的 ``profiles.py`` 会复用此函数）。
+    """按任务装配声明选解析器。
 
     用鸭子类型接收任何带 ``.parser`` / ``.columns`` 的对象：本仓库用
     ``TaskProfileConfig``，其他项目直接构造 ``FlatColumnParser(12)`` 也行，

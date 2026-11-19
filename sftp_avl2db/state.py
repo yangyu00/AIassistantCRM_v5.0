@@ -1,23 +1,17 @@
 # -*- coding: utf-8 -*-
 """状态层：断点续传清单（``FetchedManifest``）与单实例锁（``SingleInstanceLock``）。
 
-从 ``tasks/base_task.py`` 的两个类逐行照搬，变化只有三处：
+路径全部由构造参数注入（``TaskProfileConfig.fetched_path`` / ``.lock_path``），
+没有硬编码目录；锁文件兼容 ``pathlib.Path`` 入参。
 
-1. **路径由构造参数注入**，不再用 ``dirname(dirname(__file__))`` 拼死目录；
-   阶段 1 的 ``TaskProfileConfig.fetched_path`` / ``.lock_path`` 直接传进来即可。
-2. ``portalocker`` / ``fcntl`` 改成模块级**可选**导入变量：
-   装了 portalocker 优先用，否则退化 fcntl，两者都没有时明确报
-   ``RuntimeError``（旧代码在 Windows 上会直接 ``import fcntl`` 崩掉）。
-   变量形如 ``_portalocker`` / ``_fcntl``，测试可 ``mock.patch`` 强制走某一分支。
-3. 锁文件用 ``pathlib`` 兼容 ``Path`` 入参；JSON 字段
-   ``pid / host / start_time`` 与写入顺序逐字未改。
+``portalocker`` / ``fcntl`` 在模块级**可选**导入：装了 portalocker 优先用，
+否则退化 fcntl，两者都没有时明确报 ``RuntimeError``。变量形如
+``_portalocker`` / ``_fcntl``，测试可 ``mock.patch`` 强制走某一分支；
+缺库不会让 ``import sftp_avl2db.state`` 失败。
 
-**没有改的语义**：清单「追加写 + flush + fsync + 内存 set」，重复 add 不落盘，
-启动时读回（不做每轮 reload，与旧代码一致）；锁非阻塞、拿不到立即 False，
-acquire 成功后写 pid/host/start_time，release 解锁并关闭、可重复调用。
-
-``portalocker`` 的 import 用 ``try/except``，缺库不会让 ``import sftp_avl2db.state``
-失败；未安装时 Python 也不会把它留在 ``sys.modules`` 里。
+语义：清单「追加写 + flush + fsync + 内存 set」，重复 add 不落盘，启动时读回
+（不做每轮 reload）；锁非阻塞、拿不到立即 False，acquire 成功后写
+``pid / host / start_time``，release 解锁并关闭、可重复调用。
 """
 from __future__ import annotations
 
@@ -129,7 +123,7 @@ class SingleInstanceLock:
 
 
 def build_state(profile):
-    """按 ``TaskProfileConfig`` 装配状态层（阶段 5 编排器用）。
+    """按 ``TaskProfileConfig`` 装配状态层。
 
     返回 ``(manifest, lock)``：路径全部来自 profile，不再有硬编码目录。
     """

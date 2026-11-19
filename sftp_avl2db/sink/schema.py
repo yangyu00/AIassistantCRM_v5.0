@@ -1,22 +1,14 @@
 # -*- coding: utf-8 -*-
 """SQLite 表结构与 SQL 文本生成。
 
-三条 SQL 的拼法从旧代码逐字照搬（``tasks/task_*.py``），**不做参数化改造、
-不换占位符风格、不改主键声明形式**：
+三条 SQL 保持以下拼法，**不做参数化改造、不换占位符风格、不改主键声明形式**：
 
-    旧 init_db / _ensure_table:
-        cols = ", ".join(f"{c} {t}" for c, t in self.DB_SCHEMA)
-        cur.execute(f"CREATE TABLE IF NOT EXISTS {t} ({cols}, PRIMARY KEY (product_no))")
+    CREATE TABLE IF NOT EXISTS {table} ({列定义}, PRIMARY KEY (product_no))
+    INSERT OR REPLACE INTO {table} ({列名}) VALUES (?, ?, ...)
+    DELETE FROM {table} WHERE op_time < ?
 
-    旧 parse_and_save:
-        f"INSERT OR REPLACE INTO {table} ({', '.join(self.DB_COLUMNS)}) "
-        f"VALUES ({', '.join('?' for _ in self.DB_COLUMNS)})"
-
-    旧 _cleanup_db:
-        f"DELETE FROM {t} WHERE op_time < ?"
-
-``primary_key`` 仍默认是 ``product_no``，与旧代码的表级约束一致；做成字段只是
-让其他项目换主键时不用改本文件。``time_column`` 同理（过期清理按 ``op_time``）。
+``primary_key`` 默认 ``product_no``（表级约束）；``time_column`` 默认
+``op_time``（过期清理用）。两者做成字段，方便其他项目换主键 / 时间列时不用改本文件。
 """
 from __future__ import annotations
 
@@ -39,11 +31,11 @@ class TableSchema:
 
     @property
     def column_names(self) -> list[str]:
-        """列名顺序，对应旧代码的 ``DB_COLUMNS``。"""
+        """列名顺序（不含类型）。"""
         return [c[0] for c in self.columns]
 
     def column_ddl(self) -> str:
-        """对应旧代码的局部变量 ``cols``。"""
+        """列定义文本：``列名 类型`` 逗号连接。"""
         return ", ".join(f"{c} {t}" for c, t in self.columns)
 
     def create_table_sql(self, table_name: str) -> str:

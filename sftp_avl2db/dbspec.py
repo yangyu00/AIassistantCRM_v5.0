@@ -4,9 +4,8 @@
 写入侧（``sftp_avl2db`` 建表 / 入库）与在线读取侧（``services/data_query.py``
 组装 dict）共用这里的列顺序与查询声明，避免各维护一份。
 
-本模块从原 ``tasks/config.py`` 的静态声明平移而来，内容逐字未改；唯一变化是
-把 ``_validate_specs()``（import 时自动执行）改成显式的
-``validate_specs(profiles)``，由调用方在加载运行时配置后调用。
+``validate_specs(profiles)`` 是显式校验入口，由调用方在加载运行时配置后调用；
+import 本模块不执行任何校验或 I/O。
 
 契约 key 与任务名一致：``opportunity_recall`` / ``loss_control``。
 """
@@ -52,6 +51,10 @@ DB_SCHEMAS = {
 #   single_db_multi_table  单库多表：单库按 crc32(product_no) % NUM_TABLES 分表
 #   single_db_single_table 单库单表：单库一张固定表，需声明 table_name（当前无任务使用，预留）
 #
+# mode 是库表形式的唯一真源：TaskProfileConfig.mode 由 load_profiles() 从这里派生，
+# 写入侧 build_layout() 与读取侧 _resolve() 都按同一组值分支；validate_specs()
+# 会拦住 from_mapping() 手填导致的漂移。
+#
 #   db_map        : 多库单表专用，product_id → 库名（即 {库名}.db）；
 #                   表名按固定约定 data_{库名}，与写入侧建表一致
 #   table_name    : 单库单表专用，固定表名
@@ -84,11 +87,6 @@ QUERY_MODES = (
 )
 
 
-def db_schema(task_name: str) -> list[tuple[str, str]]:
-    """返回 ``(列名, 类型)`` 列表；写入侧建表与读取侧组装 dict 共用。"""
-    return DB_SCHEMAS[task_name]
-
-
 def db_columns(task_name: str) -> list[str]:
     """返回列名顺序（不含类型）。"""
     return [c[0] for c in DB_SCHEMAS[task_name]]
@@ -102,13 +100,12 @@ def query_spec(task_name: str) -> dict[str, Any]:
 def validate_specs(profiles: Mapping[str, Any]) -> None:
     """配置漂移在启动时暴露，避免读写两侧悄悄用错表 / 列。
 
-    与原 ``tasks/config.py::_validate_specs()`` 的四类校验一一对应，区别仅在：
-    运行时配置由参数 ``profiles`` 传入（不再依赖模块级 ``TASKS``），因此
-    其他项目用 ``from_mapping()`` 自建的 profile 也能接受同一套校验。
+    运行时配置由参数 ``profiles`` 传入，因此其他项目用 ``from_mapping()``
+    自建的 profile 也能接受同一套校验。
 
     :raises ValueError: key 不一致 / where 列不存在 / mode 非法 /
                        多库单表的库名不在前缀列表 / 单库多表缺分表声明 /
-                       单库单表缺固定表名
+                       单库单表缺固定表名 / profile.mode 与 QUERY_SPECS.mode 不一致
     """
     names = set(profiles)
     if set(DB_SCHEMAS) != names or set(QUERY_SPECS) != names:
@@ -141,3 +138,11 @@ def validate_specs(profiles: Mapping[str, Any]) -> None:
         else:  # single_db_single_table
             if not spec.get("table_name"):
                 raise ValueError(f"{name}: 单库单表模式需要 table_name（固定表名）")
+
+        # 放在既有校验之后，保证「非法 mode / 缺分表配置」等错误仍先暴露。
+        # load_profiles() 派生出的 profile 恒一致；这里拦的是 from_mapping()
+        # 手填 mode 与 QUERY_SPECS 漂移的情况。
+        if conf.mode != mode:
+            raise ValueError(
+                f"{name}: profile.mode={conf.mode} 与 QUERY_SPECS.mode={mode} 不一致；"
+                "库表形式应以 QUERY_SPECS 为唯一真源")

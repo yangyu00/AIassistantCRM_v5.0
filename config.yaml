@@ -19,7 +19,7 @@ sftp:
   host: "134.80.199.252"
   username: "wangsi"
   port: 22
-  password: "W_s173O"
+  password: "<REDACTED_填入真实密码>"
 
 
   #  14上启动：docker run -itd --name crm4 -p 8989:8989 -v /app/lz/pythonproject/AIAssistant/AIassistantCRM_v4.0:/home/AIassistantCRM aicrm:v2 python /home/AIassistantCRM/main.py

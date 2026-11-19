@@ -166,7 +166,7 @@ async def marketAssistant(args: Args):
         portrait_cache_for_obj = portrait_cache if need == IopNeed.PORTRAIT else None
 
         # 1. 特殊业务
-        # 号卡业务、套餐业务、宽带业务（ID 与库表映射见 crm_dbspec.py）
+        # 号卡业务、套餐业务、宽带业务（ID 与库表映射见 sftp_avl2db/dbspec.py）
         if one_product_obj.id in data_query.OPPORTUNITY_RECALL_PRODUCT_IDS:
             record = await data_query.get_opportunity_recall_latest(args.telnum, one_product_obj.id)
             product_obj_list.append(ProductInfoBySpec9554(one_product_obj.id, custom_label_info,

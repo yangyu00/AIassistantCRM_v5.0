@@ -1,25 +1,22 @@
 # -*- coding: utf-8 -*-
-"""任务日志：沿用现有日志目录与文件名，但**不清空宿主日志**。
+"""任务日志：按现有目录与文件名写两个文件 sink，但**不清空宿主日志**。
 
-从 ``tasks/base_task.py::_setup_logger()`` 逐行照搬两套 sink 的全部参数
-（文件名、level、filter、rotation、retention、encoding、format、backtrace、
-diagnose），**唯一且经审核的变化是去掉 ``logger.remove()``**：
+每个 ``TaskLogger`` 显式给定 INFO / ERROR 两个文件 sink 的全部参数（level、
+filter、rotation、retention、encoding、format、backtrace、diagnose），
+``close()`` 时只移除自己记下的 sink id，**不调用 ``logger.remove()``**——
+否则会清空宿主项目（FastAPI / IOP / 其他任务）的全局 sink，多任务并行时还会
+互相清 sink。两个任务靠 ``extra.task`` filter 天然隔离。
 
-- 旧代码每实例化一个 Task 就 ``logger.remove()`` 清空全局 loguru sink，
-  宿主项目（FastAPI / IOP / 其他任务）的日志配置会被毁掉；两个任务同时跑
-  还会互相清 sink。新实现只 ``add()`` 自己两个 sink，``close()`` 时只
-  ``remove()`` 自己记下的 sink id，不碰任何别人的配置。
-- 两个任务的 sink 靠 ``extra.task`` filter 天然隔离，不需要清空全局。
-- 代价：若宿主保留了 loguru 默认的 stderr sink，任务日志会同时输出到 stderr。
-  想完全复刻「只有两个文件 sink」，注入一个已自行 ``remove()`` 过的 logger 即可。
+代价：若宿主保留了 loguru 默认的 stderr sink，任务日志会同时输出到 stderr。
+需要「只有两个文件 sink」时，注入一个已自行 ``remove()`` 过的 logger 即可。
 
 **延迟导入 loguru**：模块级零第三方依赖。``logger=None`` 时才在构造里
 ``from loguru import logger``；没装 loguru 会给出明确提示，并可用任意实现了
 ``bind/add/remove/info/error/warning`` 的对象注入（宿主封装、测试替身，
 或本模块自带的 ``InMemoryLogger``）。
 
-日志目录沿用 ``tasks/log``（由 ``profile.log_dir`` 注入），文件名
-``{任务名}_INFO_{YYYY-MM-DD}.log`` / ``{任务名}_ERROR_{YYYY-MM-DD}.log`` 不变。
+日志目录由 ``profile.log_dir`` 注入，文件名
+``{任务名}_INFO_{YYYY-MM-DD}.log`` / ``{任务名}_ERROR_{YYYY-MM-DD}.log``。
 """
 from __future__ import annotations
 
@@ -136,7 +133,7 @@ class TaskLogger:
         return _f
 
     def _add_sinks(self):
-        # 注意：这里刻意**不调用** self._logger.remove()。
+        # 只 add 自己的 sink；绝不调用 remove() 清空全局配置。
         kwargs = dict(rotation="00:00", retention="7 day", encoding="utf8",
                       format=LOG_FORMAT)
         self._sink_ids.append(self._logger.add(
@@ -167,7 +164,7 @@ class TaskLogger:
 
 
 def build_logger(profile, *, logger=None, day=None) -> TaskLogger:
-    """按 ``TaskProfileConfig`` 装配日志（阶段 5 编排器用）。"""
+    """按 ``TaskProfileConfig`` 装配日志。"""
     return TaskLogger(profile.name, profile.log_dir, logger=logger, day=day)
 
 

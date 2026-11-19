@@ -3,8 +3,8 @@
 
 库目录 / 文件前缀 / 分表数取自运行时配置 ``sftp_avl2db.config.load_profiles()``
 构造的 ``TaskProfileConfig``；表结构与查询声明取自顶层静态契约
-``crm_dbspec``。写入侧与读取侧共用这两处定义，本模块不含硬编码的表名/列名/路径。
-新增或调整任务只需改 ``crm_dbspec.py`` 的 DB_SCHEMAS / QUERY_SPECS 与配置声明。
+``sftp_avl2db.dbspec``。写入侧与读取侧共用这两处定义，本模块不含硬编码的表名/列名/路径。
+新增或调整任务只需改 ``sftp_avl2db/dbspec.py`` 的 DB_SCHEMAS / QUERY_SPECS 与配置声明。
 
 ``QUERY_SPECS[任务名]["mode"]`` 决定库表形式，共三种：
 多库单表（db_map 选库名）、单库多表（crc32 分表）、单库单表（table_name 固定表）；
@@ -19,7 +19,7 @@ import os
 import sqlite3
 import zlib
 
-from crm_dbspec import QUERY_SPECS, db_columns, query_spec, validate_specs
+from sftp_avl2db.dbspec import QUERY_SPECS, db_columns, query_spec, validate_specs
 from sftp_avl2db.config import load_profiles
 
 # 在线侧启动时显式加载一次运行时配置（与旧 tasks/config.py 模块级加载等价），

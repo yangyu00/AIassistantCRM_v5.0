@@ -1,30 +1,26 @@
 # -*- coding: utf-8 -*-
 """SQLite 写入层：建表 / 流式分批写 / 过期清理。
 
-从 ``tasks/task_opportunity_recall.py`` 与 ``tasks/task_loss_control.py`` 的
-``init_db()`` / ``parse_and_save()`` 写库部分 / ``_cleanup_db()`` 平移而来。
+**以下差异刻意保留，不要统一**：
 
-**逐字保留的既有差异**（不做统一，否则生产行为会变）：
-
-| 项 | 商机 ``per_prefix`` | 控损 ``crc32_shards`` |
+| 项 | 商机 ``multi_db_single_table`` | 控损 ``single_db_multi_table`` |
 |---|---|---|
 | ``PRAGMA synchronous`` | ``OFF`` | ``NORMAL`` |
 | 批次容器 | 单表一个 ``batch`` list | 128 张表各一个 ``batches[t]`` list |
 | 提交时机 | 满 ``BATCH_SIZE`` + 末尾余量 | 任一表满 ``BATCH_SIZE`` 就只提交该表 + 末尾逐表提交余量 |
 
-新实现用「按 ``(库文件, 表)`` 分桶」统一表达上表两种形态：商机每文件只有
-一个桶，控损每文件最多 128 个桶，行为与旧代码一致。
+按 ``(库文件, 表)`` 分桶统一表达上表两种形态：商机每文件只有一个桶，
+控损每文件最多 128 个桶。
 
-其余保真点：
+其余行为约束：
 
-- ``ensure_schema()`` 与 ``write()`` **各自建立连接**（旧 ``init_db()`` 与
-  ``parse_and_save()`` 也是各连一次）；同一库文件在一次调用内只连一次。
+- ``ensure_schema()`` 与 ``write()`` **各自建立连接**；同一库文件在一次调用内只连一次。
 - 连接 PRAGMA 顺序：``journal_mode=WAL`` → ``synchronous`` →
   ``cache_size=-64000`` → ``temp_store=MEMORY``。
 - ``INSERT OR REPLACE`` + 表级 ``PRIMARY KEY (product_no)``，后写覆盖先写。
 - ``parse()`` 是生成器，本层按 ``BATCH_SIZE`` 流式分桶，不把全量记录装进内存。
-- 过期清理按 ``op_time < ?``，异常时 **rollback 并吞掉**（旧 ``_cleanup_db``
-  是 ``log.error + 继续``，不抛给上层），错误收进 ``stats.errors`` 供编排器记录。
+- 过期清理按 ``op_time < ?``，异常时 **rollback 并吞掉**，错误收进
+  ``stats.errors`` 供编排器记录，不抛给上层。
 
 本层不写日志、不连网络、不读 ``.env``；只依赖标准库 ``sqlite3``。
 """
@@ -37,17 +33,17 @@ from typing import Iterable
 
 from .schema import TableSchema
 
-# 现状差异，刻意不统一。注释标明来源，避免以后被「顺手优化」。
+# 按库表形式区分 PRAGMA synchronous；差异刻意保留，不要统一。
 DEFAULT_SYNCHRONOUS = {
-    "per_prefix": "OFF",       # tasks/task_opportunity_recall.py::parse_and_save
-    "crc32_shards": "NORMAL",  # tasks/task_loss_control.py::parse_and_save
-    "fixed_table": "NORMAL",   # 预留模式，与控损一致
+    "multi_db_single_table": "OFF",       # 商机
+    "single_db_multi_table": "NORMAL",    # 控损
+    "single_db_single_table": "NORMAL",   # 预留形式，与控损一致
 }
 
 
 @dataclass
 class WriteStats:
-    """一次 ``write()`` 的可观测信号（替代旧代码里的逐批 ``log.info``）。"""
+    """一次 ``write()`` 的可观测信号。"""
 
     rows: int = 0             # 交给 executemany 的逻辑记录数
     batches: int = 0          # executemany 调用次数
@@ -71,7 +67,7 @@ class SqliteSink:
                               if batch_size is None else batch_size)
         if self.batch_size <= 0:
             raise ValueError(f"batch_size 必须为正整数，当前为 {self.batch_size}")
-        self.synchronous = (DEFAULT_SYNCHRONOUS.get(profile.routing, "NORMAL")
+        self.synchronous = (DEFAULT_SYNCHRONOUS.get(profile.mode, "NORMAL")
                             if synchronous is None else synchronous)
         self.stats = WriteStats()
 
@@ -113,13 +109,13 @@ class SqliteSink:
         self.stats.batches += 1
         self.stats.commits += 1
 
-    def write(self, filename: str, rows: Iterable[tuple], router=None) -> int:
+    def write(self, filename: str, rows: Iterable[tuple], layout=None) -> int:
         """把解析器产出的记录按布局分桶、逐桶满批提交；返回写入记录数。
 
-        ``router`` 默认用构造时传入的 ``layout``（同一份库表定义）；
-        显式传入可实现更细的替换，例如单测里注入假路由。
+        ``layout`` 默认用构造时传入的布局（同一份库表定义）；
+        显式传入可实现更细的替换，例如单测里注入假布局。
         """
-        router = self.layout if router is None else router
+        layout = self.layout if layout is None else layout
         self.stats = WriteStats()
 
         conns: dict[str, sqlite3.Connection] = {}
@@ -129,7 +125,7 @@ class SqliteSink:
             for row in rows:
                 row = tuple(row)
                 self.schema.validate_row(row)
-                db_path, table = router.target(filename, row)
+                db_path, table = layout.target(filename, row)
                 db_path = Path(db_path)
                 key = (str(db_path), table)
                 if key not in batches:
@@ -167,8 +163,8 @@ class SqliteSink:
     def purge_expired(self, cutoff: str) -> int:
         """按 ``op_time < cutoff`` 清理全部库表，返回删除总行数。
 
-        与原 ``_cleanup_db()`` 一致：库文件不存在则跳过；异常时 rollback、
-        记录到 ``stats.errors`` 并继续下一个库，**不抛给上层**。
+        库文件不存在则跳过；异常时 rollback、记录到 ``stats.errors`` 并
+        继续下一个库，**不抛给上层**。
         """
         total = 0
         self.stats.purged = 0
