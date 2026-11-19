@@ -110,8 +110,8 @@ class AiohttpTransport:
     """
 
     def __init__(self, config: IOPConfig | None = None, logger: Any = None) -> None:
-        # config=None → IOP/.env + 系统环境变量；logger=None → NullLogger（完全静默）
-        self._config = config if config is not None else IOPConfig.from_env()
+        # config=None → 读 IOP/.env；logger=None → NullLogger（完全静默）
+        self._config = config if config is not None else IOPConfig.load()
         self._logger = logger if logger is not None else NullLogger()
 
         # 共享会话状态，全部为实例字段

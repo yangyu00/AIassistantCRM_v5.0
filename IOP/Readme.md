@@ -25,8 +25,7 @@ async with IOPClient() as client:
 
 | 文件 | 职责 |
 |---|---|
-| `dotenv.py` | 极简 `.env` 解析（注释 / `export` / 引号 / `${VAR}` 插值），包内自包含 |
-| `config.py` | `FIELD_SPECS` 字段表、`.env` 读取、数值容错、冻结配置对象 |
+| `config.py` | 读 `IOP/.env`、默认值与数值容错、冻结配置对象（配置层就这一个文件） |
 | `endpoints.py` | 上游请求契约：两个端点的 URL / 参数 / 请求头，**两个纯函数**，按传入的 `IOPConfig` 现算 |
 | `transport.py` | `aiohttp` 共享会话与响应收口，`Transport` 协议可注入替身 |
 | `token.py` | token 刷新原语、单飞、重试退避冷却、响应校验、有效期 |
@@ -54,41 +53,23 @@ async with IOPClient() as client:
 
 ## 配置
 
-### 改哪里
+**唯一来源 `IOP/.env`，唯一入口 `IOPConfig.load()`。** 不读系统环境变量，没有
+`IOP_ENV_FILE` 路径覆盖，也没有 `from_mapping()` / `from_module_defaults()`
+这类覆盖入口。改完 `.env` **重启进程**生效（`IOPClient()` 构造时读一次，结果冻结）。
 
 | 文件 | 作用 |
 |---|---|
-| `IOP/.env` | **模块级配置**：与 `config.py` 同目录，不依赖启动时的当前工作目录，日常改这个 |
+| `IOP/.env` | 与 `config.py` 同目录，不依赖启动时的当前工作目录，日常改这个 |
 | `IOP/.env.example` | 脱敏模板，新环境 `cp IOP/.env.example IOP/.env` 后按实际填写 |
-| `IOP/config.py` 的 `FIELD_SPECS` | 字段清单与内置默认值；新增可改参数在这里加一行，并写进 `.env.example` |
+| `IOP/config.py` 的 `_SPECS` | 20 个键的清单、默认值与数值下界；新增参数在这里加一行并写进 `.env.example` |
 
-优先级：**系统环境变量 > `IOP/.env` > `FIELD_SPECS` 内置默认值**。
-路径可用 `IOP_ENV_FILE=/path/to/other.env` 覆盖；文件不存在时静默回落内置默认值（把 `IOP/` 拷到别的项目照样能跑）。配置对象冻结，**改完 `.env` 需重启进程**。
+`.env` 语法只认**整行 `#` 注释**和 `KEY=VALUE`，不做引号、行内注释或
+`${VAR}` 插值——值里要带空格 / `#` 就别用，保持一眼能看懂。
 
-想确认改没生效：
+想确认改没生效（配置对象冻结，`repr` 会自动屏蔽 `secret`）：
 
 ```bash
-python -c "from IOP import load_env, IOPConfig; print(load_env()); print(IOPConfig.from_env())"
-```
-
-`repr` 会自动屏蔽 `secret`。
-
-### 三个构造入口
-
-| 入口 | 行为 | 用途 |
-|---|---|---|
-| `IOPConfig.from_env()` | 读 `IOP/.env` + 系统环境变量 | `IOPClient()` 零参数构造的默认路径 |
-| `IOPConfig.from_mapping({...})` | 调用方显式覆盖，不读任何文件 | 跨项目复用、单测；分组名大小写不敏感，兼容旧版 `TOKEN` / `CustInfo` |
-| `IOPConfig.from_module_defaults()` | 纯内置默认值，不读文件 | 兼容旧调用、需要完全脱离环境的单测 |
-
-`from_mapping()` 的形状：
-
-```python
-cfg = IOPConfig.from_mapping({
-    "token": {"host": "10.0.0.1", "secret": "..."},
-    "timeout": {"total": 5},
-})
-client = IOPClient(config=cfg)
+python -c "from IOP import IOPConfig; print(IOPConfig.load())"
 ```
 
 ### 键表（完整注释见 `IOP/.env`）
@@ -101,13 +82,14 @@ client = IOPClient(config=cfg)
 | 重试 / 退避 / 冷却 | `IOP_RETRY_MAX_ATTEMPTS` / `IOP_RETRY_BACKOFF_BASE` / `IOP_RETRY_BACKOFF_FACTOR` / `IOP_RETRY_BACKOFF_MAX` / `IOP_RETRY_COOLDOWN` | `4` / `0.2` / `2` / `2` / `5` |
 | token 有效期（秒） | `IOP_LIFETIME_DEFAULT_EXPIRES_IN` / `IOP_LIFETIME_REFRESH_BUFFER` / `IOP_LIFETIME_MIN_LIFETIME` / `IOP_LIFETIME_MAX_EXPIRES_IN` | `600` / `360` / `60` / `86400` |
 
-`.env` 支持 `#` 注释、行内注释、`export` 前缀、单/双引号与 `${VAR}` 插值（例如 `IOP_TOKEN_SECRET=${MY_CI_SECRET}`）。
-
 ### 容错与安全
 
-- **数值容错统一**：缺键、类型错、NaN / inf、越界一律回落默认，超时三项也走同一套规则（旧版这里会直接抛 `ValueError`）。`max_attempts` 硬上限 20（不开放配置，防止配错导致长时间串行循环），`cooldown=0` 表示不冷却；`IOP_TIMEOUT_*` 填 0 或过小值会回落到内置默认值，避免请求立刻超时。
-- **配错不静默**：`from_mapping()` 里拼错分组名或字段名直接抛 `ValueError`，不会「配了却没生效」。
-- **凭据**：`IOPConfig.__repr__` 屏蔽 `secret`；`IOP/.env` 含明文凭据，公开分发本目录前请把它加入 `.gitignore`，或删掉 `IOP_TOKEN_ID` / `IOP_TOKEN_SECRET` 两行，改用系统环境变量注入。
+- **缺键 / 数值填错不报错**：回落 `config.py` 里的内置默认值。非数字、NaN / inf、
+  低于下界一律回落；`max_attempts` 硬上限 20（不开放配置，防止配错导致长时间
+  串行循环），`cooldown=0` 表示不冷却，`IOP_TIMEOUT_*` 填 0 或过小值回落默认，
+  避免请求立刻超时。文件不存在时同理，全部回落默认值。
+- **凭据**：`IOPConfig.__repr__` 屏蔽 `secret`；`IOP/.env` 含明文凭据，公开分发
+  本目录前请把它加入 `.gitignore`，仓库里只保留 `.env.example`。
 
 ## 并发与可靠性约束
 

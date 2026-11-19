@@ -5,7 +5,7 @@
 超时/解析异常就地收口 → 逐层校验 → 统一降级 ``{}``。
 
 零参数可用：``async with IOPClient() as client:``
-- ``config=None``  → ``IOPConfig.from_env()``（读 ``IOP/.env`` + 系统环境变量）
+- ``config=None``  → ``IOPConfig.load()``（读同目录 ``IOP/.env``）
 - ``transport=None`` → 自建 ``AiohttpTransport``
 - ``logger=None`` → ``NullLogger``，未注入则不记录日志
 
@@ -37,7 +37,7 @@ class IOPClient:
         transport: Transport | None = None,
         logger: Any = None,
     ) -> None:
-        self._config = config if config is not None else IOPConfig.from_env()
+        self._config = config if config is not None else IOPConfig.load()
         self._logger = logger if logger is not None else NullLogger()
         self._transport = (transport if transport is not None
                            else AiohttpTransport(self._config, self._logger))

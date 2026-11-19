@@ -47,7 +47,7 @@ class TokenManager:
     """token 值、有效期、单飞刷新、重试退避冷却、响应校验。
 
     构造注入点：``config`` / ``transport`` / ``logger``，全部可选。
-    ``config=None`` → ``IOP/.env`` + 系统环境变量；``logger=None`` → 完全静默；
+    ``config=None`` → 读 ``IOP/.env``；``logger=None`` → 完全静默；
     ``transport=None`` → 自建 ``AiohttpTransport``。请求形状由 ``endpoints.py``
     的纯函数按 config 现算，无需再注入一层「请求构造器」。
     每个实例状态独立，天然隔离，无需任何全局复位。
@@ -59,7 +59,7 @@ class TokenManager:
         transport: Transport | None = None,
         logger: Any = None,
     ) -> None:
-        self._config = config if config is not None else IOPConfig.from_env()
+        self._config = config if config is not None else IOPConfig.load()
         self._logger = logger if logger is not None else NullLogger()
         self._transport = (transport if transport is not None
                            else AiohttpTransport(self._config, self._logger))
