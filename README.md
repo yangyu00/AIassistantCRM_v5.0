@@ -1,12 +1,12 @@
 # AIassistantCRM v5.0 · 项目说明
 
 > **文档地图**：本文件是全局入口（在线业务 / 架构 / 降级总表 / 在线侧集成逻辑）。
-> 三个可独立复用组件各有「用法」与「约束」两份文档：
-> - [`IOP/Readme.md`](IOP/Readme.md)（用法、配置、流程）、[`IOP/constraints.md`](IOP/constraints.md)（不变量、降级、自检）
-> - [`local_excel2db/Readme.md`](local_excel2db/Readme.md)（用法、配置、流程）、[`local_excel2db/constraints.md`](local_excel2db/constraints.md)（不变量、降级、自检）
-> - [`sftp_avl2db/Readme.md`](sftp_avl2db/Readme.md)（用法、配置、流程）、[`sftp_avl2db/constraints.md`](sftp_avl2db/constraints.md)（不变量、降级、自检）
+> 三个可独立复用组件各有一份 `Readme.md`（用法、配置、流程、不变量与降级）：
+> - [`IOP/Readme.md`](IOP/Readme.md)（运行参数改同目录的 `IOP/.env`）
+> - [`local_excel2db/Readme.md`](local_excel2db/Readme.md)
+> - [`sftp_avl2db/Readme.md`](sftp_avl2db/Readme.md)
 
-> 原 `Missions_writer.md`（488 行）与 `Missions_reader.md`（1098 行）已按职责拆分：三个包的说明进各自目录，在线业务与全局视角留在本文件。代码、配置、行为均未改动，仅整理文档。
+> 原 `Missions_writer.md`（488 行）与 `Missions_reader.md`（1098 行）已按职责拆分：三个包的说明进各自目录，在线业务与全局视角留在本文件。**那次拆分只整理文档**，代码、配置、行为均未改动。
 
 > **职责边界**：各包 `Readme.md` 只描述组件自身（入口、配置、链路、约束）；
 > `main.py` 如何调用与编排组件——IOP 客户端的进程级共享、按业务决定是否查询、
@@ -35,13 +35,13 @@ dimensions.db ──→ reader.DimensionReader ──→ transform ────�
 
 ## 降级与容错（跨模块总表）
 
-> 精简全局视角；**细目、触发条件与自检断言见各包 `constraints.md`**，本表不重复。
+> 精简全局视角；**细目、触发条件与自检断言见各包 `Readme.md` 的对应章节**，本表不重复。
 
 | 侧 | 触发 | 行为 | 细目 |
 |---|---|---|---|
-| 维表 `local_excel2db` | 库/表/列未就绪、配置异常、查询失败、注册 xlsx 缺失 | 读取侧返回 `{}`、写入侧跳过并保留上次版本，API 不 500 | [`local_excel2db/constraints.md`](local_excel2db/constraints.md) |
-| 业务库 `sftp_avl2db` | 库不存在、`product_id` 未映射、查询异常 | `services/data_query.py` 返回 `{}`，spec 子类走空记录分支 | [`sftp_avl2db/constraints.md`](sftp_avl2db/constraints.md) |
-| IOP | token / 标签超时、连接失败、响应异常、失败冷却期 | 重试退避冷却后降级 `{}`，不阻塞其它并发请求 | [`IOP/constraints.md`](IOP/constraints.md) |
+| 维表 `local_excel2db` | 库/表/列未就绪、配置异常、查询失败、注册 xlsx 缺失 | 读取侧返回 `{}`、写入侧跳过并保留上次版本，API 不 500 | [`local_excel2db/Readme.md`](local_excel2db/Readme.md)「读取侧与降级」 |
+| 业务库 `sftp_avl2db` | 库不存在、`product_id` 未映射、查询异常 | `services/data_query.py` 返回 `{}`，spec 子类走空记录分支 | [`sftp_avl2db/Readme.md`](sftp_avl2db/Readme.md)「拉取不变量」 |
+| IOP | token / 标签超时、连接失败、响应异常、失败冷却期 | 重试退避冷却后降级 `{}`，不阻塞其它并发请求 | [`IOP/Readme.md`](IOP/Readme.md)「并发与可靠性约束」 |
 | 调用量库 | `log/call_sum.db` 写入 / 启动读取失败 | 保留 `_PENDING` 下轮重试，或基数按 0 恢复、服务照常启动 | 见下文「调用量统计」 |
 | 在线 API | 任何上述依赖不可用 | 最终 `code: "2"` 空话术，不抛 500 | 见「请求处理与路由」 |
 

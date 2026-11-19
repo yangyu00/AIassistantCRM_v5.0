@@ -5,7 +5,7 @@
 超时/解析异常就地收口 → 逐层校验 → 统一降级 ``{}``。
 
 零参数可用：``async with IOPClient() as client:``
-- ``config=None``  → ``IOPConfig.from_module_defaults()``
+- ``config=None``  → ``IOPConfig.from_env()``（读 ``IOP/.env`` + 系统环境变量）
 - ``transport=None`` → 自建 ``AiohttpTransport``
 - ``logger=None`` → ``NullLogger``，未注入则不记录日志
 
@@ -36,7 +36,7 @@ class IOPClient:
         transport: Transport | None = None,
         logger: Any = None,
     ) -> None:
-        self._config = config if config is not None else IOPConfig.from_module_defaults()
+        self._config = config if config is not None else IOPConfig.from_env()
         self._logger = logger if logger is not None else NullLogger()
         self._transport = (transport if transport is not None
                            else AiohttpTransport(self._config, self._logger))
@@ -100,8 +100,8 @@ class IOPClient:
         await self._tokens.ensure_token()
 
         if not self._tokens.token_valid():
-            # 统一降级为空 dict：返回 None 不会触发 main.py 的 except，会一路传到
-            # ProductInfoRaw 并抛 TypeError，反而让最该降级的场景返回 500。
+            # 统一降级为空 dict：返回 None 不会触发上层的 except，而会在调用方
+            # 按 dict 使用时抛 TypeError，反而让最该降级的场景失败。
             self._logger.error(
                 "IOP token 不可用：刷新后仍无有效 access_token，本次标签查询降级为空标签")
             return {}

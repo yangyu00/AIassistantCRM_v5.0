@@ -47,7 +47,7 @@ class TokenManager:
     """token 值、有效期、单飞刷新、重试退避冷却、响应校验。
 
     构造注入点：``config`` / ``transport`` / ``spec`` / ``logger``，全部可选。
-    ``config=None`` → 模块内默认常量；``logger=None`` → 完全静默；
+    ``config=None`` → ``IOP/.env`` + 系统环境变量；``logger=None`` → 完全静默；
     ``transport=None`` → 自建 ``AiohttpTransport``；``spec=None`` → 自建
     ``EndpointSpec``。每个实例状态独立，天然隔离，无需任何全局复位。
     """
@@ -59,7 +59,7 @@ class TokenManager:
         spec: EndpointSpec | None = None,
         logger: Any = None,
     ) -> None:
-        self._config = config if config is not None else IOPConfig.from_module_defaults()
+        self._config = config if config is not None else IOPConfig.from_env()
         self._logger = logger if logger is not None else NullLogger()
         self._transport = (transport if transport is not None
                            else AiohttpTransport(self._config, self._logger))
@@ -87,7 +87,7 @@ class TokenManager:
 
     @property
     def tokens(self) -> TokenState:
-        """``state`` 的别名。"""
+        """``state`` 的兼容别名（新代码直接用 ``state``）。"""
         return self._state
 
     @property
@@ -162,7 +162,7 @@ class TokenManager:
     async def ensure_token(self):
         """确保 state 里有有效 access_token，业务侧统一调用本方法。
 
-        不要直接调用 ``token2global()``，否则绕开并发保护。
+        不要直接调用 ``refresh_once()``，否则绕开并发保护。
         - token 已有效：快速路径直接返回，连锁都不碰
         - 冷却期内：直接返回（不刷新），调用方按「无标签」降级；
           一个冷却周期只打一条 INFO 提示（本项目 WARNING 不落盘）
@@ -197,7 +197,7 @@ class TokenManager:
             self._logger.info(f"IOP token 刷新开始 | max_attempts={n}")
             try:
                 for attempt in range(1, n + 1):
-                    await self.token2global()
+                    await self.refresh_once()
                     if self.token_valid():
                         self._logger.info(
                             f"IOP token 刷新成功 | attempt={attempt}/{n} | "
@@ -236,8 +236,8 @@ class TokenManager:
         self._logger.error(f"IOP token 请求失败 | status={status_code} | {reason}")
 
     # -- 单次刷新原语 -------------------------------------------------------
-    async def token2global(self):
-        """单次刷新 token 并写入 state。
+    async def refresh_once(self):
+        """单次刷新 token 并写入实例 state（名字里不再有 "global"）。
 
         只由 ``ensure_token()`` 在单飞锁内调用；业务侧请勿直接调用，否则绕开
         并发保护。先查状态码，再校验响应结构；所有失败分支统一走
@@ -308,3 +308,7 @@ class TokenManager:
         # 既无 access_token 也无 error（如网关返回的业务错误 JSON），
         # 不能沿用已有的、可能已过期的 access_token。
         self._fail_token(status_code, "响应缺少 access_token 且无 error 字段")
+
+    # 历史名称：早期 token 写在模块级全局变量，方法名沿用至今；现在状态全在
+    # 实例字段里。保留别名避免外部旧调用报错，新代码请用 refresh_once()。
+    token2global = refresh_once

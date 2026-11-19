@@ -110,8 +110,8 @@ class AiohttpTransport:
     """
 
     def __init__(self, config: IOPConfig | None = None, logger: Any = None) -> None:
-        # config=None → 模块内默认常量；logger=None → NullLogger（完全静默）
-        self._config = config if config is not None else IOPConfig.from_module_defaults()
+        # config=None → IOP/.env + 系统环境变量；logger=None → NullLogger（完全静默）
+        self._config = config if config is not None else IOPConfig.from_env()
         self._logger = logger if logger is not None else NullLogger()
 
         # 共享会话状态，全部为实例字段
@@ -137,10 +137,8 @@ class AiohttpTransport:
         )
 
     def client_timeout(self) -> aiohttp.ClientTimeout:
-        """返回本实例使用的超时对象。"""
-        t: TimeoutCfg = self._config.timeout
-        return aiohttp.ClientTimeout(
-            total=t.total, connect=t.connect, sock_read=t.sock_read)
+        """返回本实例使用的超时对象（与共享 session 用同一份构造参数）。"""
+        return self._session_kwargs()["timeout"]
 
     # -- 生命周期 ------------------------------------------------------------
     async def start(self):

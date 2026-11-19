@@ -61,8 +61,8 @@ def parse_custinfo_response(
         item_code = custom_label.get("ITEMCODE")
         if item_code is None:
             continue
-        custom_label_dict.update({item_code: [custom_label.get("ITEMNAME"),
-                                              custom_label.get("ITEMVALUE")]})
+        custom_label_dict[item_code] = [custom_label.get("ITEMNAME"),
+                                        custom_label.get("ITEMVALUE")]
 
     logger.info(
         f"IOP 标签查询成功 | status={status_code} | "
