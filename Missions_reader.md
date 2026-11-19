@@ -12,7 +12,7 @@
 ```
 tasks/sqlite_db/{任务名}/*.db ──→ services/data_query.py ───────┐
                                     ↑ PROFILES[...] + QUERY_SPECS 派发 ├─→ main.py（路由）→ services/（重组）→ output_script
-dimensions.db ──→ dim_reader.py ──→ dim_transform ───────────────┘
+dimensions.db ──→ reader.DimensionReader ──→ transform ────────┘
 ```
 
 > `tasks/` 是**运行时数据目录**（由 `sftp_avl2db` 写入侧产出：`log/` `state/`
@@ -20,7 +20,7 @@ dimensions.db ──→ dim_reader.py ──→ dim_transform ──────
 
 | 进程 | 数量 | 职责 |
 |---|---|---|
-| 写入侧进程 | 3 | 2 个 SFTP 拉取 + 1 个 `dim_watcher`，见 `Missions_writer.md` |
+| 写入侧进程 | 3 | 2 个 SFTP 拉取 + 1 个 `python -m local_excel2db`，见 `Missions_writer.md` |
 | 在线 API | 1 | 只读业务库与维表、按路由选业务对象并拼装话术；另在内存累计调用量并按阈值写入 `log/call_sum.db` |
 
 **部署时 4 个进程都要起**。库未就绪时 API 按「无业务记录 / 无维表」降级，不会 500。
@@ -664,21 +664,21 @@ import 时 `src/log_util.py` 会按既有行为创建 `log/` 目录与当日日�
 
 这些格式化都在业务侧执行，库里保存的是原始文本。
 
-## 读取侧（`dim_reader`）
+## 读取侧（`reader.py` / `DimensionReader`）
 
 三个加载函数，全部 `mode=ro` 打开、用完即关，**在线业务绝不创建/写入维表库**。
 
 | 函数 | 返回形状 | 在线消费方 |
 |---|---|---|
-| `load_lookup("label_name_mapping")` | `{label_id: display_name}` | 无（辅助画像不再做名称映射，能力保留供新线复用） |
-| `load_product_selling_point()` | `{business_id: (product_name, selling_point, label_id)}` | `main.py` 循环外读入 1 次并显式传参，供 `ProductInfoRaw` 取产品名与非商机 ID 的标签子集 |
-| `load_cut_in_script()` | `{business_id: {标签ID / 兜底话术: [切入, 挽留] 或 ""}}` | 无（维表业务已下线，定义保留供新线复用） |
+| `DimensionReader.load_lookup("label_name_mapping")` | `{label_id: display_name}` | 无（辅助画像不再做名称映射，能力保留供新线复用） |
+| `load_product_selling_point()`（包级入口） | `{business_id: (product_name, selling_point, label_id)}` | `main.py` 循环外读入 1 次并显式传参，供 `ProductInfoRaw` 取产品名与非商机 ID 的标签子集 |
+| `DimensionReader.load_cut_in_script()` | `{business_id: {标签ID / 兜底话术: [切入, 挽留] 或 ""}}` | 无（维表业务已下线，定义保留供新线复用） |
 
-`load_cut_in_script()` 用 `ORDER BY rowid` 取
+`DimensionReader.load_cut_in_script()` 用 `ORDER BY rowid` 取
 `{key, fallback, groups} + tag_*` 原始列，把每行转成列名映射后交给
-`dim_transform.build_cut_in_script_dict()`；列名、标签列顺序、兜底键全部取自
-`registry.json`，不硬编码。该函数当前无在线调用方，留在 `dim_reader` 里不产生
-运行时开销。
+`transform.build_cut_in_script_dict()`（由 `CutInScriptTransformer` 收拢列角色）；
+列名、标签列顺序、兜底键全部取自 `registry.json`，不硬编码。该方法当前无在线
+调用方，留在 `reader.py` 里不产生运行时开销。
 
 ### 降级矩阵
 
@@ -694,11 +694,11 @@ import 时 `src/log_util.py` 会按既有行为创建 `log/` 目录与当日日�
 `queried_label_ids` 为 `[]`；商机回捞的标签子集是代码内固定值，辅助画像由
 IOP 标签拼装、不受维表影响；控损与诊断兜底不计算画像；兜底统一返回
 `code: "2"` 空话术。
-**维表侧出任何问题都不会让 API 500**。同一类告警每进程只打印一次（`_WARNED` 集合），避免刷屏。
+**维表侧出任何问题都不会让 API 500**。同一类告警每进程只打印一次（`DimensionReader._warned` 类级集合），避免刷屏。
 
 ### 读取次数
 
-不做进程级缓存，每次调用读一次全表，天然读到 `dim_watcher` 写入的最新值，
+不做进程级缓存，每次调用读一次全表，天然读到写入侧进程写入的最新值，
 无缓存失效或脏读问题。一次请求内：
 
 - `main.py::marketAssistant` 在循环**外**读 1 次卖点表，把同一份 dict
@@ -710,7 +710,7 @@ IOP 标签拼装、不受维表影响；控损与诊断兜底不计算画像；�
 
 ## 维表读取侧依赖的 registry 声明
 
-完整配置项与校验见 `Missions_writer.md`；`dim_reader` 提供以下三类声明的读取
+完整配置项与校验见 `Missions_writer.md`；`DimensionReader` 提供以下三类声明的读取
 能力，当前在线侧实际只用到 `lookup.values`：
 
 | 声明 | 形状 | 用途 |
@@ -719,10 +719,10 @@ IOP 标签拼装、不受维表影响；控损与诊断兜底不计算画像；�
 | `lookup.values` | 多列 → `{key: (值1, 值2, 值3)}` | `product_selling_point_match`，`values` 顺序即元组下标 |
 | `cut_in_script` | `key` / `fallback` / `groups` / `tags` / `fallback_key` | 声明加工所需的原始列角色，`tags` 可写 `"dynamic_columns"` 直接引用展开结果 |
 
-⚠️ `cut_in_script.fallback_key` 当前值 `"兜底话术"`，由 `dim_reader` /
-`dim_transform` 按声明生成兜底项；在线侧已无消费方，调整取值前先确认新线的口径。
+⚠️ `cut_in_script.fallback_key` 当前值 `"兜底话术"`，由 `CutInScriptTransformer`
+按声明生成兜底项；在线侧已无消费方，调整取值前先确认新线的口径。
 
-## 维表数据重组（`dim_transform`）
+## 维表数据重组（`transform.py`）
 
 只依赖 `re`，不写回库。库里存的是含换行、`**`、原始 HTML 片段的单元格文本；
 `strip()`、`.replace("**", "")`、HTML 包装都在这一步做。
@@ -766,9 +766,9 @@ IOP 标签拼装、不受维表影响；控损与诊断兜底不计算画像；�
 | `main.py::marketAssistant` | `load_product_selling_point()` | 循环外读入 1 次，作为请求级共享 dict 显式传给三个构造点，不参与路由判断 |
 | `services/product_info_raw.py::__init__` | 无（由调用方传入 `selling_points`） | 存 `self.product_selling_point_match_dict`；`[0]` 取产品名（仅用于日志）；商机回捞的 `queried_label_ids` 由代码内固定集提供，其余 ID 才从 `[2].split("\n")` 取 |
 
-`load_cut_in_script()` 与 `load_lookup("label_name_mapping")` 仍由 `dim_reader`
-提供，但在线侧无调用方；维表库、`registry.json` 与 `dim_transform` 的加工能力
-全部保留，供客户诊断新线复用。
+`DimensionReader.load_cut_in_script()` 与 `DimensionReader.load_lookup()` 仍由
+`reader.py` 提供，但在线侧无调用方；维表库、`registry.json` 与 `transform.py`
+的加工能力全部保留，供客户诊断新线复用。
 
 ## 公共画像拼装（`services/product_info_raw.py`）
 
@@ -888,7 +888,7 @@ curl "http://host:8989/api/callStat?month=2026-11"
 
 | 侧 | 触发 | 行为 |
 |---|---|---|
-| 维表 | 库/表/列不存在、`registry.json` 异常、查询失败 | `dim_reader` 返回 `{}`，业务按「无维表」降级 |
+| 维表 | 库/表/列不存在、`registry.json` 异常、查询失败 | `DimensionReader` 返回 `{}`，业务按「无维表」降级 |
 | 业务库 | 库文件不存在、`product_id` 未映射、未注册任务名、查询异常 | `services/data_query.py` 返回 `{}`，对应 spec 子类走空记录分支 |
 | 调用量库 | `log/call_sum.db` 写入失败 | 保留 `_PENDING` 增量并告警、下轮重试；`_DAY_TOTAL` 仍准确，不影响请求 |
 | 调用量库 | 启动时读库失败 | 只告警、基数按 0 恢复，服务照常启动；库恢复后下次重启从真实值继续 |
@@ -898,7 +898,7 @@ curl "http://host:8989/api/callStat?month=2026-11"
 | IOP | 处于失败冷却期 | `ensure_token()` 在拿锁前直接短路，**不打认证服务、不等超时**；所有请求立即降级 `{}`；一个冷却周期只打一条 INFO 提示 |
 | IOP | token 响应非 200 / 解析失败 / 结构异常 / 缺字段 / 上游 `error` | `token2global()` 统一清空 `TOKENS` 并记带 `status=` 的 ERROR；按配置重试/退避/冷却，最终降级 `{}`；**不沿用旧 token** |
 | IOP | `expires_in` 缺失 / 非法 / `<= 360` / 过大 | 缺失静默用 600；非法回落默认并记一条 INFO；有效期夹在 `[min_lifetime, 上游声明值]`，deadline 永远落在未来、不抛 `ValueError`、不每请求刷新；token 照常可用 |
-| 写入侧 | 注册 xlsx 缺失 | `dim_watcher` 告警跳过，库保留上次成功版本 |
+| 写入侧 | 注册 xlsx 缺失 | `python -m local_excel2db` 告警跳过，库保留上次成功版本 |
 
 **维表侧出任何问题都不会让 API 500**：`ProductInfoRaw` 的产品名为 `None`、
 商机回捞的标签子集仍取代码内固定值、其余 ID 的 `queried_label_ids` 为 `[]`，
@@ -910,8 +910,8 @@ curl "http://host:8989/api/callStat?month=2026-11"
 
 ## 自检要点（在线侧）
 
-- 删库后调用 `load_product_selling_point()` / `load_cut_in_script()` 应返回 `{}`
-  且不创建任何文件。
+- 删库后调用 `load_product_selling_point()` / `DimensionReader.load_cut_in_script()`
+  应返回 `{}` 且不创建任何文件。
 - `import main` 正常，`app.router.on_startup` 为空（无定时任务）。
 - 路由只有三类：商机 3 个 ID 走 `ProductInfoBySpec9554`、控损 ID 有记录时走
   `ProductInfoBySpec9591`、其余全部落 `ProductInfoRaw` 并返回 `code: "2"`
@@ -936,7 +936,8 @@ curl "http://host:8989/api/callStat?month=2026-11"
   不再发起查询、异常仍降级 `{}` 且不抛 500。
 - **维表读取次数**：打桩 `load_product_selling_point()`，一次请求应为 **1** 次，
   与列表里产品个数无关；三个构造点都显式接收同一份 dict。
-- `services/data_query.py`、两个 spec 子类、`dim_reader` 均可独立导入。
+- `services/data_query.py`、两个 spec 子类、`local_excel2db.reader` 均可独立导入；
+  `import local_excel2db` 零 I/O、不拉起 openpyxl / sqlite3。
 - `PROFILES` / `DB_SCHEMAS` / `QUERY_SPECS` 三者 key 一致；改 `.env` 的
   `LOSS_CONTROL_NUM_TABLES` 后，`get_loss_control_latest()` 解析出的表名后缀同步变化，
   写入侧 `Crc32ShardLayout` 的分表数也应同步。
@@ -1064,14 +1065,14 @@ curl "http://host:8989/api/callStat?month=2026-11"
   实现，也不建代码占位或空模块；旧业务线已分步清理完毕，本项目不再保留其
   代码、配置、文档或样例。维表业务下线后，不属于商机回捞 / 控损的产品 ID
   全部作为诊断兜底，当前统一输出 `code: "2"` 空话术，等新线实现后再切换；
-  维表库、`registry.json`、`dim_reader` / `dim_transform` 的加工能力均保留供复用。
+  维表库、`registry.json`、`reader.py` / `transform.py` 的加工能力均保留供复用。
   诊断兜底声明 `RAW_LABELS`、一定触发 IOP；当前输出尚未消费标签，属已确认的
   预留，不是遗漏的浪费。
 - 按业务声明 IOP / 画像依赖已落地，不再是待办：三态声明、请求级惰性标签提供者、
   画像按 `product_id` 懒执行缓存、卖点表每请求 1 次，见「请求处理与路由」
   「公共画像拼装」与「自检要点」。
 - 基于 `version` 的进程级缓存、版本回滚、历史版本查询、灰度切换。
-- 加工规则的完全配置化：当前 `cut_in_str2tuple` 与分组规则写在 `dim_transform.py`，
+- 加工规则的完全配置化：当前 `cut_in_str2tuple` 与分组规则写在 `transform.py`，
   `registry.json` 只声明列角色与列顺序。
 - 状态不变量已处理：`Tokens.deadline` 恒为 datetime，无有效 token 时统一为
   `_INVALID_DEADLINE`（过去时间），见「Token 状态不变量」小节。

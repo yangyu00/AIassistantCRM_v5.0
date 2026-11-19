@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from IOP import IOPClient
 from config import ImmutableYamlConfig
-from excel2consts.dim_reader import load_product_selling_point
+from local_excel2db import load_product_selling_point
 from services.product_info_raw import ProductInfoRaw as ProductInfoRaw
 from services.rewrite_by_spec_f09554.rewrite import ProductInfoRewrite as ProductInfoBySpec9554
 from services.rewrite_by_spec_f09591.rewrite import ProductInfoRewrite as ProductInfoBySpec9591
@@ -44,7 +44,7 @@ async def lifespan(app: FastAPI):
 
 # 数据更新（SFTP 拉取 → SQLite 入库）由 sftp_avl2db 的 2 个独立进程负责
 # （运行时数据目录仍为 tasks/）；
-# 维表更新由 excel2consts.dim_watcher 独立进程负责；
+# 维表更新由 python -m local_excel2db 独立进程负责；
 # 本进程对业务库与维表一律只读 SQLite，唯一写入是调用量统计（log/call_sum.db）。
 app = FastAPI(lifespan=lifespan)
 register_errors_handlers(app)

@@ -1,15 +1,23 @@
 # -*- coding: utf-8 -*-
 """维表原始列 → 业务侧 dict 的拆解加工（只在读取侧执行，不写回库）。
 
-库里只保存 Excel 的原始列值；本模块负责：
-  cut_in_str2tuple：把「切入话术…拒绝挽留话术…」文本拆成 [切入, 挽留]
-  build_cut_in_script_dict：按「匹配结果2」分组、对齐「标签0…标签N」重建嵌套 dict
+库里只保存 Excel 的原始单元格文本；本模块负责：
+  ``cut_in_str2tuple``          把「切入话术…拒绝挽留话术…」拆成 [切入, 挽留]
+  ``build_cut_in_script_dict``  按「匹配结果2」分组、对齐「标签0…标签N」重建嵌套 dict
+
+两个纯函数不依赖任何 I/O，可单独调用、单独测试。仅依赖 ``re``。
 
 两条分组规则：
-  - 「匹配结果2」为空时整条置为 {}（含兜底话术一并丢弃）
-  - 分组数超过标签列数量时，多出来的分组填 ""
+  - 「匹配结果2」为空时整条置为 ``{}``（含兜底话术一并丢弃）
+  - 分组数超过标签列数量时，多出来的分组填 ``""``
 """
+from __future__ import annotations
+
 import re
+from collections.abc import Iterable, Sequence
+
+from .models import CutInScriptSpec
+from .protocols import Row
 
 
 def cut_in_str2tuple(fusion_scripts: str):
@@ -58,11 +66,12 @@ def _text(value):
     return "" if value is None else str(value)
 
 
-def build_cut_in_script_dict(rows, key_col, fallback_col, groups_col, tag_cols,
-                             fallback_key="兜底话术"):
-    """由原始行重建 {business_id: {标签ID / 兜底话术: [切入, 挽留] 或 ""}}。
+def build_cut_in_script_dict(rows: Iterable[dict], key_col: str, fallback_col: str,
+                             groups_col: str, tag_cols: Sequence[str],
+                             fallback_key: str = "兜底话术") -> dict:
+    """由原始行重建 ``{business_id: {标签ID / 兜底话术: [切入, 挽留] 或 ""}}``。
 
-    :param rows: 可迭代的「列名 → 值」映射，即 dim_reader 查出的原始行
+    :param rows: 可迭代的「列名 → 值」映射，即仓储查出的原始行
     :param tag_cols: 有序标签列名，下标 g 对应 Excel「标签{g}」列
     """
     result = {}
@@ -87,3 +96,30 @@ def build_cut_in_script_dict(rows, key_col, fallback_col, groups_col, tag_cols,
             result[key_id] = {}
 
     return result
+
+
+class CutInScriptTransformer:
+    """把 ``CutInScriptSpec`` 的列角色收拢成一次「查列 → 重建」的调用。
+
+    持有不可变配置，无运行状态；``select_columns`` 交给仓储查询，``build()``
+    把查回的原始行交回纯函数。这样 ``DimensionReader`` 不必逐个传列名参数。
+    """
+
+    def __init__(self, spec: CutInScriptSpec) -> None:
+        self._spec = spec
+
+    @property
+    def select_columns(self) -> tuple[str, ...]:
+        return self._spec.select_columns
+
+    def build(self, rows: Iterable[Row]) -> dict:
+        spec = self._spec
+        dicts = (dict(zip(self.select_columns, row)) for row in rows)
+        return build_cut_in_script_dict(
+            dicts,
+            key_col=spec.key, fallback_col=spec.fallback, groups_col=spec.groups,
+            tag_cols=spec.tags, fallback_key=spec.fallback_key,
+        )
+
+
+__all__ = ["cut_in_str2tuple", "build_cut_in_script_dict", "CutInScriptTransformer"]

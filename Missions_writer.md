@@ -234,7 +234,7 @@ utf-8；控损 `_strip_eol()` 只剥**一个**反斜杠，且 `>=5` 列时丢弃
 
 # 维表写入侧（Excel → SQLite）
 
-> 维表由独立进程 `excel2consts.dim_watcher` 从 Excel 抽列写入本地 SQLite。
+> 维表由独立进程 `python -m local_excel2db` 从 Excel 抽列写入本地 SQLite。
 > **库里只存原始单元格文本**，所有字符串加工（HTML 包装、按换行拆分、分组对齐）
 > 都在读取侧完成，不写回库、不固化样式；读取与重组见 `Missions_reader.md`。
 
@@ -242,7 +242,7 @@ utf-8；控损 `_strip_eol()` 只剥**一个**反斜杠，且 `>=5` 列时丢弃
 
 ```
 卖点维表.xlsx ─┐
-                ├─→ dim_watcher（独立进程，写）─→ excel2consts/sqlite_db/dimensions.db
+                ├─→ local_excel2db watcher（独立进程，写）─→ local_excel2db/sqlite_db/dimensions.db
 标签转换维表.xlsx ┘                                      │
                                                         │ mode=ro
                                                         ↓
@@ -252,25 +252,33 @@ utf-8；控损 `_strip_eol()` 只剥**一个**反斜杠，且 `>=5` 列时丢弃
 | 进程 | 命令（项目根目录） | 职责 |
 |---|---|---|
 | SFTP 拉取 ×2 | `python -m sftp_avl2db --task xxx` | AVL → `tasks/sqlite_db/` |
-| 维表写入 ×1 | `python -m excel2consts.dim_watcher` | xlsx → `dimensions.db` |
+| 维表写入 ×1 | `python -m local_excel2db` | xlsx → `dimensions.db` |
 | 在线 API ×1 | `python main.py` | 只读业务库与维表；另按阈值写调用量到 `log/call_sum.db`（见 `Missions_reader.md`） |
 
 **部署时 4 个进程都要起**。`main.py` 不含任何定时任务，只有一个 `lifespan` 生命周期钩子（见 `Missions_reader.md`），除调用量统计外不写业务库/维表；
-`dim_watcher` 不依赖 `.env` / `sftp_avl2db/dbspec.py` / `sftp_avl2db/config.py` / 项目总 `config.yaml`，自包含于 `excel2consts/`。
+`local_excel2db` 不依赖 `.env` / `sftp_avl2db/dbspec.py` / `sftp_avl2db/config.py` / 项目总 `config.yaml`，自包含于 `local_excel2db/`；所有相对路径相对 **registry 文件所在目录** 解析，其他项目用 `--config` 指一份配置即可复用。
 
-## 文件清单（写入侧）
+## 文件清单（`local_excel2db/`）
 
 | 文件 | 作用 |
 |---|---|
-| `registry.json` | 注册表：库路径、轮询间隔、文件↔表名↔主键↔列映射、动态列、读取侧角色声明 |
-| `dim_config.py` | 加载并校验 `registry.json`，相对路径解析到 `excel2consts/`，展开动态列 |
-| `dim_importer.py` | 读 xlsx 抽列、建表/结构校验、sha256 指纹比对、单事务整表覆盖与 version 递增 |
-| `dim_watcher.py` | 写入侧进程：单实例锁、定时轮询、日志、命令行参数 |
-| `__init__.py` | 使 `python -m excel2consts.dim_watcher` 可用 |
+| `protocols.py` | 组件契约与结果 dataclass（纯 typing，零 I/O） |
+| `models.py` | 不可变配置对象 `Registry` / `TableSpec` / `ColumnSpec` / `LookupSpec` / `CutInScriptSpec` |
+| `config.py` | `RegistryLoader`：加载并校验 `registry.json`，展开动态列，解析相对路径 |
+| `registry.json` | 默认模板：库路径、轮询间隔、文件↔表名↔主键↔列映射、动态列、读取侧角色声明 |
+| `excel_source.py` | `OpenpyxlExcelSource`：sha256 指纹、抽列去重、类型转换 |
+| `repository.py` | `SqliteDimensionRepository`：建表/结构校验、单事务整表覆盖、`mode=ro` 查询 |
+| `importer.py` | `TableImporter`：单表导入编排，产出 `ImportResult` |
+| `transform.py` | 纯函数拆解加工 + `CutInScriptTransformer`（只在读取侧执行） |
+| `reader.py` | `DimensionReader`：三个只读 API，任何故障降级 `{}` |
+| `watcher.py` | `DimensionWatcher` + `SingleInstanceLock` + `build_watcher` 装配工厂 |
+| `cli.py` / `__main__.py` / `__init__.py` | 命令行入口、进程退出点、公共 API 与在线业务一行接入 |
 
-读取侧用到的 `dim_reader.py` / `dim_transform.py` 与 `services/` 见 `Missions_reader.md`。
+读取侧 `reader.py` / `transform.py` 的降级矩阵与重组规则见 `Missions_reader.md`；
+组件契约可替换：`ReadableRepository` / `WritableRepository` 分开，读取侧替身只需
+实现 `query` / `close`，写入侧替身不必实现 `query`。
 
-运行时产物（均在 `excel2consts/` 下）：
+运行时产物（均在 **registry 文件所在目录** 下，默认即 `local_excel2db/`）：
 
 | 路径 | 内容 |
 |---|---|
@@ -278,8 +286,10 @@ utf-8；控损 `_strip_eol()` 只剥**一个**反斜杠，且 `>=5` 列时丢弃
 | `state/dim_watcher.lock` | `fcntl` 非阻塞锁，保证单机单实例 |
 | `log/dim_watcher.log` | 按天轮转（`midnight`），保留 7 天，同时输出到 stderr |
 
-注册文件 `卖点维表.xlsx` / `标签转换维表.xlsx` 放在 `excel2consts/` 目录；
-仓库未提交 xlsx，`io_samples/` 下有同名样例。
+注册文件由 registry 的 `source` 指定；仓库默认模板指向
+`../io_samples/卖点维表.xlsx` / `../io_samples/标签转换维表.xlsx`，
+clone 后可直接 `python -m local_excel2db --once` 试跑，无需手工复制。
+部署时用 `--config /path/to/registry.json` 指自己的配置，xlsx 与库都自动相对该文件解析。
 
 ## 注册配置（`registry.json`）
 
@@ -287,7 +297,7 @@ utf-8；控损 `_strip_eol()` 只剥**一个**反斜杠，且 `>=5` 列时丢弃
 
 | 配置 | 当前值 | 含义 |
 |---|---|---|
-| `database` | `sqlite_db/dimensions.db` | 库路径，相对路径解析到 `excel2consts/` |
+| `database` | `sqlite_db/dimensions.db` | 库路径，相对路径解析到 registry 文件所在目录 |
 | `poll_interval_seconds` | `600` | 轮询间隔（秒），可被 `--interval` 覆盖 |
 | `version_column` | `version` | 版本列名 |
 | `meta_table` | `dim_meta` | 版本元数据表名 |
@@ -297,7 +307,7 @@ utf-8；控损 `_strip_eol()` 只剥**一个**反斜杠，且 `>=5` 列时丢弃
 | 配置 | 含义 |
 |---|---|
 | `table` | 英文表名 |
-| `source` | 注册文件名（相对 `excel2consts/`） |
+| `source` | 注册文件名（相对 registry 文件所在目录） |
 | `sheet` / `header_row` | 工作表（序号或名称）、表头行号（1-based） |
 | `primary_key` | 主键列数组，支持联合主键；必须来自 `columns[].column`，不可重复、不可设为 `optional` |
 | `columns[].source` → `columns[].column` | **Excel 表头 → SQLite 列名**映射 |
@@ -342,7 +352,7 @@ utf-8；控损 `_strip_eol()` 只剥**一个**反斜杠，且 `>=5` 列时丢弃
 | `tags` | `"dynamic_columns"` | 标签话术列的有序数组，或直接引用展开结果；下标 g 对应 `标签{g}` |
 | `fallback_key` | `兜底话术` | 生成的嵌套 dict 里兜底项的键名 |
 
-⚠️ `fallback_key` 可配，当前值 `"兜底话术"`；`dim_reader.load_cut_in_script()`
+⚠️ `fallback_key` 可配，当前值 `"兜底话术"`；`DimensionReader.load_cut_in_script()`
 按它生成兜底项，在线侧已无消费方，调整取值前先确认新线口径。
 所有角色列必须来自 `columns` 声明。
 
@@ -353,7 +363,7 @@ utf-8；控损 `_strip_eol()` 只剥**一个**反斜杠，且 `>=5` 列时丢弃
 | `卖点维表.xlsx` | `product_selling_point_match` | `business_id` | 业务ID→`business_id`、产品名称→`product_name`、生成话术→`selling_point`、标签ID→`label_id`、兜底话术→`fallback_script`、匹配结果2→`match_result`、产品大类→`product_category`、产品小类→`product_subcategory` | `标签0…标签27` → `tag_0…tag_27`（28 列） |
 | `标签转换维表.xlsx` | `label_name_mapping` | `label_id` | 标签ID→`label_id`、营销助手显示名字→`display_name`、标签管理平台标签名→`platform_label_name` | 无 |
 
-### 配置校验（`dim_config.py`）
+### 配置校验（`config.py` / `models.py`）
 
 启动时校验：表名/列名/版本列名合法性、表名不重复、列名不重复且不与版本列冲突、
 主键必须来自列定义、动态列不与已有列冲突、`lookup` 的 `value`/`values` 互斥且必填其一、
@@ -376,15 +386,15 @@ utf-8；控损 `_strip_eol()` 只剥**一个**反斜杠，且 `>=5` 列时丢弃
 `ensure_table()` 每次启动都会比对 `PRAGMA table_info` 与配置的列集合，
 不一致抛 `RuntimeError` 并提示删库重建，不会静默写错列。
 
-## 写入侧流程（`dim_watcher` + `dim_importer`）
+## 写入侧流程（`watcher.py` + `importer.py`）
 
 ### 运行方式
 
 ```bash
-python -m excel2consts.dim_watcher                 # 常驻轮询，间隔由 registry 控制（当前 600s）
-python -m excel2consts.dim_watcher --once         # 只检测一轮后退出（crontab / 验证）
-python -m excel2consts.dim_watcher --once --force # 忽略指纹强制重导并递增 version
-python -m excel2consts.dim_watcher --config /path/to/registry.json --interval 300
+python -m local_excel2db                                  # 常驻轮询，间隔由 registry 控制（当前 600s）
+python -m local_excel2db --once                          # 只检测一轮后退出（crontab / 验证）
+python -m local_excel2db --once --force                  # 忽略指纹强制重导并递增 version
+python -m local_excel2db --config /path/to/registry.json --interval 300
 ```
 
 生产建议 systemd/nohup 起一个常驻进程，与 `sftp_avl2db` 的两个拉取任务并列。
@@ -443,8 +453,8 @@ python -m excel2consts.dim_watcher --config /path/to/registry.json --interval 30
 > ⚠️ **表结构变更必须删库重建**：`CREATE TABLE IF NOT EXISTS` 不会改已有表结构，
 > `ensure_table()` 检测到列集合不一致会抛错并停止导入。执行：
 > ```bash
-> rm excel2consts/sqlite_db/dimensions.db
-> python -m excel2consts.dim_watcher --once
+> rm local_excel2db/sqlite_db/dimensions.db
+> python -m local_excel2db --once
 > ```
 > 未删库时写入侧每轮报「结构与 registry.json 不一致」，读取侧查询新列失败并
 > 降级为空映射（不会 500，但相应维表数据会丢）。不做自动表结构迁移。
@@ -452,8 +462,8 @@ python -m excel2consts.dim_watcher --config /path/to/registry.json --interval 30
 ### 试跑
 
 ```bash
-cp io_samples/卖点维表.xlsx io_samples/标签转换维表.xlsx excel2consts/
-python -m excel2consts.dim_watcher --once
+python -m local_excel2db --once                                    # 用包内默认模板（指向 ../io_samples/）
+python -m local_excel2db --once --config /path/to/my_registry.json  # 用部署方自己的配置
 ```
 
 预期：卖点表 1361 行（空主键跳过 187、重复主键覆盖 98）、标签表 60 行，
@@ -465,11 +475,11 @@ python -m excel2consts.dim_watcher --once
   （`sqlite3` / `hashlib` / `fcntl` / `logging` / `argparse`）。
   不引入 pandas / yapf，不读 `.env` 或项目总 `config.yaml`。
 - `fcntl` 文件锁为 Linux 单机单实例设计，与项目部署环境一致。
-- `excel2consts/sqlite_db/`、`state/`、`log/` 是运行时产物，建议加入 `.gitignore`。
+- `local_excel2db/sqlite_db/`、`state/`、`log/` 是运行时产物，建议加入 `.gitignore`。
 
 ### 自检要点（写入侧）
 
-- `dim_watcher --once` 后 `dim_meta` 两行各自 `version=1`、`row_count` 与日志一致。
+- `python -m local_excel2db --once` 后 `dim_meta` 两行各自 `version=1`、`row_count` 与日志一致。
 - 再跑一次：两表都 SKIP、version 不变；改其中一个文件：只有对应表的 version +1。
 
 ## 未实现（写入侧）

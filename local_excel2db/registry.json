@@ -6,7 +6,7 @@
   "tables": [
     {
       "table": "product_selling_point_match",
-      "source": "卖点维表.xlsx",
+      "source": "../io_samples/卖点维表.xlsx",
       "sheet": 0,
       "header_row": 1,
       "primary_key": ["business_id"],
@@ -40,7 +40,7 @@
     },
     {
       "table": "label_name_mapping",
-      "source": "标签转换维表.xlsx",
+      "source": "../io_samples/标签转换维表.xlsx",
       "sheet": "标签名称--标签ID",
       "header_row": 1,
       "primary_key": ["label_id"],
