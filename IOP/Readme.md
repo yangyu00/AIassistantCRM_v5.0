@@ -10,9 +10,12 @@ async with IOPClient() as client:
 # 返回 {ITEMCODE: [ITEMNAME, ITEMVALUE], ...}
 ```
 
-`get_customer_labels(tel)` 是唯一业务入口。**任何失败统一降级为 `{}`，不返回 `None`**：`None` 不会触发上层 `except`，会一路传到 `ProductInfoRaw` 并抛 `TypeError`，反而让最该降级的场景返回 500。成功但 0 标签也返回 `{}`，靠日志区分。
+`get_customer_labels(tel)` 是唯一业务入口。**任何失败统一降级为 `{}`，不返回 `None`**：`None` 不会触发上层 `except`，会一路传到上层业务对象并抛 `TypeError`，反而让最该降级的场景返回 500。成功但 0 标签也返回 `{}`，靠日志区分。
 
-在线侧 `main.py` 进程内共享一个 `IOPClient`；是否查询由 `iop_need(product_id)` 声明，`IopLabelProvider` 保证一次请求最多查一次、结果在产品 ID 循环内复用。查询结果是 `custom_label_info` 的原始输入。
+> 本模块只负责「取标签 / 统一降级 `{}`」，不感知业务路由与产品 ID。在线侧
+> `main.py` 如何共享客户端、按业务声明是否查询、以及标签如何进入业务对象，
+> 属于集成层逻辑，统一记在[根目录 README](../README.md)的「请求处理与路由 →
+> 在线侧 IOP 集成」，本文件不重复。
 
 ## 模块划分
 

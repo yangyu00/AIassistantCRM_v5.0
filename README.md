@@ -1,12 +1,16 @@
 # AIassistantCRM v5.0 · 项目说明
 
-> **文档地图**：本文件是全局入口（在线业务 / 架构 / 降级总表）。
+> **文档地图**：本文件是全局入口（在线业务 / 架构 / 降级总表 / 在线侧集成逻辑）。
 > 三个可独立复用组件各有「用法」与「约束」两份文档：
-> - [`IOP/readme.md`](IOP/readme.md)（用法、配置、流程）、[`IOP/constraints.md`](IOP/constraints.md)（不变量、降级、自检）
-> - [`local_excel2db/readme.md`](local_excel2db/readme.md)（用法、配置、流程）、[`local_excel2db/constraints.md`](local_excel2db/constraints.md)（不变量、降级、自检）
-> - [`sftp_avl2db/readme.md`](sftp_avl2db/readme.md)（用法、配置、流程）、[`sftp_avl2db/constraints.md`](sftp_avl2db/constraints.md)（不变量、降级、自检）
+> - [`IOP/Readme.md`](IOP/Readme.md)（用法、配置、流程）、[`IOP/constraints.md`](IOP/constraints.md)（不变量、降级、自检）
+> - [`local_excel2db/Readme.md`](local_excel2db/Readme.md)（用法、配置、流程）、[`local_excel2db/constraints.md`](local_excel2db/constraints.md)（不变量、降级、自检）
+> - [`sftp_avl2db/Readme.md`](sftp_avl2db/Readme.md)（用法、配置、流程）、[`sftp_avl2db/constraints.md`](sftp_avl2db/constraints.md)（不变量、降级、自检）
 
 > 原 `Missions_writer.md`（488 行）与 `Missions_reader.md`（1098 行）已按职责拆分：三个包的说明进各自目录，在线业务与全局视角留在本文件。代码、配置、行为均未改动，仅整理文档。
+
+> **职责边界**：各包 `Readme.md` 只描述组件自身（入口、配置、链路、约束）；
+> `main.py` 如何调用与编排组件——IOP 客户端的进程级共享、按业务决定是否查询、
+> 标签进入产品对象的路径——统一记在本文件「请求处理与路由」，不留在模块文档里。
 
 本仓库由 **4 个进程**组成：2 个 `sftp_avl2db` 拉取任务、1 个 `local_excel2db` 维表写入、1 个 `main.py` 在线 API；在线侧对业务库与维表一律只读 SQLite（唯一写入是调用量统计 `log/call_sum.db`）。`tasks/` 是 `sftp_avl2db` 产出的运行时数据目录，代码本身在包内。库未就绪时 API 按「无业务记录 / 无维表」降级，不会 500。
 
@@ -23,7 +27,7 @@ dimensions.db ──→ reader.DimensionReader ──→ transform ────�
 
 | 进程 | 数量 | 职责 |
 |---|---|---|
-| 写入侧进程 | 3 | 2 个 SFTP 拉取 + 1 个 `python -m local_excel2db`，见各包 `readme.md` |
+| 写入侧进程 | 3 | 2 个 SFTP 拉取 + 1 个 `python -m local_excel2db`，见各包 `Readme.md` |
 | 在线 API | 1 | 只读业务库与维表、按路由选业务对象并拼装话术；另在内存累计调用量并按阈值写入 `log/call_sum.db` |
 
 **部署时 4 个进程都要起**。库未就绪时 API 按「无业务记录 / 无维表」降级，不会 500。
@@ -44,6 +48,26 @@ dimensions.db ──→ reader.DimensionReader ──→ transform ────�
 维表侧出任何问题都不会让 API 500；**不做进程级缓存**，每次调用读一次全表，天然读到写入侧的最新值，改库后下一次请求即生效、无需重启。
 
 ## 请求处理与路由（`main.py::marketAssistant`）
+
+### 在线侧 IOP 集成（进程级客户端 → 请求级标签）
+
+> 本节只记录 `main.py` 对 IOP 组件的**调用与编排**；IOP 客户端自身的入口、
+> 配置、请求链路与降级契约见 [`IOP/Readme.md`](IOP/Readme.md)。
+
+`main.py` 在模块级创建唯一的 `IOPClient`（`iop_client`），由 FastAPI `lifespan`
+的 startup / shutdown 分别 `await iop_client.start()` / `await iop_client.aclose()`。
+**进程内共享的是客户端**：token 状态与 `aiohttp` 会话由它自持，避免每请求重建
+连接、重复刷新 token；**标签结果不共享**，仍按请求隔离（见步骤 1 与下文
+「请求内隔离」）。
+
+是否发起 IOP 查询由 `iop_need(product_id)` 逐 ID 声明（`NONE` / `PORTRAIT` /
+`RAW_LABELS`）；`IopLabelProvider` 在请求内惰性取一次标签，保证一次请求最多查
+一次、结果在 `productId` 循环内被各产品对象复用。`get_customer_labels()` 的
+返回值（任何失败统一降级为 `{}`）作为 `custom_label_info` 传入业务对象，是
+`ProductInfoRaw` 拼装 `queried_label_nvs` 与 `auxiliary_portrait` 的原始标签
+输入；声明 `NONE` 的分支直接传 `{}`，连查询都不发生。
+
+在此前提下，请求内的编排步骤为：
 
 1. 在请求处理函数内创建 `IopLabelProvider`（标签惰性提供者）与空的
    `portrait_cache`；二者都是函数局部变量，不跨请求共享。
@@ -75,7 +99,7 @@ dimensions.db ──→ reader.DimensionReader ──→ transform ────�
 | 控损 | `NONE` | **不取** | 不计算 |
 | 其余全部（诊断兜底） | `RAW_LABELS` | 取（当前输出未消费，属新线预留） | 不计算 |
 
-一次请求内的次数（不含 token 刷新，刷新次数另见 `IOP/readme.md` 的「Token 单飞」）：
+一次请求内的次数（不含 token 刷新，刷新次数另见 [`IOP/Readme.md`](IOP/Readme.md) 的「并发与可靠性约束 → token 单飞」）：
 
 | 待查 `productId` 列表 | IOP 标签查询 | 画像拼装 | 卖点表读取 |
 |---|---|---|---|
