@@ -9,8 +9,9 @@
 - ``transport=None`` → 自建 ``AiohttpTransport``
 - ``logger=None`` → ``NullLogger``，未注入则不记录日志
 
-``TokenManager`` 与门面共享同一个 transport / spec / logger，一次
-``start()`` / ``aclose()`` 覆盖 token 与标签两端点。
+``TokenManager`` 与门面共享同一个 config / transport / logger，一次
+``start()`` / ``aclose()`` 覆盖 token 与标签两端点。请求形状由
+``endpoints.py`` 的纯函数按 config 现算，不在对象之间传递「请求构造器」。
 """
 from __future__ import annotations
 
@@ -20,8 +21,8 @@ from typing import Any
 
 import aiohttp
 
+from . import endpoints
 from .config import IOPConfig
-from .endpoints_spec import EndpointSpec
 from .labels import parse_custinfo_response
 from .token import TokenManager
 from .transport import AiohttpTransport, NullLogger, Transport
@@ -40,11 +41,9 @@ class IOPClient:
         self._logger = logger if logger is not None else NullLogger()
         self._transport = (transport if transport is not None
                            else AiohttpTransport(self._config, self._logger))
-        self._spec = EndpointSpec(self._config)
         self._tokens = TokenManager(
             config=self._config,
             transport=self._transport,
-            spec=self._spec,
             logger=self._logger,
         )
 
@@ -63,12 +62,8 @@ class IOPClient:
 
     @property
     def token_manager(self) -> TokenManager:
+        """token 状态与刷新逻辑；读状态用 ``client.token_manager.state``。"""
         return self._tokens
-
-    @property
-    def tokens(self):
-        """当前 token 状态（``TokenState`` 实例）。"""
-        return self._tokens.state
 
     # -- 生命周期 ------------------------------------------------------------
     async def start(self):
@@ -110,8 +105,8 @@ class IOPClient:
         # 且只提供 http 明文端点。均为上游实际要求，不可改动。
         # 上游强制要求 Content-Type 声明 charset=gbk 并显式携带 Accept-Encoding，
         # 即使与实际序列化编码不一致也需照发，不可改动。
-        url, headers, post_data = self._spec.custinfo_request(
-            tel, self._tokens.state.access_token)
+        url, headers, post_data = endpoints.custinfo_request(
+            self._config, tel, self._tokens.state.access_token)
 
         start = time.perf_counter()
         # 复用应用级共享 session（lifespan 创建/关闭）。

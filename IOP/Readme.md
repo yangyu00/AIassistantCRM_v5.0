@@ -27,12 +27,14 @@ async with IOPClient() as client:
 |---|---|
 | `dotenv.py` | 极简 `.env` 解析（注释 / `export` / 引号 / `${VAR}` 插值），包内自包含 |
 | `config.py` | `FIELD_SPECS` 字段表、`.env` 读取、数值容错、冻结配置对象 |
-| `endpoints.py` | 上游请求契约：两个端点的 URL / 参数 / 请求头，直接读 `IOPConfig` 字段 |
-| `endpoints_spec.py` | 把配置接到请求契约的薄适配层（`EndpointSpec`），便于替换请求构造器 |
+| `endpoints.py` | 上游请求契约：两个端点的 URL / 参数 / 请求头，**两个纯函数**，按传入的 `IOPConfig` 现算 |
 | `transport.py` | `aiohttp` 共享会话与响应收口，`Transport` 协议可注入替身 |
 | `token.py` | token 刷新原语、单飞、重试退避冷却、响应校验、有效期 |
 | `labels.py` | 标签响应的逐层校验与 `BUSIINFO` 组装（纯函数） |
 | `client.py` | 业务门面，编排「确保 token → 请求 → 校验 → 降级」 |
+
+`client.py` 与 `token.py` 都直接调用 `endpoints.py` 的纯函数，中间没有「请求构造器」
+对象。打桩 / 换实现只需注入 `Transport` 一种替身，不用同时替换请求形状和会话。
 
 ## 请求链路
 
@@ -110,7 +112,7 @@ client = IOPClient(config=cfg)
 ## 并发与可靠性约束
 
 - **共享会话**：`AiohttpTransport` 只创建一个 `aiohttp.ClientSession`，`start()` / `aclose()` 对应应用 lifespan 的 startup / shutdown，幂等且异常不外抛；session 绑定创建它的 event loop，**必须在同一 loop 内关闭**。未经 lifespan 时（独立脚本、TestClient）降级为「本次请求一个临时 session」，结果正确、不泄漏连接，但失去连接复用。
-- **token 单飞**：`ensure_token()` 是唯一入口；`refresh_once()` 仅作为单次刷新原语在锁内调用，业务侧不得直接调用（旧名 `token2global()` 保留为兼容别名，新代码请用前者）。`asyncio.Lock` 按当前 event loop 懒创建/重建；「刷新代次」让同一批并发共享一轮结果（含失败），避免 N 个请求各刷一轮打爆认证服务。
+- **token 单飞**：`ensure_token()` 是唯一入口；`refresh_once()` 仅作为单次刷新原语在锁内调用，业务侧不得直接调用。`asyncio.Lock` 按当前 event loop 懒创建/重建；「刷新代次」让同一批并发共享一轮结果（含失败），避免 N 个请求各刷一轮打爆认证服务。
 - **重试、退避与冷却**：单轮最多 `max_attempts` 次请求，失败间按 `min(base × factor^(k-1), max)` 指数退避；全失败后进入 `cooldown` 冷却，截止点用 `time.monotonic()`（不受系统时间回拨影响）。冷却期内的请求在拿锁前短路，不打认证服务、不等超时、立即降级；刷新成功立即清除冷却。
 - **token 响应校验**：先判状态码非 200 直接失败且不读 body，再要求响应体为 dict；`access_token` 为空、上游 `error`、既无 token 也无 error、解析失败、结构异常、网络异常全部走统一失败收口，清空 `access_token` 与 `deadline`，**不沿用可能已过期的旧 token**。
 - **有效期换算**：`ttl = min(max(v - refresh_buffer, min_lifetime), v)`，`v` 为上游 `expires_in`（非数字 / bool / NaN / 非正 → 回落默认，超过 `max_expires_in` → 截断）；`ttl` 永不超过上游声明值，deadline 始终落在未来。`TokenState.deadline` 恒为 `datetime`，无有效 token 时统一为 `datetime.min`。

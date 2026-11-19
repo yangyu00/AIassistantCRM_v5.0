@@ -21,8 +21,8 @@ from typing import Any
 
 import aiohttp
 
+from . import endpoints
 from .config import IOPConfig
-from .endpoints_spec import EndpointSpec
 from .transport import AiohttpTransport, HttpResponse, NullLogger, Transport
 
 # 无有效 token 时 deadline 统一置为这个过去时间点，保证 state.deadline
@@ -46,24 +46,23 @@ class TokenState:
 class TokenManager:
     """token 值、有效期、单飞刷新、重试退避冷却、响应校验。
 
-    构造注入点：``config`` / ``transport`` / ``spec`` / ``logger``，全部可选。
+    构造注入点：``config`` / ``transport`` / ``logger``，全部可选。
     ``config=None`` → ``IOP/.env`` + 系统环境变量；``logger=None`` → 完全静默；
-    ``transport=None`` → 自建 ``AiohttpTransport``；``spec=None`` → 自建
-    ``EndpointSpec``。每个实例状态独立，天然隔离，无需任何全局复位。
+    ``transport=None`` → 自建 ``AiohttpTransport``。请求形状由 ``endpoints.py``
+    的纯函数按 config 现算，无需再注入一层「请求构造器」。
+    每个实例状态独立，天然隔离，无需任何全局复位。
     """
 
     def __init__(
         self,
         config: IOPConfig | None = None,
         transport: Transport | None = None,
-        spec: EndpointSpec | None = None,
         logger: Any = None,
     ) -> None:
         self._config = config if config is not None else IOPConfig.from_env()
         self._logger = logger if logger is not None else NullLogger()
         self._transport = (transport if transport is not None
                            else AiohttpTransport(self._config, self._logger))
-        self._spec = spec if spec is not None else EndpointSpec(self._config)
 
         self._state = TokenState()
 
@@ -83,34 +82,8 @@ class TokenManager:
     # -- 对外只读视图 -------------------------------------------------------
     @property
     def state(self) -> TokenState:
+        """唯一的对外状态视图；配置与传输层请从 ``IOPClient`` 上读取。"""
         return self._state
-
-    @property
-    def tokens(self) -> TokenState:
-        """``state`` 的兼容别名（新代码直接用 ``state``）。"""
-        return self._state
-
-    @property
-    def config(self) -> IOPConfig:
-        return self._config
-
-    @property
-    def retry(self):
-        """重试与退避策略。"""
-        return self._config.retry
-
-    @property
-    def lifetime(self):
-        """token 有效期换算参数。"""
-        return self._config.lifetime
-
-    @property
-    def transport(self):
-        return self._transport
-
-    def backoff_seconds(self, attempt: int) -> float:
-        """第 attempt 次失败后的退避秒数（从 1 起），指数增长并封顶。"""
-        return self._config.retry.backoff_seconds(attempt)
 
     # -- 有效期换算 ----------------------------------------------------------
     def effective_lifetime(self, raw):
@@ -206,7 +179,7 @@ class TokenManager:
                         self._cooldown_until = 0.0
                         return
                     if attempt < n:
-                        delay = self.backoff_seconds(attempt)
+                        delay = self._config.retry.backoff_seconds(attempt)
                         # 记 ERROR：这是一次失败尝试，便于与「IOP token 请求失败」
                         # 一起检索。
                         self._logger.error(
@@ -244,7 +217,7 @@ class TokenManager:
         ``_fail_token()``，不让「既无 access_token 也无 error」的响应沿用
         已有的 token 值。
         """
-        url, body = self._spec.token_request()
+        url, body = endpoints.token_request(self._config)
 
         # 上游仅提供 http 明文 token 端点；client_id / client_secret 以表单串提交。
         # 下面只发请求、不再构造会话参数（会话由 transport 持有）。
@@ -308,7 +281,3 @@ class TokenManager:
         # 既无 access_token 也无 error（如网关返回的业务错误 JSON），
         # 不能沿用已有的、可能已过期的 access_token。
         self._fail_token(status_code, "响应缺少 access_token 且无 error 字段")
-
-    # 历史名称：早期 token 写在模块级全局变量，方法名沿用至今；现在状态全在
-    # 实例字段里。保留别名避免外部旧调用报错，新代码请用 refresh_once()。
-    token2global = refresh_once

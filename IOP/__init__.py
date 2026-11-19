@@ -15,12 +15,14 @@
 模块层次（从上到下单向依赖，找问题时按这个顺序看）：
 
     dotenv.py / config.py   .env 解析、字段表、数值容错、冻结配置对象
-    endpoints.py            上游请求契约（URL / 参数 / 请求头）
-    endpoints_spec.py       把配置接到请求契约的薄适配层
+    endpoints.py            上游请求契约（URL / 参数 / 请求头），两个纯函数
     transport.py            HTTP 会话与响应收口（唯一依赖 aiohttp 的地方）
     token.py                token 刷新、单飞、重试与冷却
     labels.py               标签响应校验与解析（纯函数）
     client.py               业务门面，编排上面各层
+
+打桩 / 换实现只需注入 ``Transport``；请求形状不需要单独替换，由
+``endpoints.py`` 按传入的 config 现算。
 """
 from .config import (
     IOPConfig,
@@ -34,7 +36,6 @@ from .config import (
     default_env_path,
 )
 from .transport import AiohttpTransport, HttpResponse, NullLogger, Transport
-from .endpoints_spec import EndpointSpec
 from .token import TokenManager, TokenState
 from .labels import parse_custinfo_response
 from .client import IOPClient
@@ -57,7 +58,6 @@ __all__ = [
     "AiohttpTransport",
     "HttpResponse",
     "NullLogger",
-    "EndpointSpec",
     "TokenManager",
     "TokenState",
     # 纯函数，便于单独验证
