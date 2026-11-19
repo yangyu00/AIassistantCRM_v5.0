@@ -55,7 +55,7 @@ python -c "from sftp_avl2db import load_profiles; print(load_profiles())"
 ln -s /data/crm_runtime sftp_avl2db/runtime
 ```
 
-⚠️ **部署时不要 `rm -rf sftp_avl2db/` 再整目录覆盖**——包目录现在是代码 + 数据盘。只同步 `*.py` 与 `.env.example`，或按上面做软链。若线上已有旧 `tasks/` 数据，迁移时务必保留 `.fetched` 断点清单；清单一丢，常驻进程会把历史文件重拉重入库。
+⚠️ **部署时不要 `rm -rf sftp_avl2db/` 再整目录覆盖**——包目录现在是代码 + 数据盘。只同步 `*.py` 与 `.env.example`，或按上面做软链。
 
 **不沿用项目总 `config.yaml`**；`.env` 含 SFTP 明文密码，仓库里只提交 `.env.example`，`.env` 与 `runtime/` 都在根 `.gitignore` 中。
 
