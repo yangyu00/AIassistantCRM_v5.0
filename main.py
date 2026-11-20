@@ -1,21 +1,19 @@
-import datetime
-import re
 from contextlib import asynccontextmanager
 from enum import Enum
-from typing import List, Optional
+from typing import List
 
 import uvicorn
 from fastapi import FastAPI
 from pydantic import BaseModel, Field, field_validator
 
 from IOP import IOPClient
+from call_stat import startup, flush, count_call_middleware, build_router
 from config import ImmutableYamlConfig
 from local_excel2db import load_product_selling_point
 from services.product_info_raw import ProductInfoRaw as ProductInfoRaw
 from services.rewrite_by_spec_f09554.rewrite import ProductInfoRewrite as ProductInfoBySpec9554
 from services.rewrite_by_spec_f09591.rewrite import ProductInfoRewrite as ProductInfoBySpec9591
 from sftp_avl2db import data_query
-from src import call_stat
 from src.exceptions import telnumError, productIdError, register_errors_handlers
 from src.log_util import my_log
 
@@ -29,39 +27,29 @@ async def lifespan(app: FastAPI):
 
     IOP 会话必须在同一个 event loop 内创建/关闭，故挂在 lifespan 而非 atexit
     （atexit 拿不到运行中的 loop）。uvicorn 的 SIGTERM 退出路径不经过 atexit，
-    由 yield 之后显式收尾；src.call_stat 仍注册 atexit 作为非 ASGI 运行方式的
+    由 yield 之后显式收尾；call_stat 仍注册 atexit 作为非 ASGI 运行方式的
     兜底，两处幂等。startup 里不做任何定时任务，只做一次性初始化。
     """
-    base = call_stat.startup()
+    base = startup()
     my_log.info(f"调用量统计已恢复：当天已累计 {base} 次（重启后继续计数）")
     await iop_client.start()
     try:
         yield
     finally:
         await iop_client.aclose()
-        call_stat.flush()
+        flush()
 
 
 # 数据更新（SFTP 拉取 → SQLite 入库）由 sftp_avl2db 的 2 个独立进程负责
 # （运行时数据目录仍为 tasks/）；
 # 维表更新由 python -m local_excel2db 独立进程负责；
-# 本进程对业务库与维表一律只读 SQLite，唯一写入是调用量统计（log/call_sum.db）。
+# 本进程对业务库与维表一律只读 SQLite，唯一写入是调用量统计
+# （call_stat/runtime/call_sum.db，配置与产物都在 call_stat/ 包内）。
 app = FastAPI(lifespan=lifespan)
 register_errors_handlers(app)
+app.middleware("http")(count_call_middleware)
+app.include_router(build_router())
 global_config = ImmutableYamlConfig()
-
-
-@app.middleware("http")
-async def count_call_middleware(request, call_next):
-    """每次访问服务，当日调用量在内存 +1（无论请求成功或失败都计数）。
-
-    累计到 call_stat.flush_threshold 次才由 src.call_stat 写一次 SQLite。
-    """
-    try:
-        response = await call_next(request)
-    finally:
-        call_stat.record_call()
-    return response
 
 
 class ProductIds(BaseModel):
@@ -209,51 +197,6 @@ async def marketAssistant(args: Args):
 
     result = {"allScripts": allScripts}
     return {"res_code": 0, "res_desc": "", "result": result}
-
-
-def _is_valid_date(value: str) -> bool:
-    if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', value):
-        return False
-    try:
-        datetime.datetime.strptime(value, '%Y-%m-%d')
-        return True
-    except ValueError:
-        return False
-
-
-def _is_valid_month(value: str) -> bool:
-    if not re.fullmatch(r'\d{4}-\d{2}', value):
-        return False
-    return 1 <= int(value[5:7]) <= 12
-
-
-@app.get(str(global_config.get('call_stat', {}).get('url', '/api/callStat')))
-async def call_stat_query(date: Optional[str] = None, month: Optional[str] = None):
-    """查询调用量：date=YYYY-MM-DD 返回单日；month=YYYY-MM 返回该月每天。
-
-    两个参数必须且只能提供一个。返回完整累计调用量（含尚未落库的部分）。
-    """
-    if (date is None) == (month is None):
-        return {"res_code": 1,
-                "res_desc": "请且仅提供一个参数：date(YYYY-MM-DD) 或 month(YYYY-MM)",
-                "result": ""}
-
-    if date is not None:
-        if not _is_valid_date(date):
-            return {"res_code": 1,
-                    "res_desc": "date 格式不正确，应为 YYYY-MM-DD，如 2026-11-16",
-                    "result": ""}
-        return {"res_code": 0, "res_desc": "",
-                "result": {"date": date, "callCount": call_stat.get_call_count(date)}}
-
-    if not _is_valid_month(month):
-        return {"res_code": 1,
-                "res_desc": "month 格式不正确，应为 YYYY-MM，如 2026-11",
-                "result": ""}
-    return {"res_code": 0, "res_desc": "",
-            "result": {"month": month,
-                       "days": [{"date": d, "callCount": c}
-                                for d, c in call_stat.get_month_counts(month)]}}
 
 
 if __name__ == "__main__":

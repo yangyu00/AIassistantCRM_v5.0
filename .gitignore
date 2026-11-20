@@ -4,9 +4,13 @@ IOP/.env
 sftp_avl2db/.env
 !IOP/.env.example
 !sftp_avl2db/.env.example
+# call_stat/.env 不含凭据，作为默认配置随仓库提交
+!call_stat/.env
 
 # ===== 运行时产出（写入进程生成，在线侧只读）=====
 sftp_avl2db/runtime/
+call_stat/runtime/*
+!call_stat/runtime/.gitkeep
 tasks/
 log/
 *.db

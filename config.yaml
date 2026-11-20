@@ -10,10 +10,7 @@ marketAssistant:
   users:
     - "CRM"
 
-call_stat:
-  # 当天调用量先在内存累计，达到该次数才写一次 log/call_sum.db
-  flush_threshold: 100
-  url: "/api/callStat"
+# 调用量统计配置已移入 call_stat/.env（包内唯一来源），此处不再保留。
 
 # SFTP 连接配置已移入 sftp_avl2db/.env（包内唯一来源），此处不再保留。
 
