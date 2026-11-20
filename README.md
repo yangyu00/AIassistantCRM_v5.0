@@ -9,6 +9,8 @@
 
 > 原 `Missions_writer.md`（488 行）与 `Missions_reader.md`（1098 行）已按职责拆分：各包的说明进各自目录，在线业务与全局视角留在本文件。**那次拆分只整理文档**，代码、配置、行为均未改动。
 
+> 在线 API 的运行参数（端口、路由、日志目录）已内联在 `main.py` 顶部常量区，根目录不再保留 `config.py` / `config.yaml`；四个组件的配置仍在各自包内的 `.env` / `registry.json`。
+
 > 第四个可独立复用组件 `call_stat/` 提供在线调用量统计，配置与产物均内聚在包目录内，见下文「调用量统计接入」。
 
 > **职责边界**：各包 `Readme.md` 只描述组件自身（入口、配置、链路、约束）；
@@ -146,7 +148,7 @@ property 直接返回 `""`，**连 `build_auxiliary_portrait()` 都不进**。`_
 
 ## 调用量统计接入（`call_stat/`）
 
-调用量统计由独立模块 `call_stat/` 提供：配置唯一来源是 `call_stat/.env`，库与 CSV 恒落在 `call_stat/runtime/`。组件自身的入口、配置、链路、不变量、降级、部署与自检全部记在 [`call_stat/Readme.md`](call_stat/Readme.md)；根 `config.yaml` 不含调用量统计配置。
+调用量统计由独立模块 `call_stat/` 提供：配置唯一来源是 `call_stat/.env`，库与 CSV 恒落在 `call_stat/runtime/`。组件自身的入口、配置、链路、不变量、降级、部署与自检全部记在 [`call_stat/Readme.md`](call_stat/Readme.md)；在线侧运行参数（端口、路由、日志目录）已内联在 `main.py` 顶部，仓库根目录不再有 `config.py` / `config.yaml`。
 
 集成层只做三件事（都在 `main.py`）：
 

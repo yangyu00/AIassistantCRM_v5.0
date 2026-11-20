@@ -8,7 +8,7 @@ call_stat/runtime/      唯一产物目录（call_sum.db / export/ / selftest/�
 Readme.md               本文件（组件自身的唯一说明）
 ```
 
-`import call_stat` **零 I/O、零第三方依赖**：不读 `.env`、不建目录、不连库、不加载 fastapi；配置在首次调用 `startup()` / `record_call()` 等入口时加载一次并冻结。不读项目根 `config.yaml`，也不读系统环境变量。
+`import call_stat` **零 I/O、零第三方依赖**：不读 `.env`、不建目录、不连库、不加载 fastapi；配置在首次调用 `startup()` / `record_call()` 等入口时加载一次并冻结。不读项目根的任何配置文件，也不读系统环境变量。
 
 > **职责边界**：本文件只描述组件自身（入口、配置、链路、不变量、降级）。`main.py` 如何编排 lifespan、middleware 与路由注册，属于集成层，统一记在[根目录 README](../README.md)的「调用量统计接入」，本文件不重复。
 

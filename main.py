@@ -8,14 +8,25 @@ from pydantic import BaseModel, Field, field_validator
 
 from IOP import IOPClient
 from call_stat import startup, flush, count_call_middleware, build_router
-from config import ImmutableYamlConfig
 from local_excel2db import load_product_selling_point
 from services.product_info_raw import ProductInfoRaw as ProductInfoRaw
 from services.rewrite_by_spec_f09554.rewrite import ProductInfoRewrite as ProductInfoBySpec9554
 from services.rewrite_by_spec_f09591.rewrite import ProductInfoRewrite as ProductInfoBySpec9591
 from sftp_avl2db import data_query
 from src.exceptions import telnumError, productIdError, register_errors_handlers
-from src.log_util import my_log
+from src.log_util import my_log, configure_logging
+
+# ===== 在线服务配置（原根目录 config.py / config.yaml 已内联，不再依赖外部配置文件） =====
+# 日志目录：留空表示写到项目根目录下的 log/，也可填绝对路径
+LOG_DIR = ""
+# uvicorn 启动参数，对应原 config.yaml 的 fastapi 段
+FASTAPI_CONFIG = {"host": "0.0.0.0", "port": 8989, "reload": False}
+# 业务路由；users 为原 yaml 预留项，当前业务代码未读取，保留以备扩展
+MARKET_ASSISTANT_URL = "/api/speechQryService"
+MARKET_ASSISTANT_USERS = ["CRM"]
+# ==========================================================================================
+
+configure_logging(LOG_DIR)
 
 # 进程内共享一个客户端：token 状态与 HTTP 会话由它自持，标签结果仍按请求隔离。
 iop_client = IOPClient()
@@ -49,7 +60,6 @@ app = FastAPI(lifespan=lifespan)
 register_errors_handlers(app)
 app.middleware("http")(count_call_middleware)
 app.include_router(build_router())
-global_config = ImmutableYamlConfig()
 
 
 class ProductIds(BaseModel):
@@ -131,7 +141,7 @@ class IopLabelProvider:
         return self._labels
 
 
-@app.post(str(global_config['marketAssistant']['url']))
+@app.post(MARKET_ASSISTANT_URL)
 async def marketAssistant(args: Args):
     # 标签提供者按请求创建：标签属于单个手机号，不能放在模块级或 app.state
     # 缓存，否则会把上一个用户的标签带给下一个用户且不会报错
@@ -200,4 +210,4 @@ async def marketAssistant(args: Args):
 
 
 if __name__ == "__main__":
-    uvicorn.run(app="main:app", **global_config['fastapi'])
+    uvicorn.run(app="main:app", **FASTAPI_CONFIG)

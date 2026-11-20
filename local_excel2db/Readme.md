@@ -1,6 +1,6 @@
 # local_excel2db · 本地 Excel 维表 → SQLite
 
-把本地 Excel 维表抽列写入 SQLite，写入侧是独立进程，在线业务只读取、不写库。`import local_excel2db` 零 I/O，包自包含（不读 `.env`、项目总 `config.yaml` 或其它包）。**所有相对路径都相对 `registry.json` 所在目录解析**，其它项目用 `--config` 指向自己的配置即可复用。
+把本地 Excel 维表抽列写入 SQLite，写入侧是独立进程，在线业务只读取、不写库。`import local_excel2db` 零 I/O，包自包含（不读 `.env`、项目根配置或其它包）。**所有相对路径都相对 `registry.json` 所在目录解析**，其它项目用 `--config` 指向自己的配置即可复用。
 
 ```
 卖点维表.xlsx ─┐
