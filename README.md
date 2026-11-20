@@ -7,6 +7,7 @@
 > - [`sftp_avl2db/Readme.md`](sftp_avl2db/Readme.md)（运行参数改 `sftp_avl2db/.env`，产出落在包内 `runtime/`）
 > - [`call_stat/Readme.md`](call_stat/Readme.md)（运行参数改 `call_stat/.env`，库与 CSV 落在包内 `runtime/`，可 `python -m call_stat` 独立调用）
 > - [`tests/README.md`](tests/README.md)（手工冒烟脚本：requests 打在线接口 + IOP 直连，**不是 pytest 单元测试**）
+> - [`io_samples/README.md`](io_samples/README.md)（AVL / IOP 响应 / 维表 xlsx 样例；**维表实际投放目录是 `excels/`**，不是 `io_samples/`）
 
 > 原 `Missions_writer.md`（488 行）与 `Missions_reader.md`（1098 行）已按职责拆分：各包的说明进各自目录，在线业务与全局视角留在本文件。**那次拆分只整理文档**，代码、配置、行为均未改动。
 

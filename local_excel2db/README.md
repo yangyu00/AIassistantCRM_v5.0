@@ -10,6 +10,21 @@
                                     main.py / sftp_avl2db.data_query（在线只读）
 ```
 
+## 输入目录：生产用 `excels/`
+
+> 上面流程图里的两个 xlsx 是**格式样例**。**实际部署时维表统一投放在项目根的
+> `excels/` 文件夹**，本组件真正要处理的是它；日常更新维表改 `excels/` 里的文件。
+> 文件清单与两者关系见 [`io_samples/README.md`](../io_samples/README.md)。
+
+仓库自带的 `registry.json` 为了让 clone 下来就能跑 `--once`，把两张表的
+`source` 指向了 `../io_samples/*.xlsx`（样例口径）。切到生产目录只需改这两处
+`source` 为 `../excels/卖点维表.xlsx` / `../excels/标签转换维表.xlsx`，或用
+`--config` 指一份自己的 registry；`source` 也可写绝对路径。所有相对路径都相对
+**registry.json 所在目录**解析，与启动 CWD 无关。
+
+注意：用默认配置跑一轮会把 `io_samples/` 的样例导入 `sqlite_db/dimensions.db`，
+本地调试可以，别把这份样例库当生产维表库用。
+
 ## 运行
 
 ```bash
