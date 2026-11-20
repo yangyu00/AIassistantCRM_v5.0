@@ -73,7 +73,7 @@ DB_SCHEMAS = {
 #   db_map        : 多库单表专用，product_id → 库名（即 {库名}.db）；
 #                   表名按固定约定 data_{库名}，与写入侧建表一致
 #   table_name    : 单库单表专用，固定表名（当前无任务使用，预留）
-#   where         : 查询条件列，值由 services/data_query.py 按列名从入参取
+#   where         : 查询条件列，值由包内 data_query.py 按列名从入参取
 #   order_by      : 排序；None 表示不排序（仍 LIMIT 1）
 #   db_map / product_ids : 供 main.py 做业务路由判断，避免 ID 散落在代码里
 QUERY_SPECS = {

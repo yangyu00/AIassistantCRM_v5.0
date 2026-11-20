@@ -1,6 +1,6 @@
 # sftp_avl2db · SFTP AVL → SQLite 业务库
 
-两个定时任务（回捞商机 / 控损）的写入侧代码包，可独立复用。**配置与运行时产出都锚在包内、按 `__file__` 定位，与启动时的 CWD 无关**：`.env` 是唯一配置来源，`runtime/` 是唯一产出目录。
+两个定时任务（回捞商机 / 控损）的写入侧代码包，并内聚了在线读取侧 `data_query.py`，可独立复用。**配置与运行时产出都锚在包内、按 `__file__` 定位，与启动时的 CWD 无关**：`.env` 是唯一配置来源，`runtime/` 是唯一产出目录。
 
 `import sftp_avl2db` 零 I/O、零第三方依赖；组件按「配置 / 解析 / 写入 / I-O / 编排」五层拆分，每层可单独 import、替换、测试。把包 copy 到别的项目时**排除 `.env` 与 `runtime/`**，从 `.env.example` 起步。
 
@@ -20,7 +20,7 @@ python -m sftp_avl2db
            └─ runner.cleanup_expired()      本地文件 + 库表过期数据
 ```
 
-读取侧 `services/data_query.py` 只读查询，不参与写入；它与写入侧共用 `dbspec.py` 的列顺序、`QueryMode` 与 `shard_index()`。
+读取侧包内 `data_query.py` 只读查询，不参与写入；它与写入侧共用 `dbspec.py` 的列顺序、`QueryMode` 与 `shard_index()`。
 
 ## 五层与文件
 
@@ -31,8 +31,10 @@ python -m sftp_avl2db
 | 写入 | `sink/` | 仅标准库 `sqlite3` |
 | I/O | `remote.py`、`state.py`、`task_logging.py` | 无（`paramiko` / `loguru` / 锁库延迟导入） |
 | 编排 | `runner.py`、`profiles.py`、`cli.py` | 无 |
+| 读取 | `data_query.py` | 仅标准库 `sqlite3` + 包内 `config` / `dbspec`；**显式 import 时才读 `.env`** |
 
-公共 API **只认包根** `sftp_avl2db`：`__all__` 列出契约与工厂，I/O 类通过模块级 `__getattr__` 延迟导出。`protocols.py` 是唯一契约来源，五个 Protocol 均标了编排器实际用到的方法与属性（含 `RemoteSource.connect()` 与 `RecordSink.stats`），照协议写替身即可替换任一层。
+公共 API **只认包根** `sftp_avl2db`：`__all__` 列出契约与工厂，I/O 类通过模块级 `__getattr__` 延迟导出。
+例外：`data_query` 加载时会读包内 `.env`，因此**不进 `__init__` 顶层导入、也不做隐式延迟导出**；在线侧用 `from sftp_avl2db import data_query` 显式加载，保证 `import sftp_avl2db` 仍零 I/O。`protocols.py` 是唯一契约来源，五个 Protocol 均标了编排器实际用到的方法与属性（含 `RemoteSource.connect()` 与 `RecordSink.stats`），照协议写替身即可替换任一层。
 
 ## 任务与运行
 
@@ -106,7 +108,7 @@ python -m sftp_avl2db --task loss_control --date 20261110 --force-reload
 
 ## 在线读取与话术重组
 
-`services/data_query.py` 按任务名派发：`query(task_name, telnum, product_id=None)` 及薄封装 `get_opportunity_recall_latest()` / `get_loss_control_latest()`，均为 `async`、内部同步 `sqlite3`，`SELECT * … LIMIT 1` 按 `op_time DESC` 取最新一条；表名与列名来自 `dbspec`，用户输入只走参数绑定。库/表缺失、product_id 未映射、任务名未注册或查询异常一律返回 `{}`，不会让 API 500。
+包内 `data_query.py` 按任务名派发：`query(task_name, telnum, product_id=None)` 及薄封装 `get_opportunity_recall_latest()` / `get_loss_control_latest()`，均为 `async`、内部同步 `sqlite3`，`SELECT * … LIMIT 1` 按 `op_time DESC` 取最新一条；表名与列名来自 `dbspec`，用户输入只走参数绑定。库/表缺失、product_id 未映射、任务名未注册或查询异常一律返回 `{}`，不会让 API 500。
 
 **库里保存原始文本**，话术重组在业务侧执行：`rewrite_by_spec_f09554` 拼【通话总结】【用户需求】【已推荐政策】【拒绝原因】四段并追加辅助画像；`rewrite_by_spec_f09591` 把 `<$B>` / `<$I>` / `<$U>` / `<#RRGGBB>` 等自定义标签转成 HTML 并闭合 `</>`。
 

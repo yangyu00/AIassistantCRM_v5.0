@@ -5,6 +5,10 @@
 与 CWD 无关）；``import sftp_avl2db`` 零 I/O、零第三方依赖。
 
 分层、公共 API 与调用链见包内 ``Readme.md``。
+
+在线查询子模块 ``data_query`` 不在本文件顶层导入：它加载时会读包内 ``.env``，
+调用方需显式 ``from sftp_avl2db import data_query``，以保证 ``import sftp_avl2db``
+仍是零 I/O。
 """
 from . import dbspec                      # noqa: E402  (纯静态契约)
 from .config import (

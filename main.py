@@ -14,7 +14,7 @@ from local_excel2db import load_product_selling_point
 from services.product_info_raw import ProductInfoRaw as ProductInfoRaw
 from services.rewrite_by_spec_f09554.rewrite import ProductInfoRewrite as ProductInfoBySpec9554
 from services.rewrite_by_spec_f09591.rewrite import ProductInfoRewrite as ProductInfoBySpec9591
-from services import data_query
+from sftp_avl2db import data_query
 from src import call_stat
 from src.exceptions import telnumError, productIdError, register_errors_handlers
 from src.log_util import my_log

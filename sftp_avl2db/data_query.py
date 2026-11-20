@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
-"""在线业务库只读查询（统一入口）。
+"""在线业务库只读查询（统一入口，``sftp_avl2db`` 包内读取侧）。
 
-库目录 / 文件前缀 / 分表数取自 ``sftp_avl2db`` 包内 ``.env`` 经
+库目录 / 文件前缀 / 分表数取自包内 ``.env`` 经
 ``load_profiles()`` 构造的 ``TaskProfileConfig``（库落在包内 ``runtime/``）；
-表结构与查询声明取自顶层静态契约 ``sftp_avl2db.dbspec``。写入侧与读取侧共用
+表结构与查询声明取自包内静态契约 ``dbspec``。写入侧与读取侧共用
 这两处定义，本模块不含硬编码的表名/列名/路径。
-新增或调整任务只需改 ``sftp_avl2db/dbspec.py`` 的 DB_SCHEMAS / QUERY_SPECS 与配置声明。
+本模块被显式 import 时才读包内 ``.env``；``import sftp_avl2db`` 不触发本模块，
+包根仍保持零 I/O。
+新增或调整任务只需改包内 ``dbspec.py`` 的 DB_SCHEMAS / QUERY_SPECS 与配置声明。
 
 ``QUERY_SPECS[任务名]["mode"]`` 决定库表形式，共三种：
 多库单表（db_map 选库名）、单库多表（crc32 分表）、单库单表（table_name 固定表）；
@@ -19,12 +21,12 @@
 import os
 import sqlite3
 
-from sftp_avl2db.dbspec import (
+from .dbspec import (
     QUERY_SPECS, QueryMode, db_columns, query_spec, shard_index, validate_specs,
 )
-from sftp_avl2db.config import load_profiles
+from .config import load_profiles
 
-# 在线侧启动时显式加载一次包内 sftp_avl2db/.env（不传 runtime_dir，与写入侧
+# 在线侧启动时显式加载一次包内 .env（不传 runtime_dir，与写入侧
 # 默认同源），并显式跑配置漂移校验；读写两侧不会各算一套路径。
 PROFILES = load_profiles()
 validate_specs(PROFILES)

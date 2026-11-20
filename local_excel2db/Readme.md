@@ -7,7 +7,7 @@
                ├─→ python -m local_excel2db（写入进程）─→ sqlite_db/dimensions.db
 标签转换维表.xlsx ┘                                      │ mode=ro
                                                        ↓
-                                    main.py / services/（在线只读）
+                                    main.py / sftp_avl2db.data_query（在线只读）
 ```
 
 ## 运行

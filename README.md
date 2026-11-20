@@ -17,9 +17,9 @@
 ## 架构与数据流向
 
 ```
-sftp_avl2db/runtime/sqlite_db/{任务名}/*.db ──→ services/data_query.py ─┐
-                                    ↑ PROFILES[...] + QUERY_SPECS 派发   ├─→ main.py（路由）→ services/（重组）→ output_script
-dimensions.db ──→ reader.DimensionReader ──→ transform ─────────────────┘
+sftp_avl2db/runtime/sqlite_db/{任务名}/*.db ──→ sftp_avl2db/data_query.py ─┐
+                                    ↑ PROFILES[...] + QUERY_SPECS 派发      ├─→ main.py（路由）→ services/（重组）→ output_script
+dimensions.db ──→ reader.DimensionReader ──→ transform ────────────────────┘
 ```
 
 > `sftp_avl2db/runtime/` 是**运行时数据目录**（写入侧产出：`log/` `state/`
@@ -41,7 +41,7 @@ dimensions.db ──→ reader.DimensionReader ──→ transform ────�
 | 侧 | 触发 | 行为 | 细目 |
 |---|---|---|---|
 | 维表 `local_excel2db` | 库/表/列未就绪、配置异常、查询失败、注册 xlsx 缺失 | 读取侧返回 `{}`、写入侧跳过并保留上次版本，API 不 500 | [`local_excel2db/Readme.md`](local_excel2db/Readme.md)「读取侧与降级」 |
-| 业务库 `sftp_avl2db` | 库不存在、`product_id` 未映射、查询异常 | `services/data_query.py` 返回 `{}`，spec 子类走空记录分支 | [`sftp_avl2db/Readme.md`](sftp_avl2db/Readme.md)「拉取不变量」 |
+| 业务库 `sftp_avl2db` | 库不存在、`product_id` 未映射、查询异常 | `sftp_avl2db/data_query.py` 返回 `{}`，spec 子类走空记录分支 | [`sftp_avl2db/Readme.md`](sftp_avl2db/Readme.md)「拉取不变量」 |
 | IOP | token / 标签超时、连接失败、响应异常、失败冷却期 | 重试退避冷却后降级 `{}`，不阻塞其它并发请求 | [`IOP/Readme.md`](IOP/Readme.md)「并发与可靠性约束」 |
 | 调用量库 | `log/call_sum.db` 写入 / 启动读取失败 | 保留 `_PENDING` 下轮重试，或基数按 0 恢复、服务照常启动 | 见下文「调用量统计」 |
 | 在线 API | 任何上述依赖不可用 | 最终 `code: "2"` 空话术，不抛 500 | 见「请求处理与路由」 |
