@@ -6,6 +6,7 @@
 > - [`local_excel2db/Readme.md`](local_excel2db/Readme.md)
 > - [`sftp_avl2db/Readme.md`](sftp_avl2db/Readme.md)（运行参数改 `sftp_avl2db/.env`，产出落在包内 `runtime/`）
 > - [`call_stat/Readme.md`](call_stat/Readme.md)（运行参数改 `call_stat/.env`，库与 CSV 落在包内 `runtime/`，可 `python -m call_stat` 独立调用）
+> - [`tests/README.md`](tests/README.md)（手工冒烟脚本：requests 打在线接口 + IOP 直连，**不是 pytest 单元测试**）
 
 > 原 `Missions_writer.md`（488 行）与 `Missions_reader.md`（1098 行）已按职责拆分：各包的说明进各自目录，在线业务与全局视角留在本文件。**那次拆分只整理文档**，代码、配置、行为均未改动。
 
@@ -222,5 +223,7 @@ python -m call_stat --self-check
   画像按 `product_id` 懒执行缓存、卖点表每请求 1 次，见「请求处理与路由」
   「公共画像拼装」与「自检要点」。
 
-- 另：根目录 `test_online.py` 的请求体里仍写有 `18866816199`，
-  属在线接口测试脚本，不在本次调试脚本范围内。
+- 另：原根目录 `test_online.py` 与 `test_local/test_iop.py` 已合并进
+  [`tests/`](tests/README.md) 并重命名，端口修正为与 `main.py` 一致的 8989；
+  新增调用量统计、入参校验两组脚本。它们都是「跑一次、直接请求、打印返回」的
+  手工冒烟脚本，不是 pytest 单元测试。
