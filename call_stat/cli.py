@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""命令行入口 ``python -m call_stat``：脱离在线 API 也能查 / 导出 / 迁移 / 自检。
+"""命令行入口 ``python -m call_stat``：脱离在线 API 也能查 / 导出 / 落库 / 自检。
 
 所有产物（库、CSV、自检临时库）都落在包内 ``runtime/`` 下；自检用完即清理。
 ``main()`` 返回 int 而不调用 ``sys.exit``，便于单测直接断言退出码。
@@ -22,7 +22,7 @@ from .query import date_result, month_day_count, month_result, validate_params
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m call_stat",
-        description="调用量统计：查询 / 导出 / 落库 / 旧库迁移 / 自检")
+        description="调用量统计：查询 / 导出 / 落库 / 自检")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--date", default=None, help="单日查询 YYYY-MM-DD")
     g.add_argument("--month", default=None, help="整月查询 YYYY-MM")
@@ -30,8 +30,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
                    help="配合 --month：导出 CSV 到 runtime/export/")
     p.add_argument("--flush", action="store_true",
                    help="把本进程未落库增量写入库（幂等）")
-    p.add_argument("--migrate-from", metavar="OLD_DB", default=None,
-                   help="停机迁移旧 log/call_sum.db 到 runtime/（目标须不存在或为空）")
     p.add_argument("--self-check", action="store_true",
                    help="在 runtime/selftest/ 跑一遍自检后清理")
     return p
@@ -58,47 +56,6 @@ def _export_csv(month: str, result: dict) -> Path:
             writer.writerow([row["date"], row["callCount"]])
     print(f"已导出: {path}", flush=True)
     return path
-
-
-def _migrate(old_db: str) -> int:
-    """一次性停机迁移：把旧 ``log/call_sum.db`` 原样搬到包内 runtime/。
-
-    表结构与累计口径完全不变，因此重启后 ``startup()`` 读回的基数连续。
-    目标库已有数据时拒绝执行，避免把旧累计值重复累加一遍。
-    """
-    src = Path(old_db).resolve()
-    if not src.is_file():
-        print(f"ERROR:: 旧库不存在: {src}", flush=True)
-        return 2
-    try:
-        conn = sqlite3.connect(str(src))
-        try:
-            rows = conn.execute("SELECT date, call_count FROM call_sum").fetchall()
-        finally:
-            conn.close()
-    except Exception as e:
-        print(f"ERROR:: 旧库不是合法的 call_sum.db: {e}", flush=True)
-        return 2
-
-    dst = counter.get_config().db_path
-    if dst.exists():
-        try:
-            conn = sqlite3.connect(str(dst))
-            try:
-                n = conn.execute("SELECT count(*) FROM call_sum").fetchone()[0]
-            finally:
-                conn.close()
-        except Exception:
-            n = 0
-        if n:
-            print(f"ERROR:: 目标库已有 {n} 天记录，拒绝迁移（避免重复计数）: {dst}",
-                  flush=True)
-            return 2
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dst)
-    print(f"已迁移 {len(rows)} 天记录: {src} -> {dst}；请停机执行后重启在线进程",
-          flush=True)
-    return 0
 
 
 def _self_check() -> int:
@@ -159,8 +116,6 @@ def main(argv=None) -> int:
     try:
         if args.self_check:
             return _self_check()
-        if args.migrate_from:
-            return _migrate(args.migrate_from)
         if args.flush:
             print(f"flush 后待落库: {counter.flush()}", flush=True)
             return 0

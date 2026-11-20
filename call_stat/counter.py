@@ -1,14 +1,12 @@
 # -*- coding: utf-8 -*-
 """内存计数核心：两个全局字典 + RLock，热路径不读库（除非恰好触发 flush）。
 
-与旧 ``src/call_stat.py`` 的行为逐条保真：``_DAY_TOTAL`` 记完整累计、
-``_PENDING`` 记未落库增量、阈值 flush、跨天残留重试、写失败保留增量、
-重启从库恢复基数、lifespan + atexit 双幂等。
+``_DAY_TOTAL`` 记当天完整累计，``_PENDING`` 记尚未落库的增量；累计到阈值
+才写一次库，写失败保留增量重试，跨天残留顺带补齐。``startup()`` 从库恢复
+当天基数，lifespan 关闭与 ``atexit`` 两处 ``flush()`` 均为幂等。
 
-区别只有三处，都不改变统计语义：
-1. 阈值不再在 import 时读项目根 config.yaml，改成包内 .env 首次调用时懒加载；
-2. DB 路径从项目根 ``log/call_sum.db`` 改到包内 ``runtime/call_sum.db``；
-3. ``flush()`` 在无 pending 时提前返回，保证「仅 import」的 atexit 零 I/O。
+阈值与库路径来自包内 ``.env``，首次调用时懒加载并冻结；``flush()`` 在无
+pending 时提前返回，保证「仅 import」不产生任何 I/O。
 """
 from __future__ import annotations
 
@@ -139,7 +137,7 @@ def record_call() -> int:
         _PENDING[today] = _PENDING.get(today, 0) + 1
         if _PENDING[today] >= _threshold():
             _flush_date(today)
-        # 跨天残留（旧日期不足阈值就翻天）顺带重试落库，成功即从字典移除
+        # 跨天残留（前一天不足阈值就跨天）顺带重试落库，成功即从字典移除
         for d in [d for d in _PENDING if d != today]:
             _flush_date(d)
         return _DAY_TOTAL[today]

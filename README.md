@@ -7,7 +7,9 @@
 > - [`sftp_avl2db/Readme.md`](sftp_avl2db/Readme.md)（运行参数改 `sftp_avl2db/.env`，产出落在包内 `runtime/`）
 > - [`call_stat/Readme.md`](call_stat/Readme.md)（运行参数改 `call_stat/.env`，库与 CSV 落在包内 `runtime/`，可 `python -m call_stat` 独立调用）
 
-> 原 `Missions_writer.md`（488 行）与 `Missions_reader.md`（1098 行）已按职责拆分：三个包的说明进各自目录，在线业务与全局视角留在本文件。**那次拆分只整理文档**，代码、配置、行为均未改动。调用量统计随后另拆为第四个包 `call_stat/`（由 `src/call_stat.py` 与 `main.py` 内联逻辑收敛而来），统计语义保持不变，见下文「调用量统计接入」。
+> 原 `Missions_writer.md`（488 行）与 `Missions_reader.md`（1098 行）已按职责拆分：各包的说明进各自目录，在线业务与全局视角留在本文件。**那次拆分只整理文档**，代码、配置、行为均未改动。
+
+> 第四个可独立复用组件 `call_stat/` 提供在线调用量统计，配置与产物均内聚在包目录内，见下文「调用量统计接入」。
 
 > **职责边界**：各包 `Readme.md` 只描述组件自身（入口、配置、链路、约束）；
 > `main.py` 如何调用与编排组件——IOP 客户端的进程级共享、按业务决定是否查询、
@@ -33,7 +35,8 @@ dimensions.db ──→ reader.DimensionReader ──→ transform ────�
 | 在线 API | 1 | 只读业务库与维表、按路由选业务对象并拼装话术；另由 `call_stat` 模块在内存累计调用量并按阈值写入 `call_stat/runtime/call_sum.db` |
 
 **部署时 4 个进程都要起**。库未就绪时 API 按「无业务记录 / 无维表」降级，不会 500。
-维表更新后无需重启在线进程，下一次请求即读到新值。
+维表更新后无需重启在线进程，下一次请求即读到新值。`sftp_avl2db/.env` 中
+`SFTP_PASSWORD` 为占位值，部署前须填真实密码；`IOP/.env` 含明文凭据，不应入库。
 
 ## 降级与容错（跨模块总表）
 
@@ -143,7 +146,7 @@ property 直接返回 `""`，**连 `build_auxiliary_portrait()` 都不进**。`_
 
 ## 调用量统计接入（`call_stat/`）
 
-调用量统计已拆成独立模块：配置唯一来源是 `call_stat/.env`，库与 CSV 恒落在 `call_stat/runtime/`，组件自身的入口、配置、链路、不变量、降级、迁移与自检全部记在 [`call_stat/Readme.md`](call_stat/Readme.md)。根 `config.yaml` 不再保留 `call_stat` 段，旧 `src/call_stat.py` 已删除。统计语义（表结构、`+delta` 累加、阈值缓冲、重启恢复、GET 响应形状）一条未改。
+调用量统计由独立模块 `call_stat/` 提供：配置唯一来源是 `call_stat/.env`，库与 CSV 恒落在 `call_stat/runtime/`。组件自身的入口、配置、链路、不变量、降级、部署与自检全部记在 [`call_stat/Readme.md`](call_stat/Readme.md)；根 `config.yaml` 不含调用量统计配置。
 
 集成层只做三件事（都在 `main.py`）：
 
@@ -167,10 +170,7 @@ curl "http://host:8989/api/callStat?month=2026-11"
 python -m call_stat --date 2026-11-16
 python -m call_stat --month 2026-11 --export     # CSV 落在 call_stat/runtime/export/
 python -m call_stat --self-check
-python -m call_stat --migrate-from log/call_sum.db   # 停机迁移旧库，目标须为空
 ```
-
-旧库迁移只挪 `log/call_sum.db`，**不要删 `log/` 目录**——`src/log_util.py` 仍在那里写在线服务的 INFO/ERROR 日志。
 
 ## 自检要点（在线业务 / 路由）
 
@@ -210,7 +210,7 @@ python -m call_stat --migrate-from log/call_sum.db   # 停机迁移旧库，目�
 
 - **客户诊断新线（暂不实现）**：`output_script` 计划由多张维表结合 IOP 用户画像
   拼装，不再依赖每日 AVL 宽表入库。这些表的结构与获取形式尚未确定，暂不在项目中
-  实现，也不建代码占位或空模块；旧业务线已分步清理完毕，本项目不再保留其
+  实现，也不建代码占位或空模块；相关业务线已分步清理完毕，本项目不再保留其
   代码、配置、文档或样例。维表业务下线后，不属于商机回捞 / 控损的产品 ID
   全部作为诊断兜底，当前统一输出 `code: "2"` 空话术，等新线实现后再切换；
   维表库、`registry.json`、`reader.py` / `transform.py` 的加工能力均保留供复用。

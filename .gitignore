@@ -11,7 +11,6 @@ sftp_avl2db/.env
 sftp_avl2db/runtime/
 call_stat/runtime/*
 !call_stat/runtime/.gitkeep
-tasks/
 log/
 *.db
 *.db-journal

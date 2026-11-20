@@ -25,7 +25,7 @@ _DEFAULTS = {
 
 
 def warn(message: str) -> None:
-    """旁路功能统一告警口；只打印、不抛异常、不阻断在线服务（沿用旧实现风格）。"""
+    """旁路功能统一告警口：只打印、不抛异常、不阻断在线服务。"""
     print(f"WARNING:: {message}", flush=True)
 
 

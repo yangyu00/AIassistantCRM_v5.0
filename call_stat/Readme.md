@@ -10,7 +10,7 @@ Readme.md               本文件（组件自身的唯一说明）
 
 `import call_stat` **零 I/O、零第三方依赖**：不读 `.env`、不建目录、不连库、不加载 fastapi；配置在首次调用 `startup()` / `record_call()` 等入口时加载一次并冻结。不读项目根 `config.yaml`，也不读系统环境变量。
 
-> **职责边界**：本文件只描述组件自身（入口、配置、链路、不变量、降级）。`main.py` 如何编排 lifespan、middleware 与路由注册，属于集成层，统一记在[根目录 README](../README.md)的「请求处理与路由 / 调用量统计接入」，本文件不重复。
+> **职责边界**：本文件只描述组件自身（入口、配置、链路、不变量、降级）。`main.py` 如何编排 lifespan、middleware 与路由注册，属于集成层，统一记在[根目录 README](../README.md)的「调用量统计接入」，本文件不重复。
 
 ## 运行
 
@@ -19,11 +19,10 @@ python -m call_stat --date 2026-11-16                 # 单日
 python -m call_stat --month 2026-11                   # 整月每天（补 0）
 python -m call_stat --month 2026-11 --export          # 同时导出 CSV
 python -m call_stat --flush                           # 把本进程未落库增量写入库（幂等）
-python -m call_stat --migrate-from log/call_sum.db    # 停机迁移旧库到 runtime/
 python -m call_stat --self-check                      # 自检，临时库在 runtime/selftest/ 用完即删
 ```
 
-`--date` 与 `--month` 互斥且必须二选一；参数非法返回码 1，运行异常返回码 2，正常 0。`--self-check` / `--migrate-from` / `--flush` 是独立动作，优先于查询执行。
+`--date` 与 `--month` 互斥且必须二选一；参数非法返回码 1，运行异常返回码 2，正常 0。`--self-check` / `--flush` 是独立动作，优先于查询执行。
 
 ## 目录分层
 
@@ -34,7 +33,7 @@ python -m call_stat --self-check                      # 自检，临时库在 ru
 | 计数 | `counter.py` | `RLock` + 两个全局字典；`startup` / `record_call` / `flush` / 查询；`atexit` 兜底 |
 | 查询 | `query.py` | 日期/月份严格校验与响应组装（纯函数，`web` 与 `cli` 共用一处口径） |
 | 集成 | `web.py` | `count_call_middleware` 与 `build_router()`；fastapi 在函数内延迟导入 |
-| 命令行 | `cli.py` / `__main__.py` | `python -m call_stat`：查询、CSV 导出、flush、旧库迁移、自检 |
+| 命令行 | `cli.py` / `__main__.py` | `python -m call_stat`：查询、CSV 导出、flush、自检 |
 | 门面 | `__init__.py` | 公共 API 与 `__getattr__` 延迟导出；根级一行接入 |
 | 说明 | `Readme.md` | 本文件 |
 | 产物 | `runtime/` | `.gitkeep` 占位；运行后生成库、CSV、自检临时目录 |
@@ -58,14 +57,13 @@ python -m call_stat --self-check                      # 自检，临时库在 ru
 | `CALL_STAT_DB_FILENAME` | `call_sum.db` | **只能是纯文件名**，落在 `runtime/` 下 |
 | `CALL_STAT_EXPORT_DIRNAME` | `export` | **只能是纯目录名**，落在 `runtime/` 下 |
 
-**产物边界由代码强制，不靠约定**：`../`、`/tmp/x`、含路径分隔符的值一律被拒绝、打印 WARNING 并回落默认；`configure(db_path=...)`（仅自检注入）也校验目标必须位于 `RUNTIME_DIR` 内。因此库、CSV、自检临时库都不可能写到模块目录外。根目录 `.gitignore` 建议加：
+**产物边界由代码强制，不靠约定**：`../`、`/tmp/x`、含路径分隔符的值一律被拒绝、打印 WARNING 并回落默认；`configure(db_path=...)`（仅自检注入）也校验目标必须位于 `RUNTIME_DIR` 内。因此库、CSV、自检临时库都不可能写到模块目录外。根目录 `.gitignore` 已忽略 `call_stat/runtime/*`（保留 `.gitkeep`）。
 
-```gitignore
-call_stat/runtime/
-# call_stat/.env 无凭据；若团队习惯忽略，用 .env.example 复制，缺文件也能按默认值跑
-```
+## 部署
 
-部署时不要把 `call_stat/` 整目录覆盖掉；需要把数据挂到独立盘时，可把 `runtime/` 做成软链（路径仍在模块目录内）。
+- `call_stat` 是在线进程内的模块，**不需要额外常驻进程**；`python -m call_stat ...` 是按需查询 / 维护命令。
+- 调整阈值或查询路径只改 `call_stat/.env`，**重启在线进程**生效。
+- 部署时不要整目录覆盖 `call_stat/`；需要把数据挂到独立盘时，可把 `runtime/` 做成软链（路径仍在模块目录内）。
 
 ## 存储与缓冲写入
 
@@ -82,7 +80,7 @@ call_stat/runtime/
 
 1. 每次请求 `_DAY_TOTAL[today] += 1`、`_PENDING[today] += 1`；返回值直接来自 `_DAY_TOTAL`，热路径完全不碰 SQLite（除非恰好触发 flush）。
 2. 某日期 `_PENDING` 累计到 `flush_threshold` 才把这段增量一次性写库，成功后清零；`_DAY_TOTAL` 不受落库影响。
-3. **跨天残留**：旧日期不足阈值就翻天时，后续请求顺带重试落库，不会把今天记到昨天，也不丢昨天的尾部。
+3. **跨天残留**：前一天不足阈值就跨天时，后续请求顺带重试落库，不会把今天记到昨天，也不丢昨天的尾部。
 4. **写库失败**：保留 `_PENDING` 并告警，下一轮重试；`_DAY_TOTAL` 仍准确，异常不抛给正在处理的请求。
 
 **重启后继续计数**：`startup()` 从库读回当天已落库值作为 `_DAY_TOTAL` 基数；即使 lifespan 未执行（TestClient、直接 import 后手工调用），首次 `record_call()` 也会由 `_ensure_day()` 懒加载恢复。例：库里当天已落库 100 → 重启后首次查询返回 100，再发一次请求返回 101。唯一缺口是**强杀/崩溃**：不足阈值、还没落库的那一段会丢（默认最多 99 次），正常关闭（SIGTERM / lifespan shutdown）不丢。
@@ -98,7 +96,7 @@ call_stat/runtime/
 | shutdown（`yield` 之后） | `flush()` 补齐不足阈值的尾部增量 |
 | 非 ASGI 兜底 | 模块内 `atexit.register(flush)`；两处幂等，且 `flush()` 在无 pending 时提前返回，**仅 import 不产生任何 I/O** |
 
-接入只需三行，`query_path` 由包内 `.env` 决定，`main.py` 不再引用根配置的 `call_stat` 段：
+接入只需三行，`query_path` 由包内 `.env` 决定：
 
 ```python
 from call_stat import startup, flush, count_call_middleware, build_router
@@ -140,17 +138,9 @@ curl "http://host:8989/api/callStat?month=2026-11"
 | 写库失败 | 保留 `_PENDING` 告警、下轮重试；`_DAY_TOTAL` 仍准确 |
 | SQLite 瞬时 `disk I/O error` | 有限次退避重试；首次仍用默认 journal，重试连接才把 journal 放内存（**仅该连接生效**，正常文件系统第一次就成功、永不触发）；**只有 commit 成功才返回 True**，重试不会重复累加 |
 
-## CLI 导出与旧库迁移
+## CLI 导出
 
 `--month YYYY-MM --export` 写出 `runtime/export/call_stat_YYYY-MM.csv`（UTF-8 BOM，两列 `date,callCount`），同样落在包内。
-
-从旧 `log/call_sum.db` 迁移（**停机执行**）：
-
-```bash
-python -m call_stat --migrate-from log/call_sum.db
-```
-
-旧库表结构与累计口径完全不变，命令校验旧库合法后原样复制为 `runtime/call_sum.db`；**目标库已有数据时拒绝执行**，避免把旧累计值重复累加。注意 `log/` 目录仍被 `src/log_util.py` 写 INFO/ERROR 日志，迁移时只挪 `call_sum.db`，不要删目录。重启在线进程后 `startup()` 会读回基数，数字连续。
 
 ## 自检
 
@@ -163,18 +153,16 @@ python -m call_stat --migrate-from log/call_sum.db
 
 另外 `import call_stat` 后 `runtime/` 不应多出任何文件；`CALL_STAT_QUERY_PATH` 改值后 `build_router()` 注册路径随之变化；`configure(db_path='/tmp/x')` 必须抛 `ValueError`。
 
-## 刻意保真：不要顺手优化
+## 行为约定
 
-从 `src/call_stat.py` + `main.py` 平移时，以下行为一律不动：
-
-1. 表结构、`UPDATE ... call_count + delta` 累加语义、首次 `INSERT` 分支。
-2. `_DAY_TOTAL` / `_PENDING` 双字典语义、阈值 flush、跨天残留重试、写失败保留增量。
-3. 热路径不读库；`GET` 返回完整累计但不含本次请求；日期严格校验与 `res_code` 响应形状。
-4. lifespan shutdown + `atexit` 双幂等；强杀丢尾部窗口的既有语义。
-5. 库里只存累计整数，不做删除、不加索引、不改主键。
+1. 表 `call_sum(date TEXT PRIMARY KEY, call_count INTEGER)` 一天一条，只存累计整数，不删除、不加索引、不改主键。
+2. 落库为 `UPDATE ... SET call_count = call_count + ?` 累加，当天首次 `INSERT`。
+3. `_DAY_TOTAL` / `_PENDING` 双字典语义：阈值 flush、跨天残留重试、写失败保留增量。
+4. 热路径不读库；GET 返回完整累计但不含本次请求；日期严格校验与 `res_code` 响应形状。
+5. lifespan shutdown + `atexit` 双幂等；强杀会丢不足阈值的尾部窗口（默认最多 99 次）。
 
 ## 已知限制
 
-- **CLI 是独立进程**：它看到的是「库 + 本进程 pending」，在线 API 进程内存里尚未落库的尾部增量 CLI 看不到（既有语义，不是 bug）。要查到完整值，等阈值触发、正常关闭后再查，或直接请求 GET 接口。
+- **CLI 是独立进程**：它看到的是「库 + 本进程 pending」，在线 API 进程内存里尚未落库的尾部增量 CLI 看不到。要查到完整值，等阈值触发、正常关闭后再查，或直接请求 GET 接口。
 - 多个进程同时写同一个库（在线 API + CLI `--flush`）靠 `+delta` 累加，不会互相覆盖；但各自的内存基数只在自己进程内准确，这是热路径不读库换来的取舍。
-- 本模块只统计「HTTP 访问次数」，不区分接口、状态码与用户，与改造前一致。
+- 本模块只统计「HTTP 访问次数」，不区分接口、状态码与用户。
