@@ -3,6 +3,10 @@
 
 ``ENV_PATH`` / ``RUNTIME_DIR`` 都按 ``__file__`` 定位；不读系统环境变量，
 ``import`` 零 I/O。配置分组与键说明见 ``Readme.md``。
+
+一个 AVL 一份 profile：``name`` 既是文件前缀、db 文件名，也是 CLI ``--task``
+值；``project`` 决定 ``files/`` 与 ``sqlite_db/`` 下的业务文件夹，同一业务的
+多个 AVL 共用这一对文件夹，靠文件名体现归属。
 """
 from __future__ import annotations
 
@@ -13,12 +17,16 @@ from typing import Iterable
 ENV_PATH = Path(__file__).with_name(".env")
 RUNTIME_DIR = Path(__file__).with_name("runtime")
 
-# 任务声明表：(任务名, .env 键前缀, 解析器, 是否分表)。
-# schema / mode / table_name 不在这里重复：都取自 dbspec（唯一真源），
-# 新增任务在这里加一行 + 写进 .env。
-_TASKS = (
-    ("opportunity_recall", "OPPORTUNITY_RECALL", "flat", False),
-    ("loss_control", "LOSS_CONTROL", "continuation", True),
+# AVL 声明表：(AVL 名 / 文件前缀, 项目名)。
+# 项目名同时用于：.env 键前缀（大写）、files/ 与 sqlite_db/ 的目录名。
+# 每个 AVL 的其他静态信息（schema / parser / 是否分表 / 查询声明）都在
+# avl_specs.py；表名自动取 AVL 名，产品 ID 归 main.py，两处都不在这里声明。
+# 新增 AVL = 这里加一行 + avl_specs.py 加一份声明。
+_AVLS = (
+    ("F09554", "opportunity_recall"),
+    ("F09555", "opportunity_recall"),
+    ("F09556", "opportunity_recall"),
+    ("F09591", "loss_control"),
 )
 
 
@@ -61,10 +69,6 @@ def _int(v: dict[str, str], key: str) -> int:
     return n
 
 
-def _list(v: dict[str, str], key: str) -> list[str]:
-    return [x.strip() for x in _str(v, key).split(",") if x.strip()]
-
-
 # ---------------------------------------------------------------------------
 # 冻结配置对象（字段无默认值：一律由 load_profiles() 装配）
 # ---------------------------------------------------------------------------
@@ -87,14 +91,15 @@ class RetentionConfig:
 
 @dataclass(frozen=True)
 class TaskProfileConfig:
-    """一个 SFTP AVL 入库任务的完整声明（不可变）。
+    """一个 AVL 入库任务的完整声明（不可变）。
 
-    字段分四组：任务身份、连接、策略、路径与表结构。四个路径都从
-    ``RUNTIME_DIR``（或显式传入的 ``runtime_dir``）派生，与 CWD 无关。
+    四个路径都从 ``RUNTIME_DIR``（或显式传入的 ``runtime_dir``）派生，与 CWD
+    无关；本地 AVL 与 db 输出按 ``project`` 归档到同一业务文件夹。
     """
 
-    name: str
-    file_prefixes: tuple[str, ...]
+    name: str                                # AVL 名 / 文件前缀 / {name}.db
+    project: str                             # 项目名：输入输出文件夹
+    file_prefixes: tuple[str, ...]           # 恒为 (name,)
     sftp: SftpConfig
     retention: RetentionConfig
     local_dir: Path
@@ -102,11 +107,11 @@ class TaskProfileConfig:
     state_dir: Path
     log_dir: Path
     schema: tuple[tuple[str, str], ...]
+    schema_name: str                         # table_schemas.py 里的 key
     parser: str                              # "flat" | "continuation"
-    mode: str                                # 同 dbspec.QUERY_SPECS[name]["mode"]
-    num_tables: int
-    table_name_prefix: str
-    table_name: str                          # 单库单表专用，由 QUERY_SPECS 派生
+    sharded: bool                            # 该 db 内是否按 product_no 分表
+    num_tables: int                          # 分表数；固定表为 0
+    synchronous: str                         # 该 AVL 的 PRAGMA synchronous
     remote_name_tmpl: str
 
     @property
@@ -127,16 +132,17 @@ class TaskProfileConfig:
 # 唯一入口
 # ---------------------------------------------------------------------------
 def load_profiles(runtime_dir=None) -> dict[str, TaskProfileConfig]:
-    """读包内 ``.env``、装配两个任务、跑契约校验，返回冻结的 profile 表。
+    """读包内 ``.env``、按 AVL 装配、跑契约校验，返回冻结的 profile 表。
 
     ``runtime_dir=None`` → 包内 ``runtime/``（生产 / 在线侧都用这个）。
     显式传目录 → 产出隔离到该目录；相对路径按 CWD 解析，部署建议用绝对路径
     或把 ``runtime/`` 做成软链。
 
-    ``dbspec`` 在函数内延迟导入，保持模块加载时零依赖；``validate_specs()``
-    在返回前拦住表结构与查询契约的漂移。
+    ``avl_specs`` / ``table_schemas`` 在函数内延迟导入，保持模块加载时零依赖；
+    ``validate_specs()`` 在返回前拦住表结构与声明的漂移。
     """
-    from .dbspec import DB_SCHEMAS, query_spec, validate_specs
+    from .avl_specs import spec_of, validate_specs
+    from .table_schemas import TABLE_SCHEMAS
 
     v = _read_env(ENV_PATH)
     root = Path(runtime_dir) if runtime_dir is not None else RUNTIME_DIR
@@ -150,29 +156,33 @@ def load_profiles(runtime_dir=None) -> dict[str, TaskProfileConfig]:
     )
 
     profiles = {}
-    for name, prefix, parser, sharded in _TASKS:
-        spec = query_spec(name)
+    for name, project in _AVLS:
+        spec = spec_of(name)
+        if spec.project != project:
+            raise ValueError(
+                f"{name}: config 项目名 {project} 与 avl_specs 的 {spec.project} 不一致")
+        key = project.upper()
         profiles[name] = TaskProfileConfig(
             name=name,
-            file_prefixes=tuple(_list(v, f"{prefix}_FILE_PREFIXES")),
+            project=project,
+            file_prefixes=(name,),
             sftp=sftp,
             retention=RetentionConfig(
-                batch_size=_int(v, f"{prefix}_BATCH_SIZE"),
-                data_days=_int(v, f"{prefix}_DATA_EXPIRE_DAYS"),
-                local_file_days=_int(v, f"{prefix}_LOCAL_FILE_EXPIRE_DAYS"),
-                poll_seconds=_int(v, f"{prefix}_POLL_INTERVAL_SECONDS"),
+                batch_size=_int(v, f"{key}_BATCH_SIZE"),
+                data_days=_int(v, f"{key}_DATA_EXPIRE_DAYS"),
+                local_file_days=_int(v, f"{key}_LOCAL_FILE_EXPIRE_DAYS"),
+                poll_seconds=_int(v, f"{key}_POLL_INTERVAL_SECONDS"),
             ),
-            local_dir=root / "files" / name,
-            db_dir=root / "sqlite_db" / name,
+            local_dir=root / "files" / project,
+            db_dir=root / "sqlite_db" / project,
             state_dir=root / "state",
             log_dir=root / "log",
-            schema=tuple(tuple(c) for c in DB_SCHEMAS[name]),
-            parser=parser,
-            mode=spec["mode"],
-            num_tables=_int(v, f"{prefix}_NUM_TABLES") if sharded else 0,
-            table_name_prefix=(_str(v, f"{prefix}_TABLE_NAME_PREFIX")
-                               if sharded else ""),
-            table_name=spec.get("table_name", ""),
+            schema=tuple(TABLE_SCHEMAS[spec.schema]),
+            schema_name=spec.schema,
+            parser=spec.parser,
+            sharded=spec.sharded,
+            num_tables=_int(v, f"{key}_NUM_TABLES") if spec.sharded else 0,
+            synchronous=spec.synchronous,
             remote_name_tmpl="{prefix}{date}000000.AVL",
         )
 

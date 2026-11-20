@@ -76,7 +76,7 @@ def build_task(profile: TaskProfileConfig, *, logger=None, local_dir=None,
 
 
 def build_all(runtime_dir=None, **kwargs) -> dict[str, AssembledTask]:
-    """加载包内 ``.env`` 声明的两个任务并逐个装配（CLI 用）。
+    """加载包内 ``.env`` 声明的全部 AVL 并逐个装配（CLI 用）。
 
     ``runtime_dir`` 只改产出位置，不改配置来源；不传即包内 ``runtime/``。
     其余关键字参数透传给 ``build_task()`` 的注入点。

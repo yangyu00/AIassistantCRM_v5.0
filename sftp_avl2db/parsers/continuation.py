@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 from typing import Iterator
 
-from ..dbspec import PRODUCT_NO_INDEX
+from ..avl_specs import PRODUCT_NO_INDEX
 from ..protocols import ParseStats, Row
 
 # 以行首 YYYY-MM-DD 判定新记录起始

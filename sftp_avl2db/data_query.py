@@ -1,38 +1,35 @@
 # -*- coding: utf-8 -*-
 """在线业务库只读查询（统一入口，``sftp_avl2db`` 包内读取侧）。
 
-库目录 / 文件前缀 / 分表数取自包内 ``.env`` 经
-``load_profiles()`` 构造的 ``TaskProfileConfig``（库落在包内 ``runtime/``）；
-表结构与查询声明取自包内静态契约 ``dbspec``。写入侧与读取侧共用
-这两处定义，本模块不含硬编码的表名/列名/路径。
+一个 AVL 一个 db：``runtime/sqlite_db/{project}/{avl}.db``。``project`` 只在写入侧
+决定输出目录；**在线查询只认 AVL 前缀**——``query(avl, telnum)`` 直接定位到
+``{avl}.db``，``product_id`` 不进本模块。产品 ID 到 AVL 前缀的对应关系由业务侧
+（``main.py`` 的路由表）维护，查库时把 AVL 前缀传进来即可。
+
+表名恒由 AVL 名派生（``avl_specs.table_name()``），列顺序与查询声明来自
+``avl_specs`` / ``table_schemas``，运行时路径来自 ``load_profiles()``。
+库/表缺失、AVL 未注册或查询异常一律返回 ``{}``，不会让 API 500。
+
 本模块被显式 import 时才读包内 ``.env``；``import sftp_avl2db`` 不触发本模块，
-包根仍保持零 I/O。
-新增或调整任务只需改包内 ``dbspec.py`` 的 DB_SCHEMAS / QUERY_SPECS 与配置声明。
+包根仍保持零 I/O。新增或调整 AVL 只需改 ``avl_specs.py`` / ``table_schemas.py``
+与 ``config.py::_AVLS``，业务路由另改 ``main.py``。
 
-``QUERY_SPECS[任务名]["mode"]`` 决定库表形式，共三种：
-多库单表（db_map 选库名）、单库多表（crc32 分表）、单库单表（table_name 固定表）；
-多库多表不在支持范围内。本模块 ``_resolve()`` 按 mode 走对应分支。
-
-对外提供：
-    query(task_name, telnum, product_id=None)   按任务名派发
-    get_opportunity_recall_latest / get_loss_control_latest
-    OPPORTUNITY_RECALL_PRODUCT_IDS / LOSS_CONTROL_PRODUCT_IDS      供 main.py 做业务路由判断
+对外只提供一个入口：
+    query(avl, telnum)   async，按 AVL 前缀取 op_time 最新一条
 """
 import os
 import sqlite3
 
-from .dbspec import (
-    QUERY_SPECS, QueryMode, db_columns, query_spec, shard_index, validate_specs,
+from .avl_specs import (
+    AVL_SPECS, shard_index, spec_of, table_name, validate_specs,
 )
 from .config import load_profiles
+from .table_schemas import schema_columns
 
-# 在线侧启动时显式加载一次包内 .env（不传 runtime_dir，与写入侧
-# 默认同源），并显式跑配置漂移校验；读写两侧不会各算一套路径。
+# 在线侧启动时显式加载一次包内 .env（不传 runtime_dir，与写入侧默认同源），
+# 并显式跑声明校验；读写两侧不会各算一套路径。
 PROFILES = load_profiles()
 validate_specs(PROFILES)
-
-OPPORTUNITY_RECALL_PRODUCT_IDS = frozenset(QUERY_SPECS["opportunity_recall"]["db_map"])
-LOSS_CONTROL_PRODUCT_IDS = frozenset(QUERY_SPECS["loss_control"]["product_ids"])
 
 
 def _warn(msg):
@@ -43,55 +40,34 @@ def _error(msg):
     print(f"ERROR:: {msg}", flush=True)
 
 
-def _resolve(task_name, product_no, product_id=None):
-    """由配置算出 (db_path, table_name, where 值列表)；未映射时返回 None。"""
-    conf = PROFILES[task_name]
-    spec = query_spec(task_name)
-    qdir = conf.db_dir
+def _resolve(avl, telnum):
+    """由 AVL 前缀算出 (db_path, sql, columns, values)。
 
-    mode = spec["mode"]
-    if mode == QueryMode.MULTI_DB_SINGLE_TABLE:
-        # 多库单表：db_map 的值是库名（{库名}.db），每库一张表 data_{库名}
-        db_name = spec["db_map"].get(product_id)
-        if not db_name:
-            _warn(f"product_id [{product_id}] 未在 {task_name} db_map 中映射库名")
-            return None
-        db_path = qdir / f"{db_name}.db"
-        table = f"data_{db_name}"
-    elif mode == QueryMode.SINGLE_DB_MULTI_TABLE:
-        # 单库多表：单库按 crc32(product_no) 路由到 num_tables 张表之一
-        db_path = qdir / f"{conf.file_prefixes[0]}.db"
-        idx = shard_index(product_no, conf.num_tables)
-        table = f"{conf.table_name_prefix}_{idx}"
-    elif mode == QueryMode.SINGLE_DB_SINGLE_TABLE:
-        # 单库单表：单库一张固定表
-        db_path = qdir / f"{conf.file_prefixes[0]}.db"
-        table = spec["table_name"]
-    else:
-        # 配置校验在 import 时已拒绝非法 mode；运行时仍降级，避免异常冒泡到业务侧
-        _warn(f"{task_name} 不支持的 QUERY.mode {mode}")
-        return None
+    一个 AVL 一个 db，没有项目派发、没有 product_id 映射、没有库表形式分支。
+    """
+    conf = PROFILES[avl]
+    spec = spec_of(avl)
+    db_path = conf.db_dir / f"{avl}.db"
+    # 表名恒以 AVL 名为基准，写入侧 sink/router.py 用同一条规则。
+    shard = (shard_index(telnum, conf.num_tables) if conf.sharded else None)
+    table = table_name(avl, shard)
 
-    available = {"product_no": product_no, "product_id": product_id}
-    values = [available[col] for col in spec["where"]]
-    return db_path, table, values
+    columns = schema_columns(spec.schema)
+    # 查询键恒为 product_no；其它条件属业务侧，不进本层（validate_specs 会拦）。
+    where_values = {"product_no": telnum}
+    values = [where_values[col] for col in spec.where]
+    where_sql = " AND ".join(f"{col} = ?" for col in spec.where)
+    order_sql = f" ORDER BY {spec.order_by}" if spec.order_by else ""
+    sql = f"SELECT * FROM {table} WHERE {where_sql}{order_sql} LIMIT 1"
+    return db_path, sql, columns, values
 
 
-def _query(task_name, product_no, product_id=None):
-    resolved = _resolve(task_name, product_no, product_id)
-    if resolved is None:
-        return {}
-    db_path, table, values = resolved
+def _query(avl, telnum):
+    db_path, sql, columns, values = _resolve(avl, telnum)
 
     if not os.path.isfile(db_path):
         _warn(f"数据库文件不存在: {db_path}")
         return {}
-
-    spec = query_spec(task_name)
-    columns = db_columns(task_name)
-    where_sql = " AND ".join(f"{col} = ?" for col in spec["where"])
-    order_sql = f" ORDER BY {spec['order_by']}" if spec["order_by"] else ""
-    sql = f"SELECT * FROM {table} WHERE {where_sql}{order_sql} LIMIT 1"
 
     try:
         conn = sqlite3.connect(str(db_path))
@@ -105,19 +81,9 @@ def _query(task_name, product_no, product_id=None):
         return {}
 
 
-async def query(task_name, telnum, product_id=None):
-    """按任务名查询一条业务记录；库/表/映射缺失或异常时返回 {}。"""
-    if task_name not in QUERY_SPECS:
-        _warn(f"未注册的查询任务 {task_name}")
+async def query(avl, telnum):
+    """按 AVL 前缀查询一条业务记录；库/表缺失或异常时返回 {}。"""
+    if avl not in AVL_SPECS:
+        _warn(f"未注册的 AVL {avl}")
         return {}
-    return _query(task_name, telnum, product_id)
-
-
-async def get_opportunity_recall_latest(telnum, product_id):
-    """回捞商机：按 product_id 选库表，取 op_time 最新一条。"""
-    return await query("opportunity_recall", telnum, product_id)
-
-
-async def get_loss_control_latest(telnum):
-    """控损专用：按手机号分表，取 op_time 最新一条。"""
-    return await query("loss_control", telnum)
+    return _query(avl, telnum)

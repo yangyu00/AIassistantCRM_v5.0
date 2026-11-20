@@ -1,119 +1,63 @@
 # -*- coding: utf-8 -*-
-"""库表布局：既是「单条记录路由」，也是「全部库表枚举」，写入与建表同源。
+"""库表布局：一个 AVL 一个 db，既是「单条记录路由」也是「全部库表枚举」。
 
-三种 ``mode`` 的含义与分表口径见 ``Readme.md``「库表形式」一节。
+``{db_dir}/{avl}.db`` 是该 AVL 唯一的库文件；库内表名**恒以 AVL 名为基准**：
+固定表就叫 ``{avl}``，分表叫 ``{avl}_{分表号}``（分表号口径来自 avl_specs）。
+不再有「多库单表 / 单库多表 / 单库单表」的模式分支，也不再声明表名。
 """
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Iterator
 
-from ..dbspec import PRODUCT_NO_INDEX, QUERY_MODES, QueryMode, shard_index
+from ..avl_specs import (
+    PRODUCT_NO_INDEX, shard_index, table_name as make_table_name,
+)
 
 
-class UnknownPrefixError(ValueError):
-    """文件名无法匹配任何已注册前缀。
+class AvlDbLayout:
+    """单个 AVL 的库表布局：一个 db 文件 + 固定表或分表。"""
 
-    编排器按失败处理：不登记清单、本地文件保留、下轮重试。
-    """
-
-
-class PerPrefixLayout:
-    """多库单表：文件名前缀 → ``{前缀}.db`` / ``data_{前缀}``。"""
-
-    def __init__(self, db_dir: Path, prefixes):
-        self.db_dir = Path(db_dir)
-        self.prefixes = tuple(prefixes)
-        if not self.prefixes:
-            raise ValueError("多库单表布局至少需要 1 个文件前缀")
-
-    def all_targets(self) -> Iterator[tuple[Path, str]]:
-        for p in self.prefixes:
-            yield self.db_dir / f"{p}.db", f"data_{p}"
-
-    def target(self, filename: str, row: tuple) -> tuple[Path, str]:
-        prefix = next((p for p in self.prefixes if filename.startswith(p)), None)
-        if prefix is None:
-            raise UnknownPrefixError(f"无法从文件名识别前缀: {filename}")
-        return self.db_dir / f"{prefix}.db", f"data_{prefix}"
-
-
-class Crc32ShardLayout:
-    """单库多表：``crc32(product_no) % NUM_TABLES`` 分表（口径来自 dbspec）。"""
-
-    def __init__(self, db_dir: Path, prefixes, num_tables: int,
-                 table_name_prefix: str,
+    def __init__(self, db_dir: Path, avl: str, *, num_tables: int = 0,
+                 table_name: str | None = None,
                  product_no_index: int = PRODUCT_NO_INDEX):
-        self.db_dir = Path(db_dir)
-        prefixes = tuple(prefixes)
-        if not prefixes:
-            raise ValueError("单库多表布局至少需要 1 个文件前缀")
-        if num_tables <= 0:
-            raise ValueError(f"NUM_TABLES 必须为正整数，当前为 {num_tables}")
-        if not table_name_prefix:
-            raise ValueError("单库多表布局需要 TABLE_NAME_PREFIX")
-        self.db_path = self.db_dir / f"{prefixes[0]}.db"
+        self.db_path = Path(db_dir) / f"{avl}.db"
+        # 默认表名 = AVL 名；table_name 仅是单测用的显式覆盖点。
+        self.base = table_name or avl
         self.num_tables = int(num_tables)
-        self.table_name_prefix = table_name_prefix
         self.product_no_index = int(product_no_index)
 
-    def _table_of(self, product_no) -> str:
-        return (f"{self.table_name_prefix}_"
-                f"{shard_index(product_no, self.num_tables)}")
+        if self.num_tables < 0:
+            raise ValueError(f"NUM_TABLES 不能为负，当前为 {self.num_tables}")
+        if not self.base:
+            raise ValueError("表名基准不能为空")
 
     def all_targets(self) -> Iterator[tuple[Path, str]]:
-        for i in range(self.num_tables):
-            yield self.db_path, f"{self.table_name_prefix}_{i}"
+        """枚举该 AVL 的全部 (库文件, 表名)；建表与过期清理共用。"""
+        if self.num_tables:
+            for i in range(self.num_tables):
+                yield self.db_path, make_table_name(self.base, i)
+        else:
+            yield self.db_path, make_table_name(self.base)
 
     def target(self, filename: str, row: tuple) -> tuple[Path, str]:
-        return self.db_path, self._table_of(row[self.product_no_index])
-
-
-class FixedTableLayout:
-    """单库单表：一张固定表（预留，当前无任务使用）。"""
-
-    def __init__(self, db_dir: Path, prefixes, table_name: str):
-        prefixes = tuple(prefixes)
-        if not prefixes:
-            raise ValueError("单库单表布局至少需要 1 个文件前缀")
-        if not table_name:
-            raise ValueError("单库单表布局需要显式指定 table_name")
-        self.db_path = Path(db_dir) / f"{prefixes[0]}.db"
-        self.table_name = table_name
-
-    def all_targets(self) -> Iterator[tuple[Path, str]]:
-        yield self.db_path, self.table_name
-
-    def target(self, filename: str, row: tuple) -> tuple[Path, str]:
-        return self.db_path, self.table_name
+        """单条记录路由；不分表时全部落固定表，分表时按 product_no 取表。"""
+        if self.num_tables:
+            idx = shard_index(row[self.product_no_index], self.num_tables)
+            return self.db_path, make_table_name(self.base, idx)
+        return self.db_path, make_table_name(self.base)
 
 
 def build_layout(profile, *, table_name: str | None = None):
-    """按 ``profile.mode`` 构造布局（与读取侧 ``_resolve()`` 同一组 QueryMode 值）。
+    """按 profile 装配布局；无模式分支，只是「一个 AVL 一个 db」。
 
-    ``profile`` 用鸭子类型：需要 ``mode`` / ``db_dir`` / ``file_prefixes`` /
-    ``num_tables`` / ``table_name_prefix`` / ``table_name``（单库单表）。
-    显式传 ``table_name`` 会覆盖 ``profile.table_name``，便于单测替换固定表名。
+    显式传 ``table_name`` 会覆盖默认的 AVL 名表名（分表时覆盖前缀），便于单测。
     """
-    resolved = (table_name if table_name is not None
-                else getattr(profile, "table_name", None))
-    mode = profile.mode
-
-    if mode == QueryMode.MULTI_DB_SINGLE_TABLE:
-        return PerPrefixLayout(profile.db_dir, profile.file_prefixes)
-    if mode == QueryMode.SINGLE_DB_MULTI_TABLE:
-        # 两种 schema 的 product_no 都是第 3 列，与 dbspec.PRODUCT_NO_INDEX 同源。
-        return Crc32ShardLayout(
-            profile.db_dir, profile.file_prefixes,
-            profile.num_tables, profile.table_name_prefix,
-            product_no_index=PRODUCT_NO_INDEX)
-    if mode == QueryMode.SINGLE_DB_SINGLE_TABLE:
-        return FixedTableLayout(profile.db_dir, profile.file_prefixes,
-                                resolved or "")
-    raise ValueError(f"不支持的库表形式 {mode}；仅支持 {list(QUERY_MODES)}")
+    return AvlDbLayout(
+        profile.db_dir, profile.name,
+        num_tables=getattr(profile, "num_tables", 0),
+        table_name=table_name,
+    )
 
 
-__all__ = [
-    "PerPrefixLayout", "Crc32ShardLayout", "FixedTableLayout",
-    "UnknownPrefixError", "build_layout",
-]
+__all__ = ["AvlDbLayout", "build_layout"]

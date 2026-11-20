@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterator
 
-from ..dbspec import PRODUCT_NO_INDEX
+from ..avl_specs import PRODUCT_NO_INDEX
 from ..protocols import ParseStats, Row
 
 ENCODING_CANDIDATES = ("utf-8", "gbk", "latin-1")

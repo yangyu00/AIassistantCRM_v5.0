@@ -24,6 +24,21 @@ FASTAPI_CONFIG = {"host": "0.0.0.0", "port": 8989, "reload": False}
 # 业务路由；users 为原 yaml 预留项，当前业务代码未读取，保留以备扩展
 MARKET_ASSISTANT_URL = "/api/speechQryService"
 MARKET_ASSISTANT_USERS = ["CRM"]
+
+# ===== 业务路由：product_id → AVL 前缀（本文件是唯一维护点）=====
+# 数据访问层 sftp_avl2db 只认 AVL 前缀；产品 ID 属业务概念，不进查询层。
+# 新增业务 / 新增产品 ID 只改这里：查库时把映射出的 AVL 前缀传给
+# data_query.query(avl, telnum)，读取侧无需知道任何产品 ID。
+OPPORTUNITY_RECALL_AVLS = {
+    "202608041615335173": "F09554",  # 号卡业务
+    "202608041615335172": "F09555",  # 套餐业务
+    "202608041615335174": "F09556",  # 宽带业务
+}
+LOSS_CONTROL_AVLS = {
+    "202609180955095402": "F09591",  # 控损
+}
+OPPORTUNITY_RECALL_PRODUCT_IDS = frozenset(OPPORTUNITY_RECALL_AVLS)
+LOSS_CONTROL_PRODUCT_IDS = frozenset(LOSS_CONTROL_AVLS)
 # ==========================================================================================
 
 configure_logging(LOG_DIR)
@@ -51,7 +66,7 @@ async def lifespan(app: FastAPI):
         flush()
 
 
-# 数据更新（SFTP 拉取 → SQLite 入库）由 sftp_avl2db 的 2 个独立进程负责
+# 数据更新（SFTP 拉取 → SQLite 入库）由 sftp_avl2db 每个 AVL 各一个独立进程负责
 # （运行时数据目录为包内 runtime/）；
 # 维表更新由 python -m local_excel2db 独立进程负责；
 # 本进程对业务库与维表一律只读 SQLite，唯一写入是调用量统计
@@ -103,15 +118,15 @@ class IopNeed(Enum):
 
 
 def iop_need(product_id):
-    """按产品 ID 声明标签依赖，业务归属由 data_query 的路由集合派生。
+    """按产品 ID 声明标签依赖，业务归属由本文件的路由表派生。
 
     控损话术只由数据库字段拼装，不依赖用户标签，声明为 NONE；商机回捞
     需要标签拼装用户画像；其余产品 ID 作为诊断兜底，只取原始标签、
     不做画像规则转换。
     """
-    if product_id in data_query.OPPORTUNITY_RECALL_PRODUCT_IDS:
+    if product_id in OPPORTUNITY_RECALL_PRODUCT_IDS:
         return IopNeed.PORTRAIT
-    if product_id in data_query.LOSS_CONTROL_PRODUCT_IDS:
+    if product_id in LOSS_CONTROL_PRODUCT_IDS:
         return IopNeed.NONE
     return IopNeed.RAW_LABELS
 
@@ -164,17 +179,19 @@ async def marketAssistant(args: Args):
         portrait_cache_for_obj = portrait_cache if need == IopNeed.PORTRAIT else None
 
         # 1. 特殊业务
-        # 号卡业务、套餐业务、宽带业务（ID 与库表映射见 sftp_avl2db/dbspec.py）
-        if one_product_obj.id in data_query.OPPORTUNITY_RECALL_PRODUCT_IDS:
-            record = await data_query.get_opportunity_recall_latest(args.telnum, one_product_obj.id)
+        # 号卡业务、套餐业务、宽带业务（product_id → AVL 见本文件顶部路由表）
+        if one_product_obj.id in OPPORTUNITY_RECALL_PRODUCT_IDS:
+            avl = OPPORTUNITY_RECALL_AVLS[one_product_obj.id]
+            record = await data_query.query(avl, args.telnum)
             product_obj_list.append(ProductInfoBySpec9554(one_product_obj.id, custom_label_info,
                                                           product_selling_point_match_dict, record,
                                                           portrait_cache_for_obj))
             continue
 
         # 2. 数据库中业务(控损专用)
-        if one_product_obj.id in data_query.LOSS_CONTROL_PRODUCT_IDS:
-            record = await data_query.get_loss_control_latest(args.telnum)
+        if one_product_obj.id in LOSS_CONTROL_PRODUCT_IDS:
+            avl = LOSS_CONTROL_AVLS[one_product_obj.id]
+            record = await data_query.query(avl, args.telnum)
             if record:
                 product_obj_list.append(ProductInfoBySpec9591(one_product_obj.id, custom_label_info,
                                                               product_selling_point_match_dict, record,

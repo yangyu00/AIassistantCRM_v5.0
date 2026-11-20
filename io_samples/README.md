@@ -20,21 +20,23 @@
 | `标签转换维表.xlsx` | `local_excel2db` | `label_name_mapping` 表的格式样例，取名为「标签名称--标签ID」的 sheet |
 
 AVL 命名遵循 `{业务前缀}{YYYYMMDD}000000.AVL`，制表符分隔、UTF-8；
-四个文件名的日期部分都是 `20261110`。字段含义与任务映射见
-[`sftp_avl2db/Readme.md`](../sftp_avl2db/Readme.md) 与 `sftp_avl2db/dbspec.py`。
+四个文件名的日期部分都是 `20261110`。字段含义与 AVL 映射见
+[`sftp_avl2db/README.md`](../sftp_avl2db/README.md) 与 `sftp_avl2db/avl_specs.py`、
+`sftp_avl2db/table_schemas.py`。
 
 ## 三个子系统分别怎么用这些样例
 
 **1. SFTP / AVL 离线复跑**（只吃 `*.AVL`）
 
 ```bash
-python -m sftp_avl2db --task loss_control --date 20261110 \
+python -m sftp_avl2db --task F09591 --date 20261110 \
   --local-dir io_samples --runtime-dir /tmp/replay
 ```
 
 `--local-dir io_samples` 让拉取任务把本目录当成本地 AVL 源，`--runtime-dir` 把
 产物隔离到临时目录，不碰包内 `sftp_avl2db/runtime/`。生产环境里 AVL 落在
-`sftp_avl2db/runtime/files/{任务名}/`，与本目录无关。
+`sftp_avl2db/runtime/files/{项目名}/`，输出的 `{AVL}.db` 落在
+`sftp_avl2db/runtime/sqlite_db/{项目名}/`，与本目录无关。
 
 **2. IOP 响应对照**（只吃那个 `.json`）
 
@@ -67,7 +69,7 @@ python -m local_excel2db --config /path/to/registry.json --once
 ```
 
 路径基准是 **registry.json 所在目录**（`config.py::_resolve`），与启动时的 CWD
-无关，所以也支持写绝对路径。配置说明见 [`local_excel2db/Readme.md`](../local_excel2db/Readme.md)。
+无关，所以也支持写绝对路径。配置说明见 [`local_excel2db/README.md`](../local_excel2db/README.md)。
 
 两个实操提醒：
 

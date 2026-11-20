@@ -10,7 +10,7 @@
 调用方需显式 ``from sftp_avl2db import data_query``，以保证 ``import sftp_avl2db``
 仍是零 I/O。
 """
-from . import dbspec                      # noqa: E402  (纯静态契约)
+from . import avl_specs, table_schemas   # noqa: E402  (纯静态契约)
 from .config import (
     ENV_PATH,
     RUNTIME_DIR,
@@ -75,7 +75,8 @@ def __dir__():
 
 __all__ = [
     # 配置（唯一入口 load_profiles()，其余是它产出的冻结对象与常量）
-    "dbspec", "ENV_PATH", "RUNTIME_DIR", "SftpConfig", "RetentionConfig",
+    "avl_specs", "table_schemas", "ENV_PATH", "RUNTIME_DIR",
+    "SftpConfig", "RetentionConfig",
     "TaskProfileConfig", "load_profiles", "iter_remote_names", "remote_name_for",
     # 契约
     "ParseStats", "ImportResult", "ImportStatus", "SinkStats",

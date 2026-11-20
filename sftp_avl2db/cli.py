@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime
 
+from .avl_specs import AVL_SPECS
 from .config import load_profiles
 
 
@@ -17,7 +18,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         prog="python -m sftp_avl2db",
         description="SFTP AVL → SQLite 定时拉取与入库")
     p.add_argument("--task", required=True,
-                   help="任务名（opportunity_recall / loss_control）")
+                   help=f"AVL 名（{' / '.join(AVL_SPECS)}）；一个 AVL 一个 db")
     p.add_argument("--date", default=None,
                    help="单次模式：只拉取指定日期 YYYYMMDD 后退出；不传则常驻轮询")
     p.add_argument("--force-reload", action="store_true",
@@ -47,7 +48,7 @@ def main(argv=None, *, profiles=None, logger=None, sleeper=None, now=None) -> in
         if profiles is None:
             profiles = load_profiles(runtime_dir=args.runtime_dir)
         if args.task not in profiles:
-            print(f"ERROR:: 未知任务 {args.task}；可选：{', '.join(sorted(profiles))}",
+            print(f"ERROR:: 未知 AVL {args.task}；可选：{', '.join(sorted(profiles))}",
                   flush=True)
             return 2
         from .profiles import build_task

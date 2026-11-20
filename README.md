@@ -1,10 +1,10 @@
 # AIassistantCRM v5.0 · 项目说明
 
 > **文档地图**：本文件是全局入口（在线业务 / 架构 / 降级总表 / 在线侧集成逻辑）。
-> 四个可独立复用组件各有一份 `Readme.md`（用法、配置、流程、不变量与降级）：
-> - [`IOP/Readme.md`](IOP/Readme.md)（运行参数改同目录的 `IOP/.env`）
-> - [`local_excel2db/Readme.md`](local_excel2db/Readme.md)
-> - [`sftp_avl2db/Readme.md`](sftp_avl2db/Readme.md)（运行参数改 `sftp_avl2db/.env`，产出落在包内 `runtime/`）
+> 四个可独立复用组件各有一份说明文件（用法、配置、流程、不变量与降级）：
+> - [`IOP/README.md`](IOP/README.md)（运行参数改同目录的 `IOP/.env`）
+> - [`local_excel2db/README.md`](local_excel2db/README.md)
+> - [`sftp_avl2db/README.md`](sftp_avl2db/README.md)（运行参数改 `sftp_avl2db/.env`，产出落在包内 `runtime/`）
 > - [`call_stat/Readme.md`](call_stat/Readme.md)（运行参数改 `call_stat/.env`，库与 CSV 落在包内 `runtime/`，可 `python -m call_stat` 独立调用）
 > - [`tests/README.md`](tests/README.md)（手工冒烟脚本：requests 打在线接口 + IOP 直连，**不是 pytest 单元测试**）
 > - [`io_samples/README.md`](io_samples/README.md)（AVL / IOP 响应 / 维表 xlsx 样例；**维表实际投放目录是 `excels/`**，不是 `io_samples/`）
@@ -15,30 +15,32 @@
 
 > 第四个可独立复用组件 `call_stat/` 提供在线调用量统计，配置与产物均内聚在包目录内，见下文「调用量统计接入」。
 
-> **职责边界**：各包 `Readme.md` 只描述组件自身（入口、配置、链路、约束）；
+> **职责边界**：各包说明文件只描述组件自身（入口、配置、链路、约束）；
 > `main.py` 如何调用与编排组件——IOP 客户端的进程级共享、按业务决定是否查询、
 > 标签进入产品对象的路径——统一记在本文件「请求处理与路由」，不留在模块文档里。
 
-本仓库由 **4 个进程**组成：2 个 `sftp_avl2db` 拉取任务、1 个 `local_excel2db` 维表写入、1 个 `main.py` 在线 API；在线侧对业务库与维表一律只读 SQLite（唯一写入是调用量统计 `call_stat/runtime/call_sum.db`）。`call_stat/` 是在线进程内的自包含模块：配置、代码、产物、说明都在包目录内，按 `__file__` 定位，与启动 CWD 无关；`sftp_avl2db/runtime/` 同理是写入侧产出的运行时数据目录。库未就绪时 API 按「无业务记录 / 无维表」降级，不会 500。
+本仓库由 **6 个进程**组成：4 个 `sftp_avl2db` 拉取任务（每个 AVL 一个 db、一个进程）、1 个 `local_excel2db` 维表写入、1 个 `main.py` 在线 API；在线侧对业务库与维表一律只读 SQLite（唯一写入是调用量统计 `call_stat/runtime/call_sum.db`）。`call_stat/` 是在线进程内的自包含模块：配置、代码、产物、说明都在包目录内，按 `__file__` 定位，与启动 CWD 无关；`sftp_avl2db/runtime/` 同理是写入侧产出的运行时数据目录。库未就绪时 API 按「无业务记录 / 无维表」降级，不会 500。
 
 ## 架构与数据流向
 
 ```
-sftp_avl2db/runtime/sqlite_db/{任务名}/*.db ──→ sftp_avl2db/data_query.py ─┐
-                                    ↑ PROFILES[...] + QUERY_SPECS 派发      ├─→ main.py（路由）→ services/（重组）→ output_script
+sftp_avl2db/runtime/sqlite_db/{项目名}/{AVL}.db ──→ sftp_avl2db/data_query.py ─┐
+                                    ↑ 只收 AVL 前缀（product_id 留在 main.py） ├─→ main.py（路由）→ services/（重组）→ output_script
 dimensions.db ──→ reader.DimensionReader ──→ transform ────────────────────┘
 ```
 
 > `sftp_avl2db/runtime/` 是**运行时数据目录**（写入侧产出：`log/` `state/`
 > `files/` `sqlite_db/`），同目录还有唯一的 `.env`；在线侧只读这些库。
+> 库内表名恒等于 AVL 名（分表为 `{AVL}_{分表号}`），旧库 `data_*` 表需重建或改名，
+> 见 [`sftp_avl2db/README.md`](sftp_avl2db/README.md)「表名口径变更」。
 > 部署时不要整目录覆盖 `sftp_avl2db/`，可把 `runtime/` 做成指向数据盘的软链。
 
 | 进程 | 数量 | 职责 |
 |---|---|---|
-| 写入侧进程 | 3 | 2 个 SFTP 拉取 + 1 个 `python -m local_excel2db`，见各包 `Readme.md` |
+| 写入侧进程 | 5 | 4 个 SFTP 拉取（每个 AVL 一个）+ 1 个 `python -m local_excel2db`，见各包说明 |
 | 在线 API | 1 | 只读业务库与维表、按路由选业务对象并拼装话术；另由 `call_stat` 模块在内存累计调用量并按阈值写入 `call_stat/runtime/call_sum.db` |
 
-**部署时 4 个进程都要起**。库未就绪时 API 按「无业务记录 / 无维表」降级，不会 500。
+**部署时 6 个进程都要起**。库未就绪时 API 按「无业务记录 / 无维表」降级，不会 500。
 维表更新后无需重启在线进程，下一次请求即读到新值。`sftp_avl2db/.env` 中
 `SFTP_PASSWORD` 为占位值，部署前须填真实密码；`IOP/.env` 含明文凭据，不应入库。
 
@@ -48,9 +50,9 @@ dimensions.db ──→ reader.DimensionReader ──→ transform ────�
 
 | 侧 | 触发 | 行为 | 细目 |
 |---|---|---|---|
-| 维表 `local_excel2db` | 库/表/列未就绪、配置异常、查询失败、注册 xlsx 缺失 | 读取侧返回 `{}`、写入侧跳过并保留上次版本，API 不 500 | [`local_excel2db/Readme.md`](local_excel2db/Readme.md)「读取侧与降级」 |
-| 业务库 `sftp_avl2db` | 库不存在、`product_id` 未映射、查询异常 | `sftp_avl2db/data_query.py` 返回 `{}`，spec 子类走空记录分支 | [`sftp_avl2db/Readme.md`](sftp_avl2db/Readme.md)「拉取不变量」 |
-| IOP | token / 标签超时、连接失败、响应异常、失败冷却期 | 重试退避冷却后降级 `{}`，不阻塞其它并发请求 | [`IOP/Readme.md`](IOP/Readme.md)「并发与可靠性约束」 |
+| 维表 `local_excel2db` | 库/表/列未就绪、配置异常、查询失败、注册 xlsx 缺失 | 读取侧返回 `{}`、写入侧跳过并保留上次版本，API 不 500 | [`local_excel2db/README.md`](local_excel2db/README.md)「读取侧与降级」 |
+| 业务库 `sftp_avl2db` | 库不存在、AVL 未注册、查询异常 | `sftp_avl2db/data_query.py` 返回 `{}`，spec 子类走空记录分支 | [`sftp_avl2db/README.md`](sftp_avl2db/README.md)「拉取不变量」 |
+| IOP | token / 标签超时、连接失败、响应异常、失败冷却期 | 重试退避冷却后降级 `{}`，不阻塞其它并发请求 | [`IOP/README.md`](IOP/README.md)「并发与可靠性约束」 |
 | 调用量库 | `call_stat/runtime/call_sum.db` 写入 / 启动读取失败 | 保留 `_PENDING` 下轮重试，或基数按 0 恢复、服务照常启动 | [`call_stat/Readme.md`](call_stat/Readme.md)「降级与容错」 |
 | 在线 API | 任何上述依赖不可用 | 最终 `code: "2"` 空话术，不抛 500 | 见「请求处理与路由」 |
 
@@ -61,7 +63,7 @@ dimensions.db ──→ reader.DimensionReader ──→ transform ────�
 ### 在线侧 IOP 集成（进程级客户端 → 请求级标签）
 
 > 本节只记录 `main.py` 对 IOP 组件的**调用与编排**；IOP 客户端自身的入口、
-> 配置、请求链路与降级契约见 [`IOP/Readme.md`](IOP/Readme.md)。
+> 配置、请求链路与降级契约见 [`IOP/README.md`](IOP/README.md)。
 
 `main.py` 在模块级创建唯一的 `IOPClient`（`iop_client`），由 FastAPI `lifespan`
 的 startup / shutdown 分别 `await iop_client.start()` / `await iop_client.aclose()`。
@@ -85,21 +87,22 @@ dimensions.db ──→ reader.DimensionReader ──→ transform ────�
    IOP 标签的依赖，非 `NONE` 时经提供者取标签（整请求最多 1 次），
    再按路由命中即 `continue`（顺序不可调换）：
 
-| 顺序 | 条件（ID 来自配置） | 数据源 | 业务对象 |
+| 顺序 | 条件（ID 来自 main.py 路由表） | 数据源 | 业务对象 |
 |---|---|---|---|
-| 1 | `OPPORTUNITY_RECALL_PRODUCT_IDS`（202608041615335173 / 172 / 174） | `data_query.get_opportunity_recall_latest(telnum, product_id)` | `ProductInfoBySpec9554` |
-| 2 | `LOSS_CONTROL_PRODUCT_IDS`（202609180955095402） | `data_query.get_loss_control_latest(telnum)`，有记录才命中 | `ProductInfoBySpec9591` |
+| 1 | `OPPORTUNITY_RECALL_PRODUCT_IDS`（202608041615335173 / 172 / 174） | `data_query.query(OPPORTUNITY_RECALL_AVLS[id], telnum)` | `ProductInfoBySpec9554` |
+| 2 | `LOSS_CONTROL_PRODUCT_IDS`（202609180955095402） | `data_query.query(LOSS_CONTROL_AVLS[id], telnum)`，有记录才命中 | `ProductInfoBySpec9591` |
 | 3 | 其余全部 | —（新线待完成） | `ProductInfoRaw` |
 
-前两组 ID 不再硬编码在 `main.py`，分别由
-`QUERY_SPECS["opportunity_recall"]["db_map"]` 的 key 与
-`QUERY_SPECS["loss_control"]["product_ids"]` 派生。
+`product_id → AVL 前缀` 的对应关系**集中在 `main.py` 顶部的
+`OPPORTUNITY_RECALL_AVLS` / `LOSS_CONTROL_AVLS` 两张表**，两个 ID 集合由它们的 key
+派生。数据访问层 `sftp_avl2db` 完全不知道产品 ID：命中后把 AVL 前缀传给
+`data_query.query(avl, telnum)` 即可，读取侧只按 `{AVL}.db` 定位。
 
 第 3 类是唯一的兜底：不属于商机回捞 / 控损的产品 ID 全部落到这里，当前统一
 输出 `code: "2"` 空话术，等客户诊断新线实现后再切换。维表业务路由已下线，
 卖点表读取不再参与路由判断，只用于产品名与非商机 ID 的标签子集。
 
-**按业务声明 IOP / 画像依赖**（`main.py::iop_need()`，由 `data_query` 的路由集合
+**按业务声明 IOP / 画像依赖**（`main.py::iop_need()`，由本文件的路由集合
 派生；判定按全部 `productId` 取并集，不短路到第一个）：
 
 | 业务 | 声明 | IOP 标签 | 画像 |
@@ -108,7 +111,7 @@ dimensions.db ──→ reader.DimensionReader ──→ transform ────�
 | 控损 | `NONE` | **不取** | 不计算 |
 | 其余全部（诊断兜底） | `RAW_LABELS` | 取（当前输出未消费，属新线预留） | 不计算 |
 
-一次请求内的次数（不含 token 刷新，刷新次数另见 [`IOP/Readme.md`](IOP/Readme.md) 的「并发与可靠性约束 → token 单飞」）：
+一次请求内的次数（不含 token 刷新，刷新次数另见 [`IOP/README.md`](IOP/README.md) 的「并发与可靠性约束 → token 单飞」）：
 
 | 待查 `productId` 列表 | IOP 标签查询 | 画像拼装 | 卖点表读取 |
 |---|---|---|---|

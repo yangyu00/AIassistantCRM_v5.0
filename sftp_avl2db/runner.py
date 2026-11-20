@@ -13,7 +13,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from .config import remote_name_for
-from .dbspec import QueryMode
 from .protocols import ImportResult, ImportStatus
 
 
@@ -95,22 +94,17 @@ class Avl2DbRunner:
                                 rows=self.parser.stats.rows,
                                 skipped=self.parser.stats.skipped)
         except Exception as e:
-            # 含 UnknownPrefixError：按失败处理，不登记清单
+            # 解析 / 写入异常：按失败处理，不登记清单，下轮重试
             self.log.error(
                 f"解析入库失败 {remote_name}: {e}\n{traceback.format_exc()}")
             return ImportResult(remote_name, ImportStatus.FAILED, detail=f"import: {e}")
 
     def _log_import_done(self, filename: str, prefix: str) -> None:
-        """按库表形式补记两类计数（日志文本保持一致）。"""
+        """单文件入库完成计数；一个 AVL 一个任务，日志不再按模式分流。"""
         st = self.parser.stats
-        if self.profile.mode == QueryMode.MULTI_DB_SINGLE_TABLE:
-            self.log.info(
-                f"[{prefix}] {filename} 覆盖完成，共 {st.rows} 条，"
-                f"跳过空手机号 {st.skipped} 条")
-        else:
-            self.log.info(
-                f"{filename} 解析完成，共 {st.rows} 条，"
-                f"跳过空手机号 {st.skipped} 条")
+        self.log.info(
+            f"[{prefix}] {filename} 覆盖完成，共 {st.rows} 条，"
+            f"跳过空手机号 {st.skipped} 条")
 
     # ---- 单轮 ----
     def run_once_for_date(self, date_str: str,

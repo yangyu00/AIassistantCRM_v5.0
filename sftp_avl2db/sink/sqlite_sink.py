@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """SQLite 写入层：建表 / 流式分批写 / 过期清理。
 
-商机与控损的 ``PRAGMA synchronous``、批次容器与提交时机差异刻意保留，
-清单见 ``Readme.md``；实现注释说明「为什么」。
+各 AVL 的 ``PRAGMA synchronous`` 由 ``avl_specs.AvlSpec`` 声明（商机 OFF、
+控损 NORMAL），批次容器与提交时机差异刻意保留，清单见 ``Readme.md``；
+实现注释说明「为什么」。
 """
 from __future__ import annotations
 
@@ -11,15 +12,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
-from ..dbspec import QueryMode
 from .schema import TableSchema
 
-# 按库表形式区分 PRAGMA synchronous；差异刻意保留，不要统一。
-DEFAULT_SYNCHRONOUS = {
-    QueryMode.MULTI_DB_SINGLE_TABLE: "OFF",       # 商机
-    QueryMode.SINGLE_DB_MULTI_TABLE: "NORMAL",    # 控损
-    QueryMode.SINGLE_DB_SINGLE_TABLE: "NORMAL",   # 预留形式，与控损一致
-}
+# 未显式声明 synchronous 时的兜底值；实际值取自 profile.synchronous。
+DEFAULT_SYNCHRONOUS = "NORMAL"
 
 
 @dataclass
@@ -48,7 +44,7 @@ class SqliteSink:
                               if batch_size is None else batch_size)
         if self.batch_size <= 0:
             raise ValueError(f"batch_size 必须为正整数，当前为 {self.batch_size}")
-        self.synchronous = (DEFAULT_SYNCHRONOUS.get(profile.mode, "NORMAL")
+        self.synchronous = (getattr(profile, "synchronous", DEFAULT_SYNCHRONOUS)
                             if synchronous is None else synchronous)
         self.stats = WriteStats()
 
