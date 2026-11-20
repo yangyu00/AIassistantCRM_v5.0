@@ -1,14 +1,7 @@
 # -*- coding: utf-8 -*-
-"""AVL 解析层：把本地文件变成逻辑记录元组，纯解析、无副作用。
+"""AVL 解析层：本地文件 → 逻辑记录元组，纯解析、无副作用。
 
-    from sftp_avl2db.parsers import ContinuationParser
-    rows = list(ContinuationParser().parse(Path("xxx.AVL")))
-
-    from sftp_avl2db.parsers import build_parser
-    parser = build_parser(profile)          # profile 只要有 .parser / .columns
-
-两个实现都满足 ``sftp_avl2db.protocols.RecordParser``：
-``parse()`` 是生成器，迭代过程中更新 ``parser.stats``。
+两个实现都满足 ``protocols.RecordParser``；行为保真清单见 ``Readme.md``。
 """
 from .continuation import (
     DATE_RE,

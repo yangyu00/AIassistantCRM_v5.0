@@ -18,9 +18,10 @@
 """
 import os
 import sqlite3
-import zlib
 
-from sftp_avl2db.dbspec import QUERY_SPECS, db_columns, query_spec, validate_specs
+from sftp_avl2db.dbspec import (
+    QUERY_SPECS, QueryMode, db_columns, query_spec, shard_index, validate_specs,
+)
 from sftp_avl2db.config import load_profiles
 
 # 在线侧启动时显式加载一次包内 sftp_avl2db/.env（不传 runtime_dir，与写入侧
@@ -47,7 +48,7 @@ def _resolve(task_name, product_no, product_id=None):
     qdir = conf.db_dir
 
     mode = spec["mode"]
-    if mode == "multi_db_single_table":
+    if mode == QueryMode.MULTI_DB_SINGLE_TABLE:
         # 多库单表：db_map 的值是库名（{库名}.db），每库一张表 data_{库名}
         db_name = spec["db_map"].get(product_id)
         if not db_name:
@@ -55,13 +56,12 @@ def _resolve(task_name, product_no, product_id=None):
             return None
         db_path = qdir / f"{db_name}.db"
         table = f"data_{db_name}"
-    elif mode == "single_db_multi_table":
+    elif mode == QueryMode.SINGLE_DB_MULTI_TABLE:
         # 单库多表：单库按 crc32(product_no) 路由到 num_tables 张表之一
         db_path = qdir / f"{conf.file_prefixes[0]}.db"
-        p_no = product_no if product_no else "NULL"
-        idx = zlib.crc32(p_no.encode("utf-8")) % conf.num_tables
+        idx = shard_index(product_no, conf.num_tables)
         table = f"{conf.table_name_prefix}_{idx}"
-    elif mode == "single_db_single_table":
+    elif mode == QueryMode.SINGLE_DB_SINGLE_TABLE:
         # 单库单表：单库一张固定表
         db_path = qdir / f"{conf.file_prefixes[0]}.db"
         table = spec["table_name"]

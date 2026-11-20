@@ -1,24 +1,8 @@
 # -*- coding: utf-8 -*-
-"""``sftp_avl2db`` 配置：唯一来源 ``sftp_avl2db/.env``，唯一入口 ``load_profiles()``。
+"""配置：唯一来源 ``sftp_avl2db/.env``，唯一入口 ``load_profiles()``。
 
-**配置与运行时产出都锚在包内**，两者都用 ``__file__`` 定位，与启动时的 CWD 无关：
-
-============================  ================================================
-``ENV_PATH``                   同目录 ``.env``（17 个键，改完重启进程）
-``RUNTIME_DIR``                同目录 ``runtime/``（``sqlite_db`` / ``state``
-                               / ``files`` / ``log``），写入侧产出、在线侧只读
-============================  ================================================
-
-不读系统环境变量，没有 ``TASKS_ENV_FILE`` / ``--env`` 路径覆盖，也没有
-``from_mapping()`` / ``load_values()`` / ``parse_dotenv()`` 等多套入口。
-``import sftp_avl2db`` 零 I/O；只有 ``load_profiles()`` 读文件。
-
-``load_profiles(runtime_dir=...)`` 是**唯一隔离入口**：显式给一个目录时，
-产出全部落在那里、不碰包内 ``runtime/``（离线复跑 / 数据盘挂载用）。生产与
-在线侧都不传参，读写同源靠这一条保证。``runtime/`` 也可以是指向数据盘的软链。
-
-⚠️ ``SFTP_PASSWORD`` 是明文凭据；公开分发前请把 ``sftp_avl2db/.env``
-   加入 ``.gitignore``，仓库里只保留 ``.env.example``。
+``ENV_PATH`` / ``RUNTIME_DIR`` 都按 ``__file__`` 定位；不读系统环境变量，
+``import`` 零 I/O。配置分组与键说明见 ``Readme.md``。
 """
 from __future__ import annotations
 
@@ -30,8 +14,8 @@ ENV_PATH = Path(__file__).with_name(".env")
 RUNTIME_DIR = Path(__file__).with_name("runtime")
 
 # 任务声明表：(任务名, .env 键前缀, 解析器, 是否分表)。
-# schema 与 mode 不在这里重复：schema 取自 dbspec.DB_SCHEMAS，mode 取自
-# dbspec.QUERY_SPECS（唯一真源），新增任务在这里加一行 + 写进 .env。
+# schema / mode / table_name 不在这里重复：都取自 dbspec（唯一真源），
+# 新增任务在这里加一行 + 写进 .env。
 _TASKS = (
     ("opportunity_recall", "OPPORTUNITY_RECALL", "flat", False),
     ("loss_control", "LOSS_CONTROL", "continuation", True),
@@ -122,6 +106,7 @@ class TaskProfileConfig:
     mode: str                                # 同 dbspec.QUERY_SPECS[name]["mode"]
     num_tables: int
     table_name_prefix: str
+    table_name: str                          # 单库单表专用，由 QUERY_SPECS 派生
     remote_name_tmpl: str
 
     @property
@@ -166,6 +151,7 @@ def load_profiles(runtime_dir=None) -> dict[str, TaskProfileConfig]:
 
     profiles = {}
     for name, prefix, parser, sharded in _TASKS:
+        spec = query_spec(name)
         profiles[name] = TaskProfileConfig(
             name=name,
             file_prefixes=tuple(_list(v, f"{prefix}_FILE_PREFIXES")),
@@ -182,10 +168,11 @@ def load_profiles(runtime_dir=None) -> dict[str, TaskProfileConfig]:
             log_dir=root / "log",
             schema=tuple(tuple(c) for c in DB_SCHEMAS[name]),
             parser=parser,
-            mode=query_spec(name)["mode"],
+            mode=spec["mode"],
             num_tables=_int(v, f"{prefix}_NUM_TABLES") if sharded else 0,
             table_name_prefix=(_str(v, f"{prefix}_TABLE_NAME_PREFIX")
                                if sharded else ""),
+            table_name=spec.get("table_name", ""),
             remote_name_tmpl="{prefix}{date}000000.AVL",
         )
 
@@ -193,7 +180,13 @@ def load_profiles(runtime_dir=None) -> dict[str, TaskProfileConfig]:
     return profiles
 
 
+def remote_name_for(profile: TaskProfileConfig, prefix: str,
+                    date_str: str) -> str:
+    """拼一个远程文件名；编排器与 ``iter_remote_names()`` 共用这一处定义。"""
+    return profile.remote_name_tmpl.format(prefix=prefix, date=date_str)
+
+
 def iter_remote_names(profile: TaskProfileConfig, date_str: str) -> Iterable[str]:
-    """按前缀与日期拼出远程文件名，顺序与 ``Avl2DbRunner`` 一致。"""
+    """按 ``profile.file_prefixes`` 的顺序拼出该日期的全部远程文件名。"""
     for prefix in profile.file_prefixes:
-        yield profile.remote_name_tmpl.format(prefix=prefix, date=date_str)
+        yield remote_name_for(profile, prefix, date_str)

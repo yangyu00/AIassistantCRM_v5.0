@@ -1,39 +1,10 @@
 # -*- coding: utf-8 -*-
 """``sftp_avl2db``：SFTP AVL → SQLite 入库包。
 
-**配置与运行时产出都在包内，都用 ``__file__`` 定位，与 CWD 无关**：
+配置锚在包内 ``.env``，产出锚在包内 ``runtime/``（都按 ``__file__`` 定位，
+与 CWD 无关）；``import sftp_avl2db`` 零 I/O、零第三方依赖。
 
-- ``sftp_avl2db/.env``：唯一配置来源，改完重启进程；不读系统环境变量
-- ``sftp_avl2db/runtime/``：``sqlite_db`` / ``state`` / ``files`` / ``log``，
-  写入侧产出、在线侧只读；可换成指向数据盘的软链
-
-唯一配置入口是 ``load_profiles()``：
-
-    from sftp_avl2db import load_profiles, build_task
-    profile = load_profiles()["loss_control"]     # 不传参 = 包内默认，读写同源
-    task = build_task(profile)
-    task.runner.serve_forever(only_date="20261110")
-
-把包 copy 到别的项目时，请**排除 ``.env`` 与 ``runtime/``**，从
-``.env.example`` 起步，避免把 A 项目的凭据和业务库一起带走。
-
-``import sftp_avl2db`` 零 I/O、零第三方依赖：不读 ``.env``、不连网络、
-不建目录、不写日志、不改全局 logger。配置只在显式调用 ``load_profiles()``
-时加载。
-
-五个组件层可单独 import、单独测试、单独替换：
-
-| 层 | 模块 | 顶层第三方依赖 |
-|---|---|---|
-| 配置 | ``config`` / ``dbspec`` | 无 |
-| 解析 | ``parsers`` | 无 |
-| 写入 | ``sink`` | 无（只用标准库 sqlite3） |
-| I/O | ``remote`` / ``state`` / ``logging`` | 无（延迟导入 paramiko / loguru） |
-| 编排 | ``runner`` / ``profiles`` / ``cli`` | 无 |
-
-带可选依赖的类（``SftpRemoteSource`` / ``TaskLogger`` / ``SingleInstanceLock``）
-通过模块级 ``__getattr__`` **延迟导出**：``import sftp_avl2db`` 完全不碰它们，
-真正 ``from sftp_avl2db import build_task`` 时才加载对应模块。
+分层、公共 API 与调用链见包内 ``Readme.md``。
 """
 from . import dbspec                      # noqa: E402  (纯静态契约)
 from .config import (
@@ -44,11 +15,14 @@ from .config import (
     TaskProfileConfig,
     iter_remote_names,
     load_profiles,
+    remote_name_for,
 )
 from .protocols import (
     ImportResult,
+    ImportStatus,
     ParseStats,
     RecordParser,
+    SinkStats,
     RecordSink,
     RemoteSource,
     StateStore,
@@ -64,9 +38,9 @@ _LAZY_EXPORTS = {
     "build_all": ("profiles", "build_all"),
     "cli_main": ("cli", "main"),
     "build_arg_parser": ("cli", "build_arg_parser"),
-    "TaskLogger": ("logging", "TaskLogger"),
-    "InMemoryLogger": ("logging", "InMemoryLogger"),
-    "build_logger": ("logging", "build_logger"),
+    "TaskLogger": ("task_logging", "TaskLogger"),
+    "InMemoryLogger": ("task_logging", "InMemoryLogger"),
+    "build_logger": ("task_logging", "build_logger"),
     "SftpRemoteSource": ("remote", "SftpRemoteSource"),
     "LocalDirRemoteSource": ("remote", "LocalDirRemoteSource"),
     "build_remote_source": ("remote", "build_remote_source"),
@@ -98,9 +72,10 @@ def __dir__():
 __all__ = [
     # 配置（唯一入口 load_profiles()，其余是它产出的冻结对象与常量）
     "dbspec", "ENV_PATH", "RUNTIME_DIR", "SftpConfig", "RetentionConfig",
-    "TaskProfileConfig", "load_profiles", "iter_remote_names",
+    "TaskProfileConfig", "load_profiles", "iter_remote_names", "remote_name_for",
     # 契约
-    "ParseStats", "ImportResult", "RemoteSource", "RecordParser",
+    "ParseStats", "ImportResult", "ImportStatus", "SinkStats",
+    "RemoteSource", "RecordParser",
     "TableLayout", "RecordSink", "StateStore",
     # 组件（延迟）
     "FlatColumnParser", "ContinuationParser", "build_parser",

@@ -1,20 +1,7 @@
 # -*- coding: utf-8 -*-
-"""远程文件源：SFTP（生产）与本地目录（离线测试 / 其他项目复用）。
+"""远程文件源：SFTP（生产）与本地目录（离线）。
 
-``paramiko`` 只在 ``SftpRemoteSource.connect()`` 时延迟导入，模块级零第三方
-依赖；``LocalDirRemoteSource`` 不装任何东西就能用。
-
-连接生命周期：``connect()`` 惰性触发（``exists`` / ``fetch`` 会自动调），
-``close()`` 后可再次 ``connect()``。编排器在每轮开始显式 ``connect()``，
-连接失败记为整轮失败、不处理任何文件。
-
-``exists()`` 三态：
-
-- 成功 → ``True``
-- ``FileNotFoundError`` → ``False``（编排器记 INFO「远程文件尚未生成」）
-- 其他异常 → **透传**（编排器记 ERROR「stat 远程文件出错」）
-
-后两者都跳过该文件、不登记清单；异常不在组件里吞掉。
+``paramiko`` 仅在 ``connect()`` 时延迟导入；``exists()`` 三态语义见实现注释。
 """
 from __future__ import annotations
 

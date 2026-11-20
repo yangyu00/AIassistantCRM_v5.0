@@ -1,24 +1,24 @@
 # -*- coding: utf-8 -*-
-"""``sftp_avl2db`` 的组件契约（纯 typing，零 I/O、零第三方依赖）。
+"""组件契约（纯 typing，零 I/O）：五层组件的 Protocol 与结果数据类。
 
-这里定义五层组件契约：
-
-    RemoteSource   SFTP / 本地目录源文件
-    RecordParser   AVL → 逻辑记录生成器
-    TableLayout    库表布局：记录路由 + 全部库表枚举
-    RecordSink     SQLite 建表 / 写入 / 清理
-    StateStore     断点清单 / 单实例锁的状态读写
-
-协议只约束方法形状，不约束实现技术；``Avl2DbRunner`` 通过构造器接收这些对象，
-因此任何一层都能换成测试替身或宿主项目自己的实现。
+任何一层都能换成测试替身；契约清单见 ``Readme.md``。
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Iterator, Protocol, runtime_checkable
+from typing import Final, Iterable, Iterator, Literal, Protocol, runtime_checkable
 
-Row = tuple
+Row = tuple  # 逻辑记录元组；列数由 TableSchema.validate_row() 校验
+
+
+class ImportStatus:
+    """``ImportResult.status`` 的取值，避免散落的裸字符串。"""
+
+    SKIP: Final = "skip"
+    MISSING: Final = "missing"
+    FAILED: Final = "failed"
+    OK: Final = "ok"
 
 
 @dataclass
@@ -46,7 +46,12 @@ class ParseStats:
 
 @runtime_checkable
 class RemoteSource(Protocol):
-    """远程（或伪远程）文件源。"""
+    """远程（或伪远程）文件源。
+
+    ``connect()`` 由编排器每轮显式调用；离线源实现为 no-op。
+    """
+
+    def connect(self) -> None: ...
 
     def exists(self, remote_path: str) -> bool: ...
 
@@ -78,8 +83,21 @@ class TableLayout(Protocol):
 
 
 @runtime_checkable
+class SinkStats(Protocol):
+    """清理结果的可观测信号；编排器只依赖 ``errors``。"""
+
+    errors: list[tuple[str, str]]
+
+
+@runtime_checkable
 class RecordSink(Protocol):
-    """记录落地：建表、按布局分批写、过期清理。"""
+    """记录落地：建表、按布局分批写、过期清理。
+
+    ``stats.errors`` 供 ``runner.cleanup_expired()`` 汇总清理失败，因此任何
+    替换实现都要带这个属性（收敛到 ``SinkStats`` 契约）。
+    """
+
+    stats: SinkStats
 
     def ensure_schema(self) -> None: ...
 
@@ -103,13 +121,13 @@ class ImportResult:
     """单个远程文件的单轮结果。"""
 
     filename: str
-    status: str                  # "skip" | "missing" | "failed" | "ok"
+    status: Literal["skip", "missing", "failed", "ok"]
     rows: int = 0
     skipped: int = 0
     detail: str = ""
 
 
 __all__ = [
-    "Row", "ParseStats", "ImportResult",
+    "Row", "ParseStats", "ImportStatus", "ImportResult", "SinkStats",
     "RemoteSource", "RecordParser", "TableLayout", "RecordSink", "StateStore",
 ]

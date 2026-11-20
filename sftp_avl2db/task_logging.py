@@ -1,22 +1,8 @@
 # -*- coding: utf-8 -*-
-"""任务日志：按现有目录与文件名写两个文件 sink，但**不清空宿主日志**。
+"""任务日志：为每个任务挂 INFO / ERROR 两个文件 sink，且不动宿主 logger。
 
-每个 ``TaskLogger`` 显式给定 INFO / ERROR 两个文件 sink 的全部参数（level、
-filter、rotation、retention、encoding、format、backtrace、diagnose），
-``close()`` 时只移除自己记下的 sink id，**不调用 ``logger.remove()``**——
-否则会清空宿主项目（FastAPI / IOP / 其他任务）的全局 sink，多任务并行时还会
-互相清 sink。两个任务靠 ``extra.task`` filter 天然隔离。
-
-代价：若宿主保留了 loguru 默认的 stderr sink，任务日志会同时输出到 stderr。
-需要「只有两个文件 sink」时，注入一个已自行 ``remove()`` 过的 logger 即可。
-
-**延迟导入 loguru**：模块级零第三方依赖。``logger=None`` 时才在构造里
-``from loguru import logger``；没装 loguru 会给出明确提示，并可用任意实现了
-``bind/add/remove/info/error/warning`` 的对象注入（宿主封装、测试替身，
-或本模块自带的 ``InMemoryLogger``）。
-
-日志目录由 ``profile.log_dir`` 注入，文件名
-``{任务名}_INFO_{YYYY-MM-DD}.log`` / ``{任务名}_ERROR_{YYYY-MM-DD}.log``。
+``loguru`` 延迟导入；没装时可注入 ``InMemoryLogger`` 或宿主 logger。
+模块不叫 ``logging``，避免遮蔽标准库同名模块；详见 ``Readme.md``。
 """
 from __future__ import annotations
 

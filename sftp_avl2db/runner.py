@@ -1,21 +1,8 @@
 # -*- coding: utf-8 -*-
 """``Avl2DbRunner``：把五个可注入组件编成一轮「SFTP AVL → SQLite」。
 
-流程：拿锁 → 按「昨天 + 今天」兜底跑单轮 → 每轮清理过期数据 → sleep → 释放锁。
-
-两个行为约定：
-
-1. **未知前缀当作失败**：``PerPrefixLayout`` 抛 ``UnknownPrefixError`` 时统一按
-   「解析入库失败」处理：**不登记清单、imported 不加、本地文件保留、下轮重试**。
-   该分支实际不可达（上层只下发按 ``FILE_PREFIXES`` 拼出的文件名）。
-2. **``exists()`` 三态的日志映射**：``False`` → INFO「远程文件尚未生成」；
-   其他异常 → ERROR「stat 远程文件出错」；两者都跳过、不登记清单。
-
-**日志信号**：解析完成后按库表形式补记两类计数文本（``共 N 条`` /
-``跳过空手机号 N 条``）；逐批进度日志收敛为 ``WriteStats``，组件本身不写日志。
-
-**测试钩子**（不改变生产行为）：``max_rounds`` 限制常驻轮数、``sleeper`` 可注入
-假 sleep、``now`` / ``date_strings`` 可注入时钟，让守护循环也能离线单测。
+流程与日志信号见 ``serve_forever()`` / ``import_one()`` 的 docstring；
+调用链见 ``Readme.md``。
 """
 from __future__ import annotations
 
@@ -25,7 +12,9 @@ import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from .protocols import ImportResult
+from .config import remote_name_for
+from .dbspec import QueryMode
+from .protocols import ImportResult, ImportStatus
 
 
 class Avl2DbRunner:
@@ -66,14 +55,13 @@ class Avl2DbRunner:
         生产上由 ``run_once_for_date()`` 调用，后者已先 ``sink.ensure_schema()``；
         单独调用本方法（例如离线单测）需自行确保表已建好。
         """
-        remote_name = self.profile.remote_name_tmpl.format(
-            prefix=prefix, date=date_str)
+        remote_name = remote_name_for(self.profile, prefix, date_str)
         remote_path = self._remote_path(remote_name)
         local_path = self._local_path(remote_name)
 
         if self.state.has(remote_name) and not force:
             self.log.info(f"SKIP 已在清单中，跳过: {remote_name}")
-            return ImportResult(remote_name, "skip", detail="已在清单中")
+            return ImportResult(remote_name, ImportStatus.SKIP, detail="已在清单中")
 
         # stat 三态：存在 / 尚未生成 / 其他错误
         try:
@@ -82,17 +70,17 @@ class Avl2DbRunner:
             present = False
         except Exception as e:
             self.log.error(f"stat 远程文件出错 {remote_name}: {e}")
-            return ImportResult(remote_name, "failed", detail=f"stat: {e}")
+            return ImportResult(remote_name, ImportStatus.FAILED, detail=f"stat: {e}")
         if not present:
             self.log.info(f"远程文件尚未生成: {remote_name}")
-            return ImportResult(remote_name, "missing")
+            return ImportResult(remote_name, ImportStatus.MISSING)
 
         try:
             self.log.info(f"正在下载 {remote_name} ...")
             self.source.fetch(remote_path, local_path)
         except Exception as e:
             self.log.error(f"下载失败 {remote_name}: {e}")
-            return ImportResult(remote_name, "failed", detail=f"get: {e}")
+            return ImportResult(remote_name, ImportStatus.FAILED, detail=f"get: {e}")
 
         try:
             # 解析层是生成器；写入层按 BATCH_SIZE 分桶、逐批 commit
@@ -102,19 +90,20 @@ class Avl2DbRunner:
             # ↑ 成功后才登记清单；下面任何异常都不 add，下轮会重试
             self.state.add(remote_name)
             self.log.info(f"入库完成并登记清单: {remote_name}")
-            return ImportResult(remote_name, "ok",
+            # rows 取解析产出的逻辑记录数；正常情况下等于 sink.write() 的写入数。
+            return ImportResult(remote_name, ImportStatus.OK,
                                 rows=self.parser.stats.rows,
                                 skipped=self.parser.stats.skipped)
         except Exception as e:
             # 含 UnknownPrefixError：按失败处理，不登记清单
             self.log.error(
                 f"解析入库失败 {remote_name}: {e}\n{traceback.format_exc()}")
-            return ImportResult(remote_name, "failed", detail=f"import: {e}")
+            return ImportResult(remote_name, ImportStatus.FAILED, detail=f"import: {e}")
 
     def _log_import_done(self, filename: str, prefix: str) -> None:
         """按库表形式补记两类计数（日志文本保持一致）。"""
         st = self.parser.stats
-        if self.profile.mode == "multi_db_single_table":
+        if self.profile.mode == QueryMode.MULTI_DB_SINGLE_TABLE:
             self.log.info(
                 f"[{prefix}] {filename} 覆盖完成，共 {st.rows} 条，"
                 f"跳过空手机号 {st.skipped} 条")
@@ -142,7 +131,7 @@ class Avl2DbRunner:
         try:
             for prefix in self.profile.file_prefixes:
                 result = self.import_one(date_str, prefix, force=force_reload)
-                if result.status == "ok":
+                if result.status == ImportStatus.OK:
                     imported += 1
         finally:
             # 无论成功失败都关闭连接，异常吞掉
@@ -228,7 +217,7 @@ class Avl2DbRunner:
                     dates = [(now - timedelta(days=1)).strftime("%Y%m%d"),
                              today]
                 total = 0
-                for d in dict.fromkeys(dates):
+                for d in sorted(set(dates)):
                     total += self.run_once_for_date(d,
                                                     force_reload=force_reload)
                 self.cleanup_expired()

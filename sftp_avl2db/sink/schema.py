@@ -1,14 +1,7 @@
 # -*- coding: utf-8 -*-
-"""SQLite 表结构与 SQL 文本生成。
+"""SQLite 表结构与 SQL 文本生成（三条 SQL 拼法刻意保真）。
 
-三条 SQL 保持以下拼法，**不做参数化改造、不换占位符风格、不改主键声明形式**：
-
-    CREATE TABLE IF NOT EXISTS {table} ({列定义}, PRIMARY KEY (product_no))
-    INSERT OR REPLACE INTO {table} ({列名}) VALUES (?, ?, ...)
-    DELETE FROM {table} WHERE op_time < ?
-
-``primary_key`` 默认 ``product_no``（表级约束）；``time_column`` 默认
-``op_time``（过期清理用）。两者做成字段，方便其他项目换主键 / 时间列时不用改本文件。
+保真清单见 ``Readme.md``；主键 / 时间列做成字段，方便其他项目替换。
 """
 from __future__ import annotations
 

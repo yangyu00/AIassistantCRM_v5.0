@@ -1,28 +1,8 @@
 # -*- coding: utf-8 -*-
 """SQLite 写入层：建表 / 流式分批写 / 过期清理。
 
-**以下差异刻意保留，不要统一**：
-
-| 项 | 商机 ``multi_db_single_table`` | 控损 ``single_db_multi_table`` |
-|---|---|---|
-| ``PRAGMA synchronous`` | ``OFF`` | ``NORMAL`` |
-| 批次容器 | 单表一个 ``batch`` list | 128 张表各一个 ``batches[t]`` list |
-| 提交时机 | 满 ``BATCH_SIZE`` + 末尾余量 | 任一表满 ``BATCH_SIZE`` 就只提交该表 + 末尾逐表提交余量 |
-
-按 ``(库文件, 表)`` 分桶统一表达上表两种形态：商机每文件只有一个桶，
-控损每文件最多 128 个桶。
-
-其余行为约束：
-
-- ``ensure_schema()`` 与 ``write()`` **各自建立连接**；同一库文件在一次调用内只连一次。
-- 连接 PRAGMA 顺序：``journal_mode=WAL`` → ``synchronous`` →
-  ``cache_size=-64000`` → ``temp_store=MEMORY``。
-- ``INSERT OR REPLACE`` + 表级 ``PRIMARY KEY (product_no)``，后写覆盖先写。
-- ``parse()`` 是生成器，本层按 ``BATCH_SIZE`` 流式分桶，不把全量记录装进内存。
-- 过期清理按 ``op_time < ?``，异常时 **rollback 并吞掉**，错误收进
-  ``stats.errors`` 供编排器记录，不抛给上层。
-
-本层不写日志、不连网络、不读 ``.env``；只依赖标准库 ``sqlite3``。
+商机与控损的 ``PRAGMA synchronous``、批次容器与提交时机差异刻意保留，
+清单见 ``Readme.md``；实现注释说明「为什么」。
 """
 from __future__ import annotations
 
@@ -31,13 +11,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
+from ..dbspec import QueryMode
 from .schema import TableSchema
 
 # 按库表形式区分 PRAGMA synchronous；差异刻意保留，不要统一。
 DEFAULT_SYNCHRONOUS = {
-    "multi_db_single_table": "OFF",       # 商机
-    "single_db_multi_table": "NORMAL",    # 控损
-    "single_db_single_table": "NORMAL",   # 预留形式，与控损一致
+    QueryMode.MULTI_DB_SINGLE_TABLE: "OFF",       # 商机
+    QueryMode.SINGLE_DB_MULTI_TABLE: "NORMAL",    # 控损
+    QueryMode.SINGLE_DB_SINGLE_TABLE: "NORMAL",   # 预留形式，与控损一致
 }
 
 
@@ -50,7 +31,7 @@ class WriteStats:
     commits: int = 0          # commit 次数
     connections: int = 0      # 打开的 sqlite 连接数
     purged: int = 0           # 最近一次 purge_expired 删除的行数
-    errors: list = field(default_factory=list)   # [(库路径, 异常文本)]
+    errors: list[tuple[str, str]] = field(default_factory=list)  # [(库路径, 异常文本)]
 
 
 class SqliteSink:
@@ -71,14 +52,17 @@ class SqliteSink:
                             if synchronous is None else synchronous)
         self.stats = WriteStats()
 
+    def _group_targets_by_db(self) -> dict[Path, list[str]]:
+        """把布局枚举出的 ``(库, 表)`` 按库文件分组；建表与过期清理共用。"""
+        groups: dict[Path, list[str]] = {}
+        for db_path, table in self.layout.all_targets():
+            groups.setdefault(Path(db_path), []).append(table)
+        return groups
+
     # ---- 建表（幂等） ----
     def ensure_schema(self) -> None:
         """按布局枚举全部库表并建表；同一库文件只连一次、一次 commit。"""
-        groups = {}
-        for db_path, table in self.layout.all_targets():
-            groups.setdefault(Path(db_path), []).append(table)
-
-        for db_path, tables in groups.items():
+        for db_path, tables in self._group_targets_by_db().items():
             db_path.parent.mkdir(parents=True, exist_ok=True)
             conn = sqlite3.connect(str(db_path))
             try:
@@ -127,22 +111,23 @@ class SqliteSink:
                 self.schema.validate_row(row)
                 db_path, table = layout.target(filename, row)
                 db_path = Path(db_path)
-                key = (str(db_path), table)
-                if key not in batches:
-                    batches[key] = []
-                    if key[0] not in conns:
+                db_key = str(db_path)
+                bucket = (db_key, table)
+                if bucket not in batches:
+                    batches[bucket] = []
+                    if db_key not in conns:
                         db_path.parent.mkdir(parents=True, exist_ok=True)
-                        conns[key[0]] = self._connect(db_path)
-                batches[key].append(row)
+                        conns[db_key] = self._connect(db_path)
+                batches[bucket].append(row)
                 self.stats.rows += 1
-                if len(batches[key]) >= self.batch_size:
-                    self._flush(conns[key[0]], table, batches[key])
-                    batches[key].clear()
+                if len(batches[bucket]) >= self.batch_size:
+                    self._flush(conns[db_key], table, batches[bucket])
+                    batches[bucket].clear()
 
             # 末尾余量：逐桶提交（控损 128 张表各自提交自己的余量）
-            for (db_path_str, table), batch in batches.items():
+            for (db_key, table), batch in batches.items():
                 if batch:
-                    self._flush(conns[db_path_str], table, batch)
+                    self._flush(conns[db_key], table, batch)
                     batch.clear()
 
             return self.stats.rows
@@ -170,11 +155,7 @@ class SqliteSink:
         self.stats.purged = 0
         self.stats.errors = []
 
-        groups = {}
-        for db_path, table in self.layout.all_targets():
-            groups.setdefault(Path(db_path), []).append(table)
-
-        for db_path, tables in groups.items():
+        for db_path, tables in self._group_targets_by_db().items():
             if not db_path.is_file():
                 continue
             conn = None
@@ -200,10 +181,15 @@ class SqliteSink:
         return total
 
 
-def build_sink(profile, *, layout=None, **kwargs) -> SqliteSink:
+def build_sink(profile, *, layout=None, table_schema: TableSchema | None = None,
+               batch_size: int | None = None,
+               synchronous: str | None = None) -> SqliteSink:
     """装配写入层；与 ``build_layout()`` 共用同一个 layout 对象。"""
-    from .router import build_layout
-    return SqliteSink(profile, layout or build_layout(profile), **kwargs)
+    if layout is None:
+        from .router import build_layout
+        layout = build_layout(profile)
+    return SqliteSink(profile, layout, table_schema=table_schema,
+                      batch_size=batch_size, synchronous=synchronous)
 
 
 __all__ = ["SqliteSink", "WriteStats", "DEFAULT_SYNCHRONOUS", "build_sink"]

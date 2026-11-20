@@ -1,25 +1,14 @@
 # -*- coding: utf-8 -*-
-"""回捞商机 AVL 解析（制表符分隔、一行一条记录、无续行）。
+"""回捞商机 AVL 解析（制表符分隔、一行一条、无续行）。
 
-``parse()`` 是生成器，产出 ``column_count`` 列元组交给 ``RecordSink``；
-不碰 DB / 网络 / 日志，计数放进 ``stats`` 供编排器按需记录。
-
-以下行为刻意保真，不要顺手优化：
-
-1. ``line.strip()`` 连行首行尾的制表符一起剥，尾随空列因此可能被吃掉；
-2. 列数不足补空串、超出截断到 ``column_count``；
-3. 最后一列按 int 转换，空串 / 非数字 → ``0``；
-4. ``product_no``（第 3 列）为空则跳过，记入 ``stats.skipped``；
-5. 编码探测循环仍是 ``("utf-8", "gbk", "latin-1")`` 且带 ``errors="ignore"``。
-   ``errors="ignore"`` 会让 utf-8 打开几乎不抛异常，因此实际恒走 utf-8 分支，
-   gbk / latin-1 不会命中。不要在这里「顺手修好」，否则 GBK 文件的产出会与
-   现有生产结果不一致。
+行为保真清单见 ``Readme.md``「刻意保真」一节；实现注释说明「为什么」。
 """
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Iterator
 
+from ..dbspec import PRODUCT_NO_INDEX
 from ..protocols import ParseStats, Row
 
 ENCODING_CANDIDATES = ("utf-8", "gbk", "latin-1")
@@ -69,7 +58,7 @@ class FlatColumnParser:
                     fields[-1] = int(val) if val else 0
                 except ValueError:
                     fields[-1] = 0
-                if not str(fields[2]).strip():
+                if not str(fields[PRODUCT_NO_INDEX]).strip():
                     self.stats.skipped += 1
                     continue
                 self.stats.rows += 1

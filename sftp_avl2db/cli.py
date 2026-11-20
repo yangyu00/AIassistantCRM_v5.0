@@ -1,26 +1,8 @@
 # -*- coding: utf-8 -*-
-"""命令行入口：``python -m sftp_avl2db --task <任务名> [选项]``。
+"""命令行入口 ``python -m sftp_avl2db --task <任务名> [选项]``。
 
-参数与退出码：
-
-    --task NAME              任务名，必填
-    --date YYYYMMDD          单次模式，拉完指定日期后退出；不传则常驻轮询
-    --force-reload           清单命中也强制重新下载并入库
-    日期格式错误 → 打印 "ERROR:: 日期格式错误，请使用 YYYYMMDD"，退出码 2
-    锁冲突       → 退出码 1（由 ``serve_forever`` 返回）
-    正常         → 0
-
-注入型选项（仅用于离线运行 / 单测，不改变生产默认）：
-
-    --local-dir DIR          用本地目录当远程源，不连 SFTP、不需要 paramiko
-    --runtime-dir DIR       把运行时产出隔离到该目录，不碰包内 runtime/
-    --max-rounds N          常驻模式最多跑 N 轮后退出
-
-配置只认包内 ``sftp_avl2db/.env``；``--runtime-dir`` 只改产出位置，
-不改配置来源。
-
-``main()`` **返回 int 而不调用 ``sys.exit``**，方便单测直接断言退出码；
-真正的进程退出在 ``__main__.py`` 里做。
+参数与退出码见 ``build_arg_parser()`` / ``main()`` 的 docstring；整体用法见
+``Readme.md``。``main()`` 返回 int 而不调用 ``sys.exit``，便于单测断言。
 """
 from __future__ import annotations
 
