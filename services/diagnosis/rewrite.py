@@ -1,31 +1,30 @@
 # -*- coding: utf-8 -*-
 """诊断新线业务对象：把结构化 record 拼成 ``output_script``。
 
-继承 ``ProductInfoRaw`` 以保持与商机回捞 / 控损一致的对象形状；话术重组在业务侧
-执行，库里始终保存原始文本。
+IOP 标签与卖点维表行在取数 / 兜底阶段（``query.py`` / ``fallback.py``）已经
+消费完毕，对象本身只依赖 ``build_diagnosis_record()`` 产出的结构化 ``record``；
+因此只继承极简的 ``ProductInfoBase``，不再为了「对象形状一致」继承画像基类。
 
 ``record.is_fallback`` 为真（卖点维表兜底）时省略「痛点诊断」「营销话术」两段，
 其余四段照常拼装；两类 record 都由 ``build_output_script()`` 输出，样式一致。
 """
 from __future__ import annotations
 
-from services.product_info_raw import ProductInfoRaw
+from services.product_info_raw import ProductInfoBase
 
 from .fallback import FALLBACK_OMIT_SECTIONS
 from .logic import build_output_script
 
 
-class ProductInfoByDiagnosis(ProductInfoRaw):
-    """诊断新线产品对象：命中 F09629 后由 ``main.py`` 创建。
+class ProductInfoByDiagnosis(ProductInfoBase):
+    """诊断新线产品对象：命中 F09629（或卖点维表兜底）后由工厂创建。
 
     ``product_name`` 取资费名称（【】内），无括号时退到资费摘要、再到原始
     BUSINESS_NAME，保证响应里的 productName 不为空。
     """
 
-    def __init__(self, product_id, custom_label_info, selling_points,
-                 record=None, portrait_cache=None):
-        super().__init__(product_id, custom_label_info, selling_points,
-                         portrait_cache)
+    def __init__(self, product_id, record=None):
+        super().__init__(product_id, product_name="")
         self.record = record or {}
         self.product_name = (
             self.record.get("fee_name")
@@ -37,15 +36,9 @@ class ProductInfoByDiagnosis(ProductInfoRaw):
                 else ())
         self.output_script = build_output_script(self.record, omit=omit)
 
-    def __str__(self):
+    def _extra_str_lines(self):
         r = self.record
-        lines = [
-            f'Product ID: {self.product_id}',
-            f'Product Name: {self.product_name}',
-            f'queried_label_ids: {self.queried_label_ids}',
-            f'queried_label_nvs: {self.queried_label_nvs}',
-            f'auxiliary_portrait: {self.auxiliary_portrait}',
-        ]
+        lines = []
         if r.get("is_fallback"):
             lines.append(
                 f'fallback: {r.get("fallback_reason")} '
@@ -57,9 +50,8 @@ class ProductInfoByDiagnosis(ProductInfoRaw):
             f'pain_points: {r.get("pain_points")}',
             f'marketing_scripts: {r.get("marketing_scripts")}',
             f'retain_pairs: {r.get("retain_pairs")}',
-            f'output_script: {self.output_script}',
         ]
-        return "\n".join(lines)
+        return lines
 
 
 __all__ = ["ProductInfoByDiagnosis"]

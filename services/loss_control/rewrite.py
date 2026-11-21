@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from services.product_info_raw import ProductInfoRaw
+from services.product_info_raw import ProductInfoBase
 
 _DOLLAR_TAG_RE = re.compile(r"<\$([^>]+)>")
 _COLOR_TAG_RE = re.compile(r"<#([0-9A-Fa-f]{6})>")
@@ -62,14 +62,16 @@ def parse_custom_tags(text: str) -> str:
     return "".join(result)
 
 
-class ProductInfoByLossControl(ProductInfoRaw):
-    """控损业务话术对象：只消费 ``record['strategy_name']``。"""
+class ProductInfoByLossControl(ProductInfoBase):
+    """控损业务话术对象：只消费 ``record['strategy_name']``。
 
-    def __init__(self, product_id, custom_label_info, selling_points, record=None,
-                 portrait_cache=None):
-        super().__init__(product_id, custom_label_info, selling_points,
-                         portrait_cache)
-        self.product_name = "控损业务专用"
+    构造只收 ``(product_id, record)``。IOP 标签、卖点维表行映射与请求级
+    ``portrait_cache`` 在 ``routing.build_product_object()`` 就被截断，本对象
+    不再持有任何画像相关状态（旧版继承 ``ProductInfoRaw`` 时全部被动带上）。
+    """
+
+    def __init__(self, product_id, record=None):
+        super().__init__(product_id, product_name="控损业务专用")
         self.record = record
         self.output_script = self._build_output_script()
 
@@ -78,14 +80,6 @@ class ProductInfoByLossControl(ProductInfoRaw):
         if not raw:
             return "无历史话术记录"
         return parse_custom_tags(raw).strip().replace("\n", "<br>")
-
-    def __str__(self):
-        return (f'Product ID: {self.product_id}\n'
-                f'Product Name: {self.product_name}\n'
-                f'queried_label_ids: {self.queried_label_ids}\n'
-                f'queried_label_nvs: {self.queried_label_nvs}\n'
-                f'auxiliary_portrait: {self.auxiliary_portrait}\n'
-                f'output_script: {self.output_script}')
 
 
 __all__ = ["parse_custom_tags", "ProductInfoByLossControl"]

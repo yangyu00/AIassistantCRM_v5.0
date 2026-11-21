@@ -114,9 +114,9 @@
 是否发起 IOP 查询由 `iop_need(product_id)` 逐 ID 声明（`NONE` / `PORTRAIT` /
 `RAW_LABELS`）；`IopLabelProvider` 在请求内惰性取一次标签，保证一次请求最多查
 一次、结果在 `productId` 循环内被各产品对象复用。`get_customer_labels()` 的
-返回值（任何失败统一降级为 `{}`）作为 `custom_label_info` 传入业务对象，是
-`ProductInfoRaw` 拼装 `queried_label_nvs` 与 `auxiliary_portrait` 的原始标签
-输入；声明 `NONE` 的分支直接传 `{}`，连查询都不发生。
+返回值（任何失败统一降级为 `{}`）作为 `custom_label_info` 传给对象工厂：商机
+的 `AuxiliaryPortrait` 用它拼装 `queried_label_nvs` 与 `auxiliary_portrait`，
+诊断取数用它判定兜底场景标签；声明 `NONE` 的分支直接传 `{}`，连查询都不发生。
 
 在此前提下，请求内的编排步骤为：
 
@@ -125,7 +125,7 @@
 2. 在循环外调一次 [`services.dimensions.load_selling_points()`](services/README.md)，
    按本次全部 `productId` 批量 `IN` 查 `selling_points` 表，得到
    `{product_id: SellingPointRow}`（核心是该行「标签ID」列拆出的 `label_ids`）；
-   显式传给每个产品对象，避免一个对象读一次库。
+   显式传给对象工厂，由工厂按业务只转发给真正消费的对象，避免一个对象读一次库。
 3. 按 `productId` 列表逐个建对象：先由 `iop_need(product_id)` 声明该 ID 对
    IOP 标签的依赖，非 `NONE` 时经提供者取标签（整请求最多 1 次），再调
    [`services.build_product_object()`](services/README.md) 完成路由判定、取数与
@@ -190,32 +190,37 @@
    不是填「无」），资费名称 / 摘要来自维表「产品名称」按【】拆分，切入话术与
    拒绝原因 / 挽留话术来自「匹配结果2」首个命中 IOP 的标签 ID 对应的「标签N」。
 
-## 公共画像拼装（`services/product_info_raw.py` + `services/dimensions.py`）
+## 对象模型与辅助画像（`services/product_info_raw.py` + `services/dimensions.py`）
+
+四类对象**只继承极简的 `ProductInfoBase`**（`product_id` / `product_name` /
+`output_script` + 统一日志头），业务对象各自负责自己的名称与话术；公共字段
+日志由基类统一输出，子类通过 `_extra_str_lines()` 追加自己的行。
+
+- `AuxiliaryPortrait`：**商机专属组件**（组合，不是继承）。持有 IOP
+  `custom_label_info`、卖点维表行映射 `selling_point_rows`（旧名
+  `product_selling_point_match_dict` 已废弃）与请求级 `portrait_cache`。
+- 控损 / 诊断新线 / 兜底对象**没有任何画像相关属性**：`routing.build_product_object()`
+  按分支只传各自消费的参数。控损只收 `record`；诊断的 IOP 标签与维表行在
+  `build_diagnosis_record()` 取数阶段用完，对象只收结构化 `record`；兜底只收
+  ID 与维表行（用于日志产品名）。
+- `ProductInfoRaw` 现在只表示第 4 类兜底对象，不再兼任公共基类。
 
 **标签 ID 子集不再硬编码**：在线侧每请求从卖点维表 `selling_points` 表按
 `product_id` 查该行「标签ID」列（`registry.json` 映射为 `label_id`），拆成保序
 去重的 ID 元组；号码对应的名称与值仍来自 IOP 返回。维表决定「查哪些 ID」，
-IOP 决定「这些 ID 叫什么、值是多少」，两者职责分开。
+IOP 决定「这些 ID 叫什么、值是多少」，两者职责分开。「标签ID」单元格按换行 /
+竖线 / 逗号 / 分号（含全角）拆分、去空、保序去重，见
+`services/dimensions.py::split_label_ids()`。
 
-所有业务对象都继承 `ProductInfoRaw`。构造时完成三项：
-
-- `product_name`：取卖点维表行的 `product_name`（商机子类会覆盖为固定业务名）。
-- `queried_label_ids`：取该行 `label_ids` 元组，顺序即画像拼接顺序；维表未命中 /
-  库缺失 / 标签 ID 为空 → 空子集。
-- `queried_label_nvs`：按 `queried_label_ids` 顺序与 `custom_label_info` 对齐，缺失填 `None`。
-
-「标签ID」单元格是多个 ID，按换行 / 竖线 / 逗号 / 分号（含全角）拆分、去空、
-保序去重，见 `services/dimensions.py::split_label_ids()`。
-
-`auxiliary_portrait` 是 **property，懒执行**：模块级纯函数
-`build_auxiliary_portrait(queried_label_nvs)` 按上游返回的名称与原值逐项拼
-`标签名: <strong><span style="color:blue;">值</span></strong>; `，保留空值跳过
-，最后补 `【辅助画像】` 前缀与 `rstrip`。不做名称映射或按标签 ID 硬编码的值转换。
+`queried_label_ids` / `queried_label_nvs` / `auxiliary_portrait` 都是组件上的
+懒执行 property：模块级纯函数 `build_auxiliary_portrait(queried_label_nvs)`
+按上游返回的名称与原值逐项拼
+`标签名: <strong><span style="color:blue;">值</span></strong>; `，跳过空值，
+最后补 `【辅助画像】` 前缀与 `rstrip`。不做名称映射或按标签 ID 硬编码的值转换。
 
 只有声明 `PORTRAIT` 的商机对象会拿到 `portrait_cache`（`main.py` 在请求内
-创建的空 dict），按 `product_id` 查/算并写入；控损 / 诊断新线 / 兜底拿到 `None`，
-property 直接返回 `""`，**连 `build_auxiliary_portrait()` 都不进**。`__str__`
-仍打印 `auxiliary_portrait` 一行，这两类业务该行为空字符串。缓存只在函数内
+创建的空 dict），按 `product_id` 查/算并写入；传 `None` 时 `auxiliary_portrait`
+直接返回 `""`，**连 `build_auxiliary_portrait()` 都不进**。缓存只在函数内
 创建、不跨请求共享，同一商机 ID 在一次请求里重复出现也只拼一次。
 
 ## 调用量统计接入（`call_stat/`）

@@ -37,6 +37,8 @@ _log_dir = ROOT / "log"
 _log_existed = _log_dir.exists()
 
 from services import dimensions, reader                # noqa: E402
+from services.product_info_raw import (                  # noqa: E402
+    AuxiliaryPortrait, ProductInfoBase, ProductInfoRaw)
 from services.loss_control import (                      # noqa: E402
     ProductInfoByLossControl, parse_custom_tags)
 from services.opportunity_recall import (                # noqa: E402
@@ -280,8 +282,14 @@ def main():
           opp_obj.output_script.index("维度标签B"),
           opp_obj.auxiliary_portrait)
     check("product_name 也来自维表行",
-          opp_obj.product_selling_point_match_dict["202608041615335173"].product_name
+          opp_obj.selling_point_rows["202608041615335173"].product_name
           == "维表产品-173")
+    check("画像以组合方式挂在商机上（不再由公共基类继承）",
+          isinstance(opp_obj, ProductInfoBase) and
+          isinstance(opp_obj.portrait, AuxiliaryPortrait) and
+          opp_obj.selling_point_rows is sp_opp)
+    check("旧名 product_selling_point_match_dict 已移除",
+          not hasattr(opp_obj, "product_selling_point_match_dict"))
 
     print("=== 1e. 卖点维表兜底：tagN 解析 / 场景标签判定 ===")
     entry, pairs = parse_tag_script(TAG_TEXTS[1])
@@ -313,7 +321,7 @@ def main():
           str(rec0["retain_pairs"]))
     check("兜底省略痛点诊断 / 营销话术",
           FALLBACK_OMIT_SECTIONS == ("痛点诊断", "营销话术"))
-    fb_obj = ProductInfoByDiagnosis(FALLBACK_PID, {}, sp, rec0, None)
+    fb_obj = ProductInfoByDiagnosis(FALLBACK_PID, rec0)
     for seg in ("资费名称", "资费摘要", "切入话术", "挽留话术"):
         check(f"兜底输出含【{seg}】", f"【{seg}】" in fb_obj.output_script)
     for seg in ("痛点诊断", "营销话术"):
@@ -378,12 +386,30 @@ def main():
     check("控损独立颜色标签",
           parse_custom_tags("A<#FF0000>红") == 'A<span style="color: #FF0000">红')
     loss_obj = ProductInfoByLossControl(
-        "202609180955095402", {}, {}, {"strategy_name": "<$B>重点</> 保留"}, None)
+        "202609180955095402", {"strategy_name": "<$B>重点</> 保留"})
     check("控损对象解析 strategy_name",
           loss_obj.output_script == "<b>重点</b> 保留", loss_obj.output_script)
     check("控损无 strategy_name → 「无历史话术记录」",
-          ProductInfoByLossControl("x", {}, {}, {}, None).output_script
+          ProductInfoByLossControl("x", {}).output_script
           == "无历史话术记录")
+
+    print("=== 1g. 对象依赖按业务收窄（画像只属于商机）===")
+    portrait_attrs = ("portrait", "portrait_cache", "_portrait_cache",
+                      "custom_label_info", "selling_point_rows",
+                      "queried_label_ids", "queried_label_nvs",
+                      "auxiliary_portrait")
+    for label, obj in (("控损", loss_obj), ("诊断", fb_obj),
+                       ("兜底", ProductInfoRaw("x", sp))):
+        check(f"{label}不持有画像 / 标签 / 维表 / 缓存字段",
+              all(not hasattr(obj, attr) for attr in portrait_attrs),
+              str([a for a in portrait_attrs if hasattr(obj, a)]))
+        check(f"{label}仍继承极简公共基类", isinstance(obj, ProductInfoBase))
+    check("诊断日志不再打印恒为空的画像行",
+          "auxiliary_portrait" not in str(fb_obj) and
+          "queried_label_ids" not in str(fb_obj))
+    check("控损构造只需 (product_id, record)",
+          ProductInfoByLossControl("x", {"strategy_name": "A"}).output_script
+          == "A")
 
     print("=== 2. 补一组业务键自洽的数据 ===")
     append_rows("F09629", [
@@ -524,14 +550,14 @@ def main():
     check("无场景 ID 命中 → 切入 / 挽留为空，不抛异常",
           fb_noiop is not None and fb_noiop["hit_label_id"] is None and
           fb_noiop["entry_script"] == "" and fb_noiop["retain_pairs"] == [])
-    noiop_obj = ProductInfoByDiagnosis(FALLBACK_PID, {}, sp, fb_noiop, None)
+    noiop_obj = ProductInfoByDiagnosis(FALLBACK_PID, fb_noiop)
     check("无命中时仍输出四段（切入 / 挽留填「无」）",
           "<strong>【切入话术】</strong>无" in noiop_obj.output_script and
           "<strong>【挽留话术】</strong>无" in noiop_obj.output_script,
           noiop_obj.output_script)
 
     # ④ 兜底对象输出：四段、无痛点诊断 / 营销话术
-    fb_obj2 = ProductInfoByDiagnosis(FALLBACK_PID, scene_labels, sp, fb_db, None)
+    fb_obj2 = ProductInfoByDiagnosis(FALLBACK_PID, fb_db)
     check("兜底 productName 取资费名称",
           fb_obj2.product_name == "兜底套餐", fb_obj2.product_name)
     for seg in ("资费名称", "资费摘要", "切入话术", "挽留话术"):
@@ -542,12 +568,12 @@ def main():
               f"【{seg}】" not in fb_obj2.output_script)
     check("正常诊断对象仍是六段",
           all(f"【{seg}】" in ProductInfoByDiagnosis(
-              PID, {}, sp, record, None).output_script
+              PID, record).output_script
               for seg in ("资费名称", "资费摘要", "痛点诊断", "切入话术",
                           "营销话术", "挽留话术")))
 
     print("=== 6. 业务对象拼装 ===")
-    obj = ProductInfoByDiagnosis(PID, {}, {}, record, None)
+    obj = ProductInfoByDiagnosis(PID, record)
     check("productName = 资费名称", obj.product_name == "五福套餐", obj.product_name)
     for label in ("资费名称", "资费摘要", "痛点诊断", "切入话术", "营销话术", "挽留话术"):
         check(f"output_script 含【{label}】", f"【{label}】" in obj.output_script)

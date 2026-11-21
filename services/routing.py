@@ -21,7 +21,14 @@
 数据访问层 ``services.reader`` 只认 AVL 前缀，完全不知道产品 ID；两张
 ``product_id → AVL 前缀`` 静态表是**本模块唯一维护点**。卖点维表读取侧
 ``services.dimensions`` 按 ``product_id`` 取标签 ID 子集，由 ``main.py``
-在请求开始时批量查好、经 ``selling_points`` 传入，本模块只透传。
+在请求开始时批量查好、经 ``selling_points`` 传入；本模块按业务**只转发给
+真正需要的一方**：
+
+- 商机对象：接收 IOP 标签、维表行映射与 ``portrait_cache``，收进
+  ``AuxiliaryPortrait`` 组件；
+- 诊断取数 / 兜底：接收 IOP 标签与维表行映射，**不进诊断对象**；
+- 控损对象：只接收 ``record``，上述三项全部截断（旧版会原样透传）；
+- 兜底对象：只接收维表行映射，用于日志里的产品名。
 
 IOP 依赖（``IopNeed`` / ``iop_need()``）也声明在这里，因为它由业务归属派生；
 `IopLabelProvider` 与 `portrait_cache` 仍留在 `main.py`，按请求隔离。
@@ -90,10 +97,13 @@ async def build_product_object(product_id, telnum, *, custom_label_info,
     ``portrait_cache``：声明 NONE 传 ``{}`` / ``None``，PORTRAIT 传标签与请求级
     画像缓存，RAW_LABELS 传标签与 ``None``。``selling_points`` 是
     ``dimensions.load_selling_points()`` 在请求开始时批量查回的
-    ``{product_id: SellingPointRow}``，商机对象的标签 ID 子集由它决定；
-    维表未命中或库缺失时为空 dict，画像自然降级为空。
+    ``{product_id: SellingPointRow}``。
+
+    工厂签名保持统一，但**每个分支只传该业务真正消费的参数**：控损 / 诊断 /
+    兜底对象不再持有 IOP 标签、画像缓存与画像相关字段。维表未命中或库缺失时
+    映射为空 dict，商机画像自然降级为空。
     """
-    # 1. 商机回捞（3 个 ID）：即使库里无记录也返回业务对象
+    # 1. 商机回捞（3 个 ID）：即使库里无记录也返回业务对象；只有它拿画像依赖
     if product_id in OPPORTUNITY_RECALL_PRODUCT_IDS:
         avl = OPPORTUNITY_RECALL_AVLS[product_id]
         record = await reader.query(avl, telnum)
@@ -105,24 +115,21 @@ async def build_product_object(product_id, telnum, *, custom_label_info,
         avl = LOSS_CONTROL_AVLS[product_id]
         record = await reader.query(avl, telnum)
         if record:
-            return ProductInfoByLossControl(
-                product_id, custom_label_info, selling_points, record, portrait_cache)
+            # 只消费 strategy_name：标签 / 维表行 / 画像缓存都不透传
+            return ProductInfoByLossControl(product_id, record)
 
     # 3. 诊断新线：7 张表关联；任一查询空 / IOP 无场景标签 / 交集为空时
     #    build_diagnosis_record 会改用卖点维表兜底（见 diagnosis/fallback.py），
-    #    所以这里要把 IOP 标签与维表行一起传进去。
+    #    所以 IOP 标签与维表行在这里一次性消费完毕，对象只拿结构化 record。
     diagnosis_record = await build_diagnosis_record(
         product_id, telnum,
         custom_label_info=custom_label_info,
         selling_points=selling_points)
     if diagnosis_record:
-        return ProductInfoByDiagnosis(
-            product_id, custom_label_info, selling_points,
-            diagnosis_record, portrait_cache)
+        return ProductInfoByDiagnosis(product_id, diagnosis_record)
 
-    # 4. 兜底
-    return ProductInfoRaw(
-        product_id, custom_label_info, selling_points, portrait_cache)
+    # 4. 兜底：只需 ID 与维表行映射（用于日志里的产品名）
+    return ProductInfoRaw(product_id, selling_points)
 
 
 __all__ = [

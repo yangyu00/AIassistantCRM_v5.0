@@ -21,7 +21,7 @@
 | 层 | 文件 | 职责 |
 |---|---|---|
 | 包根 | `__init__.py` | 公共 API，`__getattr__` 延迟导出；**`import services` 零 I/O** |
-| 公共基类 | `product_info_raw.py` | `ProductInfoRaw`、`build_auxiliary_portrait()`；标签 ID 子集由调用方传入 |
+| 公共基类 / 画像组件 | `product_info_raw.py` | `ProductInfoBase`（最小公共形状）、`AuxiliaryPortrait`（商机专属，组合）、`ProductInfoRaw`（第 4 类兜底对象）、`build_auxiliary_portrait()` |
 | 业务库读取侧 | `reader.py` | `query` / `query_many` / `query_in`；只认 AVL 前缀 |
 | 卖点维表读取侧 | `dimensions.py` | `load_selling_points()` / `split_label_ids()`；`product_id → label_ids / product_name / match_result / tag_*` |
 | 路由 | `routing.py` | `product_id → AVL` 两张静态表、`IopNeed` / `iop_need()`、`build_product_object()` |
@@ -33,6 +33,15 @@
 承载业务对象、`__init__.py` 显式导出；不保留按 spec 编号的历史目录名，也不
 保留 `ProductInfoRewrite` 一类旧类名别名。控损的标签解析抽成了模块级纯函数
 `parse_custom_tags()`，可单独单测。
+
+**对象模型**：四类对象只继承极简的 `ProductInfoBase`（`product_id` /
+`product_name` / `output_script` + 统一日志头）。辅助画像用组合挂在商机对象
+的 `AuxiliaryPortrait` 组件上；`portrait_cache`、IOP 标签与卖点维表行映射
+只存在于商机，控损 / 诊断 / 兜底对象连这些属性都没有。旧的
+`product_selling_point_match_dict` 已改名为 `selling_point_rows`，且不再由
+基类持有。`build_product_object()` 签名不变，但按分支只转发各业务真正消费
+的参数；三类子类不再各写一遍公共日志行，改由基类的 `_extra_str_lines()`
+钩子统一拼装。
 
 | 业务 | 对外 API | 定义位置 |
 |---|---|---|
@@ -180,22 +189,25 @@ portrait_cache=None)` 是**唯一对象工厂**，返回一个产品对象；`ma
 > **口径变化**：原先「单个诊断维表缺库 / 空表 → 对应字段填『无』，其余照常」
 > 已改为「任一查询空 → 整单走卖点维表兜底」，避免返回一屏「无」。
 
-## IOP / 画像 / 卖点：由 `main.py` 注入
+## IOP / 画像 / 卖点：由 `main.py` 注入、工厂按业务分发
 
 本层不 import `IOP`（维表读取由本层 `dimensions.py` 承担）。请求内的编排在 `main.py`：
 
 1. `iop_need(product_id)`（本层 `routing.py` 声明）决定该 ID 是否需要标签；
 2. `IopLabelProvider` 在请求内惰性取一次标签，任何失败降级 `{}`；
-3. `portrait_cache` 按 `product_id` 在一次请求内复用画像，非 `PORTRAIT`
-   业务传 `None`，连 `build_auxiliary_portrait()` 都不进；
+3. `portrait_cache` 只对 `PORTRAIT`（商机）传请求级 dict，由商机的
+   `AuxiliaryPortrait` 组件按 `product_id` 复用画像；其余分支传 `None`，
+   且对象里根本没有画像组件，连 `build_auxiliary_portrait()` 都不进；
 4. 循环外调一次 `dimensions.load_selling_points(所有 productId)`，把
-   `{product_id: SellingPointRow}` 作为 `selling_points` 传给每个对象；
-   `build_product_object()` 再把它与 `custom_label_info` 一起传给
-   `build_diagnosis_record()`，供诊断兜底判定场景标签与取话术。
+   `{product_id: SellingPointRow}` 作为 `selling_points` 传给
+   `build_product_object()`；工厂按分支只转发：商机组件收下全部三项，诊断取数
+   收 IOP 标签与维表行，控损只收 `record`，兜底只收维表行用于日志；
+   `build_diagnosis_record()` 用 IOP 标签与维表行做兜底判定与取话术。
 
-`ProductInfoRaw` 构造时按维表行的 `label_ids` 对齐 `queried_label_ids` /
-`queried_label_nvs`（名称与值仍取 `custom_label_info`）；
-`auxiliary_portrait` 是 property、懒执行，缓存只在函数内创建、不跨请求共享。
+商机对象的 `AuxiliaryPortrait` 按维表行的 `label_ids` 对齐
+`queried_label_ids` / `queried_label_nvs`（名称与值仍取 `custom_label_info`），
+标签子集与画像都是懒执行；`selling_point_rows` 就是这份维表行映射（旧名
+`product_selling_point_match_dict` 已废弃）。缓存只在函数内创建、不跨请求共享。
 维表未命中 / 库缺失 → 标签子集为空、画像为空串。
 
 ## 降级速查
@@ -228,7 +240,8 @@ python -m call_stat --self-check            # 调用量统计组件自检
 命中第二个 ID 即中断；5b 节 db 查空、交集空、IOP 无场景标签三种触发，四段输出
 且无痛点 / 营销；维表无该 ID 仍 `code: "2"`）**、**业务包按业务名命名
 （1f 节：两个业务包可经 `services` 访问、无历史别名、商机四段 HTML 逐字等价、
-控损组合标签解析等价）**，在线路由段（第 7 段）再用 IOP 桩端到端验证
+控损组合标签解析等价；1g 节：控损 / 诊断 / 兜底不持有画像、标签、维表与
+缓存字段，旧属性名已移除）**，在线路由段（第 7 段）再用 IOP 桩端到端验证
 「维表选 ID → IOP 取名值 → 辅助画像」与「db 查空 → 在线侧 `code=0` 四段兜底」，
 多行查询、7 表关联、六段话术，结论应为 `ALL PASS`。
 脚本会临时补一份 `sftp_avl2db/.env` 供 `load_profiles()` 装配，结束后删除；
@@ -238,7 +251,9 @@ python -m call_stat --self-check            # 调用量统计组件自检
 
 1. 写入侧注册 AVL / 表结构（见 `sftp_avl2db/README.md`）；
 2. 在 `services/` 下按**业务名**加一个包（与 `diagnosis/` / `opportunity_recall/` /
-   `loss_control/` 对齐），`rewrite.py` 里继承 `ProductInfoRaw` 实现话术重组，
+   `loss_control/` 对齐），`rewrite.py` 里继承 `ProductInfoBase` 实现话术重组，
+   构造只收本业务真正消费的参数；需要辅助画像才组合 `AuxiliaryPortrait`
+   （并在路由里为该 ID 声明 `PORTRAIT`），不要把它们塞进公共基类。
    `__init__.py` 显式导出语义化类名；不引入按 spec 编号的目录名或旧名别名；
 3. `routing.py`：加静态映射（若需要）、在 `build_product_object()` 里按序插入分支、
    把新对象类加进 `BUSINESS_OBJECT_TYPES`；

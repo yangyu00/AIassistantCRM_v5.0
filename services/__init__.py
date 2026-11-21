@@ -4,7 +4,8 @@
 分层（详见包内 ``README.md``）::
 
     services/
-      product_info_raw.py        公共基类 ProductInfoRaw + 辅助画像拼装
+      product_info_raw.py        极简公共基类 ProductInfoBase + 商机专属画像组件
+                                 AuxiliaryPortrait + 兜底对象 ProductInfoRaw
       reader.py                  业务库在线读取侧（AVL 前缀，单条 / 多行 / IN）
       dimensions.py              卖点维表在线读取侧（标签 ID / 产品名 / 匹配结果2 / 标签N）
       routing.py                 业务路由表、IOP 依赖声明、产品对象工厂
@@ -14,6 +15,11 @@
 
     三类业务包一律以**业务名**命名，包内 ``rewrite.py`` 承载业务对象，
     ``__init__.py`` 显式导出；不保留按 spec 编号的历史目录名与旧类名别名。
+
+对象模型：所有对象只继承 ``ProductInfoBase``（ID / 名称 / 话术 + 统一日志头）；
+辅助画像用组合挂在商机对象的 ``AuxiliaryPortrait`` 上，``portrait_cache``、
+IOP 标签与卖点维表行映射不再让控损 / 诊断 / 兜底被动继承。
+``build_product_object()`` 按业务只传各自需要的参数。
 
 ``main.py`` 只做 HTTP 编排，业务对象一律通过 ``build_product_object()`` 取得。
 
@@ -25,7 +31,9 @@ from __future__ import annotations
 
 # 延迟导出：(模块名, 属性名)。模块名可含点号（子包内的模块）。
 _LAZY_EXPORTS = {
-    # 公共基类与画像
+    # 公共基类、商机画像组件与兜底对象
+    "ProductInfoBase": ("product_info_raw", "ProductInfoBase"),
+    "AuxiliaryPortrait": ("product_info_raw", "AuxiliaryPortrait"),
     "ProductInfoRaw": ("product_info_raw", "ProductInfoRaw"),
     "build_auxiliary_portrait": ("product_info_raw", "build_auxiliary_portrait"),
     # 卖点维表读取侧（显式访问才装配 registry 契约）
@@ -76,8 +84,9 @@ __all__ = [
     # 子模块
     "reader", "dimensions", "routing",
     "opportunity_recall", "loss_control", "diagnosis",
-    # 公共基类
-    "ProductInfoRaw", "build_auxiliary_portrait",
+    # 公共基类、画像组件与兜底对象
+    "ProductInfoBase", "AuxiliaryPortrait", "ProductInfoRaw",
+    "build_auxiliary_portrait",
     # 卖点维表读取侧
     "SellingPointRow", "split_label_ids", "load_selling_points",
     # 三类业务对象
