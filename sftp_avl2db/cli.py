@@ -2,7 +2,7 @@
 """命令行入口 ``python -m sftp_avl2db --task <任务名> [选项]``。
 
 参数与退出码见 ``build_arg_parser()`` / ``main()`` 的 docstring；整体用法见
-``Readme.md``。``main()`` 返回 int 而不调用 ``sys.exit``，便于单测断言。
+``README.md``。``main()`` 返回 int 而不调用 ``sys.exit``，便于单测断言。
 """
 from __future__ import annotations
 

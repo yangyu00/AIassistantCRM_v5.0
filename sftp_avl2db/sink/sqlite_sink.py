@@ -1,9 +1,7 @@
 # -*- coding: utf-8 -*-
 """SQLite 写入层：建表 / 流式分批写 / 过期清理。
 
-各 AVL 的 ``PRAGMA synchronous`` 由 ``avl_specs.AvlSpec`` 声明（商机 OFF、
-控损 NORMAL），批次容器与提交时机差异刻意保留，清单见 ``Readme.md``；
-实现注释说明「为什么」。
+所有连接统一只设两条 PRAGMA：``journal_mode = WAL``、``synchronous = NORMAL``。
 """
 from __future__ import annotations
 
@@ -14,8 +12,13 @@ from typing import Iterable
 
 from .schema import TableSchema
 
-# 未显式声明 synchronous 时的兜底值；实际值取自 profile.synchronous。
-DEFAULT_SYNCHRONOUS = "NORMAL"
+
+def _configure(conn: sqlite3.Connection) -> sqlite3.Cursor:
+    """建表、写入共用的连接配置；返回游标，避免两处各拼一遍 PRAGMA。"""
+    cur = conn.cursor()
+    cur.execute("PRAGMA journal_mode = WAL")
+    cur.execute("PRAGMA synchronous = NORMAL")
+    return cur
 
 
 @dataclass
@@ -34,7 +37,7 @@ class SqliteSink:
     """满足 ``sftp_avl2db.protocols.RecordSink`` 的 SQLite 实现。"""
 
     def __init__(self, profile, layout, *, table_schema: TableSchema | None = None,
-                 batch_size: int | None = None, synchronous: str | None = None):
+                 batch_size: int | None = None):
         self.profile = profile
         self.layout = layout
         self.schema = table_schema or TableSchema.from_profile(profile)
@@ -44,8 +47,6 @@ class SqliteSink:
                               if batch_size is None else batch_size)
         if self.batch_size <= 0:
             raise ValueError(f"batch_size 必须为正整数，当前为 {self.batch_size}")
-        self.synchronous = (getattr(profile, "synchronous", DEFAULT_SYNCHRONOUS)
-                            if synchronous is None else synchronous)
         self.stats = WriteStats()
 
     def _group_targets_by_db(self) -> dict[Path, list[str]]:
@@ -62,8 +63,7 @@ class SqliteSink:
             db_path.parent.mkdir(parents=True, exist_ok=True)
             conn = sqlite3.connect(str(db_path))
             try:
-                cur = conn.cursor()
-                cur.execute("PRAGMA journal_mode = WAL")
+                cur = _configure(conn)
                 for t in tables:
                     cur.execute(self.schema.create_table_sql(t))
                 conn.commit()
@@ -74,11 +74,7 @@ class SqliteSink:
     def _connect(self, db_path: Path) -> sqlite3.Connection:
         conn = sqlite3.connect(str(db_path))
         self.stats.connections += 1
-        cur = conn.cursor()
-        cur.execute("PRAGMA journal_mode = WAL")
-        cur.execute(f"PRAGMA synchronous = {self.synchronous}")
-        cur.execute("PRAGMA cache_size = -64000")
-        cur.execute("PRAGMA temp_store = MEMORY")
+        _configure(conn)
         return conn
 
     def _flush(self, conn: sqlite3.Connection, table: str, batch: list) -> None:
@@ -178,14 +174,13 @@ class SqliteSink:
 
 
 def build_sink(profile, *, layout=None, table_schema: TableSchema | None = None,
-               batch_size: int | None = None,
-               synchronous: str | None = None) -> SqliteSink:
+               batch_size: int | None = None) -> SqliteSink:
     """装配写入层；与 ``build_layout()`` 共用同一个 layout 对象。"""
     if layout is None:
         from .router import build_layout
         layout = build_layout(profile)
     return SqliteSink(profile, layout, table_schema=table_schema,
-                      batch_size=batch_size, synchronous=synchronous)
+                      batch_size=batch_size)
 
 
-__all__ = ["SqliteSink", "WriteStats", "DEFAULT_SYNCHRONOUS", "build_sink"]
+__all__ = ["SqliteSink", "WriteStats", "build_sink"]

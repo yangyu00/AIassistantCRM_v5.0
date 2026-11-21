@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """控损 AVL 解析（逻辑 5 列，``strategy_name`` 含裸换行、需续行重组）。
 
-行为保真清单见 ``Readme.md``「刻意保真」一节；实现注释说明「为什么」。
+解析行为见 ``README.md``「解析与写入行为」；实现注释说明「为什么」。
 """
 from __future__ import annotations
 

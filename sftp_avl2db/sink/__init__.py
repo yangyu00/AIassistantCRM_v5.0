@@ -5,10 +5,10 @@
 """
 from .router import AvlDbLayout, build_layout
 from .schema import TableSchema
-from .sqlite_sink import DEFAULT_SYNCHRONOUS, SqliteSink, WriteStats, build_sink
+from .sqlite_sink import SqliteSink, WriteStats, build_sink
 
 __all__ = [
     "TableSchema",
     "AvlDbLayout", "build_layout",
-    "SqliteSink", "WriteStats", "DEFAULT_SYNCHRONOUS", "build_sink",
+    "SqliteSink", "WriteStats", "build_sink",
 ]

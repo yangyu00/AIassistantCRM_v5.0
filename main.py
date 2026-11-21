@@ -16,12 +16,12 @@ from sftp_avl2db import data_query
 from src.exceptions import telnumError, productIdError, register_errors_handlers
 from src.log_util import my_log, configure_logging
 
-# ===== 在线服务配置（原根目录 config.py / config.yaml 已内联，不再依赖外部配置文件） =====
+# ===== 在线服务配置（端口、路由、日志目录） =====
 # 日志目录：留空表示写到项目根目录下的 log/，也可填绝对路径
 LOG_DIR = ""
 # uvicorn 启动参数，对应原 config.yaml 的 fastapi 段
 FASTAPI_CONFIG = {"host": "0.0.0.0", "port": 8989, "reload": False}
-# 业务路由；users 为原 yaml 预留项，当前业务代码未读取，保留以备扩展
+# 业务路由；users 为预留项，当前业务代码未读取
 MARKET_ASSISTANT_URL = "/api/speechQryService"
 MARKET_ASSISTANT_USERS = ["CRM"]
 

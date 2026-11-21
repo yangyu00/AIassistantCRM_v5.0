@@ -80,7 +80,7 @@ runtime/
 | `.env` | 与 `config.py` 同目录，日常改这个；`repr` 自动屏蔽 `SFTP_PASSWORD` |
 | `.env.example` | 脱敏模板，新环境 `cp .env.example .env` 后填写 |
 | `config.py::_AVLS` | `(AVL 名, 项目名)` 声明表；项目名同时是 `.env` 键前缀与运行时目录名 |
-| `avl_specs.py` | 每个 AVL 的静态声明：项目、schema 名、解析器、是否分表、查询条件与排序、`PRAGMA synchronous`；`table_name()` 表名口径、`shard_index()` 分表口径；`validate_specs()` 启动校验。**不声明表名、不含产品 ID** |
+| `avl_specs.py` | 每个 AVL 的静态声明：项目、schema 名、解析器、是否分表、查询条件与排序；`table_name()` 表名规则、`shard_index()` 分表口径、`validate_specs()` 启动校验。**不声明表名、不含产品 ID、不含 PRAGMA 配置** |
 | `table_schemas.py` | 按名字注册的表结构，读写两侧共用列顺序；**单独一个 py 文件，供多个 AVL 复用** |
 
 `.env` 分组：SFTP 公共 5 项（`SFTP_HOST/PORT/USERNAME/PASSWORD/REMOTE_PATH`），每个项目一组 `<项目名大写>_BATCH_SIZE / DATA_EXPIRE_DAYS / LOCAL_FILE_EXPIRE_DAYS / POLL_INTERVAL_SECONDS`，分表项目另有 `<项目名大写>_NUM_TABLES`。`AVL_SPECS` 与 `_AVLS` 的 key 必须一致，schema 名必须在 `TABLE_SCHEMAS` 里，`validate_specs()` 拦住手填漂移。
@@ -90,7 +90,7 @@ runtime/
 ## 新增业务 / 新增 AVL 的步骤
 
 1. `table_schemas.py`：每种表结构加一份 `TABLE_SCHEMAS["新名字"]`；结构相同的 AVL 直接复用已有名字。
-2. `avl_specs.py`：加一条 `AvlSpec`，写明 `project` / `schema` / `parser` / `sharded` / `where`（恒为 `product_no`）/ `order_by` / `synchronous`；**不写表名、不写产品 ID**——表名自动就是 AVL 名。
+2. `avl_specs.py`：加一条 `AvlSpec`，写明 `project` / `schema` / `parser` / `sharded` / `where`（恒为 `product_no`）/ `order_by`；**不写表名、不写产品 ID、不写 PRAGMA**——表名自动就是 AVL 名，连接配置全局统一。
 3. `config.py::_AVLS`：加一行 `(AVL 名, 项目名)`；项目名决定输入输出目录与 `.env` 键前缀。
 4. `.env`：只有**新项目**才需要加一组 `<项目名大写>_*` 参数；已有项目下的新 AVL 直接复用该组参数。
 5. 启动：`python -m sftp_avl2db --task {AVL 名}`；在线侧若需按 `product_id` 路由，在 `main.py` 顶部的路由表加一行 `product_id: AVL`，查库统一调 `data_query.query(avl, telnum)`——读取侧不需要任何产品 ID。
@@ -106,38 +106,12 @@ runtime/
 
 改列名/列顺序只改 `table_schemas.py`，改 AVL 归属 / 解析器 / 查询条件只改 `avl_specs.py` 与 `config.py::_AVLS`，改分表数只改 `.env`；读写两侧同时生效。**每个 AVL 只有一个 db 文件**，不存在跨库路由。
 
-## 表名口径变更（部署注意）
+## 解析与写入行为
 
-这次把表名从 `data_{AVL}` / `data_{AVL}_{分表号}` 改成了 `{AVL}` / `{AVL}_{分表号}`。**库文件路径、表结构、数据都没变，但读写两侧现在查的是新表名**；如果 `runtime/` 里已有旧库，不处理会查不到数据（查询异常被吞掉，返回 `{}`）。新环境或空库可忽略本节。
-
-两种处理方式，选一即可：
-
-- **重建（最简单）**：删掉 `runtime/sqlite_db/` 下旧库与 `runtime/state/*.fetched`，重启写入进程全量重拉。项目本就不要求历史数据迁移。
-- **原地改名**：停掉写入进程，对每个库执行 `ALTER TABLE data_X RENAME TO X`：
-
-```python
-import sqlite3
-from pathlib import Path
-
-for db in Path("sftp_avl2db/runtime/sqlite_db").rglob("*.db"):
-    con = sqlite3.connect(str(db))
-    olds = [r[0] for r in con.execute(
-        "SELECT name FROM sqlite_master WHERE type='table'")
-        if r[0].startswith("data_")]
-    for old in olds:
-        con.execute(f'ALTER TABLE "{old}" RENAME TO "{old[5:]}"')
-    con.commit()
-    con.close()
-```
-
-## 刻意保真：不要顺手优化
-
-重构时只改结构定义，**以下行为一律不动**：
-
-1. `FlatColumnParser` 编码探测仍是 `("utf-8", "gbk", "latin-1")` 且带 `errors="ignore"`——实际恒走 utf-8 分支，gbk / latin-1 不会命中；`line.strip()` 连行首行尾制表符一起剥，尾随空列可能被吃掉。
+1. `FlatColumnParser` 固定按 UTF-8 读取（带 `errors="ignore"`）；`line.strip()` 连行首行尾制表符一起剥，尾随空列可能被吃掉。
 2. 控损续行：以行首 `YYYY-MM-DD` 判定新记录；`strip_eol()` 只去 `\n`、再只剥**一个** ASCII 反斜杠（不能用 `rstrip('\\')`，否则 GBK 尾字节 `0x5C` 的汉字会被削成乱码）；起始行 `>=5` 列取前 5 列丢弃第 6 列起，`==4` 列补空 `strategy_name`，`<4` 列整条跳过；空物理行跳过；文件开头孤立续行丢弃；最后一条单独入库。
 3. `sink/schema.py` 三条 SQL 保持拼法，不做参数化改造、不换占位符风格、不改 `PRIMARY KEY (product_no)` 表级声明形式。
-4. `SqliteSink` 的差异刻意保留：商机 `PRAGMA synchronous=OFF`、控损 `NORMAL`（由 `avl_specs.AvlSpec.synchronous` 声明，不再由模式推导）；批次容器与提交时机实现不变。连接 PRAGMA 顺序固定为 WAL → synchronous → cache_size → temp_store。
+4. 所有 SQLite 连接统一只设 `PRAGMA journal_mode = WAL` 与 `PRAGMA synchronous = NORMAL`；写入按 `BATCH_SIZE` 分桶、逐桶满批提交。
 5. 分表口径 `zlib.crc32(product_no) % NUM_TABLES`（`p_no` 为空时取 `"NULL"`，解析器已跳过空主键，属不可达分支）；`INSERT OR REPLACE` + 主键幂等。
 
 ## 拉取不变量
@@ -162,4 +136,4 @@ python -m sftp_avl2db --task F09591 --date 20261110 \
   --local-dir io_samples --runtime-dir /tmp/replay
 ```
 
-`build_task()` 的 `logger=`（可用 `InMemoryLogger`）、`local_dir=`、`day=`、`now=`、`sleeper=`、`batch_size=`、`synchronous=`、`table_schema=` 都是显式注入点；`runner.serve_forever()` 另有 `max_rounds` / `date_strings` 测试钩子。离线复跑产出隔离到临时目录，不碰包内 `runtime/`。
+`build_task()` 的 `logger=`（可用 `InMemoryLogger`）、`local_dir=`、`day=`、`now=`、`sleeper=`、`batch_size=`、`table_schema=` 都是显式注入点；`runner.serve_forever()` 另有 `max_rounds` / `date_strings` 测试钩子。离线复跑产出隔离到临时目录，不碰包内 `runtime/`。

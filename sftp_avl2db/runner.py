@@ -2,7 +2,7 @@
 """``Avl2DbRunner``：把五个可注入组件编成一轮「SFTP AVL → SQLite」。
 
 流程与日志信号见 ``serve_forever()`` / ``import_one()`` 的 docstring；
-调用链见 ``Readme.md``。
+调用链见 ``README.md``。
 """
 from __future__ import annotations
 

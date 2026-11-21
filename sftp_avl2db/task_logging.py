@@ -2,7 +2,7 @@
 """任务日志：为每个任务挂 INFO / ERROR 两个文件 sink，且不动宿主 logger。
 
 ``loguru`` 延迟导入；没装时可注入 ``InMemoryLogger`` 或宿主 logger。
-模块不叫 ``logging``，避免遮蔽标准库同名模块；详见 ``Readme.md``。
+模块不叫 ``logging``，避免遮蔽标准库同名模块；详见 ``README.md``。
 """
 from __future__ import annotations
 

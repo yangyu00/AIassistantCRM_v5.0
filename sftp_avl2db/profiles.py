@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """装配工厂：把各层组件拼成可直接运行的任务。
 
-``build_task(profile)`` 是唯一装配入口；分层与调用链见 ``Readme.md``。
+``build_task(profile)`` 是唯一装配入口；分层与调用链见 ``README.md``。
 """
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ class AssembledTask:
 
 def build_task(profile: TaskProfileConfig, *, logger=None, local_dir=None,
                day=None, sleeper=None, now=None, batch_size=None,
-               synchronous=None, table_schema: TableSchema | None = None) -> AssembledTask:
+               table_schema: TableSchema | None = None) -> AssembledTask:
     """按 ``profile`` 装配；所有可选参数都是显式注入点，缺省即生产默认。
 
     :param logger: 注入宿主 logger / ``InMemoryLogger``；``None`` 时
@@ -58,7 +58,7 @@ def build_task(profile: TaskProfileConfig, *, logger=None, local_dir=None,
         不需要 paramiko），否则走 ``SftpRemoteSource``
     :param day: 固定日志文件名里的日期，便于单测
     :param sleeper / now: 注入守护循环的 sleep 与时钟
-    :param batch_size / synchronous / table_schema: 透传给 ``SqliteSink``
+    :param batch_size / table_schema: 透传给 ``SqliteSink``
     """
     log = build_logger(profile, logger=logger, day=day)
     state, lock = build_state(profile)
@@ -66,7 +66,7 @@ def build_task(profile: TaskProfileConfig, *, logger=None, local_dir=None,
     parser = build_parser(profile)
     layout = build_layout(profile)
     sink = build_sink(profile, layout=layout, table_schema=table_schema,
-                      batch_size=batch_size, synchronous=synchronous)
+                      batch_size=batch_size)
     runner = Avl2DbRunner(
         profile, source=source, parser=parser, sink=sink, layout=layout,
         state=state, lock=lock, log=log, sleeper=sleeper, now=now,

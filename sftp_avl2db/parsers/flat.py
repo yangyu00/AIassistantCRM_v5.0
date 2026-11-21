@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """回捞商机 AVL 解析（制表符分隔、一行一条、无续行）。
 
-行为保真清单见 ``Readme.md``「刻意保真」一节；实现注释说明「为什么」。
+AVL 文件固定 UTF-8；解析行为见 ``README.md``「解析与写入行为」。
 """
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from typing import Iterator
 from ..avl_specs import PRODUCT_NO_INDEX
 from ..protocols import ParseStats, Row
 
-ENCODING_CANDIDATES = ("utf-8", "gbk", "latin-1")
+ENCODING = "utf-8"
 
 
 class FlatColumnParser:
@@ -29,21 +29,9 @@ class FlatColumnParser:
     def parse(self, path: Path) -> Iterator[Row]:
         """流式解析本地 AVL，产出 ``column_count`` 列的元组生成器。"""
         self.stats.reset()
-        path = Path(path)
+        self.stats.encoding = ENCODING
 
-        # ---- 编码探测（结果记入 stats.encoding） ----
-        fh = None
-        for enc in ENCODING_CANDIDATES:
-            try:
-                fh = open(path, "r", encoding=enc, errors="ignore")
-                self.stats.encoding = enc
-                break
-            except Exception:
-                continue
-        if fh is None:
-            raise RuntimeError("无法识别文件编码")
-
-        with fh as f:
+        with open(Path(path), "r", encoding=ENCODING, errors="ignore") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -65,4 +53,4 @@ class FlatColumnParser:
                 yield tuple(fields)
 
 
-__all__ = ["FlatColumnParser", "ENCODING_CANDIDATES"]
+__all__ = ["FlatColumnParser", "ENCODING"]

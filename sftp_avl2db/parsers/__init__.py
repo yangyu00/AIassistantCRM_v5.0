@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """AVL 解析层：本地文件 → 逻辑记录元组，纯解析、无副作用。
 
-两个实现都满足 ``protocols.RecordParser``；行为保真清单见 ``Readme.md``。
+两个实现都满足 ``protocols.RecordParser``；解析行为见 ``README.md``。
 """
 from .continuation import (
     DATE_RE,
@@ -9,7 +9,7 @@ from .continuation import (
     split_head,
     strip_eol,
 )
-from .flat import ENCODING_CANDIDATES, FlatColumnParser
+from .flat import ENCODING, FlatColumnParser
 from ..protocols import ParseStats, RecordParser
 
 PARSER_KINDS = ("flat", "continuation")
@@ -36,7 +36,7 @@ __all__ = [
     "ParseStats",
     "RecordParser",
     "PARSER_KINDS",
-    "ENCODING_CANDIDATES",
+    "ENCODING",
     "DATE_RE",
     "strip_eol",
     "split_head",

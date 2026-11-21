@@ -2,7 +2,7 @@
 """配置：唯一来源 ``sftp_avl2db/.env``，唯一入口 ``load_profiles()``。
 
 ``ENV_PATH`` / ``RUNTIME_DIR`` 都按 ``__file__`` 定位；不读系统环境变量，
-``import`` 零 I/O。配置分组与键说明见 ``Readme.md``。
+``import`` 零 I/O。配置分组与键说明见 ``README.md``。
 
 一个 AVL 一份 profile：``name`` 既是文件前缀、db 文件名，也是 CLI ``--task``
 值；``project`` 决定 ``files/`` 与 ``sqlite_db/`` 下的业务文件夹，同一业务的
@@ -20,7 +20,8 @@ RUNTIME_DIR = Path(__file__).with_name("runtime")
 # AVL 声明表：(AVL 名 / 文件前缀, 项目名)。
 # 项目名同时用于：.env 键前缀（大写）、files/ 与 sqlite_db/ 的目录名。
 # 每个 AVL 的其他静态信息（schema / parser / 是否分表 / 查询声明）都在
-# avl_specs.py；表名自动取 AVL 名，产品 ID 归 main.py，两处都不在这里声明。
+# avl_specs.py；表名自动取 AVL 名，产品 ID 归 main.py，SQLite 连接配置
+# 在 sink/sqlite_sink.py 全局统一，本层都不声明。
 # 新增 AVL = 这里加一行 + avl_specs.py 加一份声明。
 _AVLS = (
     ("F09554", "opportunity_recall"),
@@ -111,7 +112,6 @@ class TaskProfileConfig:
     parser: str                              # "flat" | "continuation"
     sharded: bool                            # 该 db 内是否按 product_no 分表
     num_tables: int                          # 分表数；固定表为 0
-    synchronous: str                         # 该 AVL 的 PRAGMA synchronous
     remote_name_tmpl: str
 
     @property
@@ -182,7 +182,6 @@ def load_profiles(runtime_dir=None) -> dict[str, TaskProfileConfig]:
             parser=spec.parser,
             sharded=spec.sharded,
             num_tables=_int(v, f"{key}_NUM_TABLES") if spec.sharded else 0,
-            synchronous=spec.synchronous,
             remote_name_tmpl="{prefix}{date}000000.AVL",
         )
 

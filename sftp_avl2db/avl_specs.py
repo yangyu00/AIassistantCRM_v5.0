@@ -54,26 +54,24 @@ class AvlSpec:
     sharded: bool = False
     where: tuple[str, ...] = ("product_no",)
     order_by: str | None = "op_time DESC"
-    synchronous: str = "NORMAL"       # 商机 OFF / 控损 NORMAL，刻意保真
 
 
 AVL_SPECS: Final[Mapping[str, AvlSpec]] = {
     "F09554": AvlSpec(
         name="F09554", project="opportunity_recall",
-        schema="opportunity_recall", parser="flat", synchronous="OFF",
+        schema="opportunity_recall", parser="flat",
     ),
     "F09555": AvlSpec(
         name="F09555", project="opportunity_recall",
-        schema="opportunity_recall", parser="flat", synchronous="OFF",
+        schema="opportunity_recall", parser="flat",
     ),
     "F09556": AvlSpec(
         name="F09556", project="opportunity_recall",
-        schema="opportunity_recall", parser="flat", synchronous="OFF",
+        schema="opportunity_recall", parser="flat",
     ),
     "F09591": AvlSpec(
         name="F09591", project="loss_control",
-        schema="loss_control", parser="continuation",
-        sharded=True, synchronous="NORMAL",
+        schema="loss_control", parser="continuation", sharded=True,
     ),
 }
 
@@ -128,8 +126,6 @@ def validate_specs(profiles: Mapping[str, object]) -> None:
             raise ValueError(f"{name}: 分表 AVL 需要 NUM_TABLES")
         if not spec.sharded and num_tables != 0:
             raise ValueError(f"{name}: 固定表 AVL 不应配置 NUM_TABLES")
-        if getattr(conf, "synchronous", None) != spec.synchronous:
-            raise ValueError(f"{name}: profile.synchronous 与 AvlSpec 不一致")
         if getattr(conf, "parser", None) != spec.parser:
             raise ValueError(f"{name}: profile.parser 与 AvlSpec 不一致")
 

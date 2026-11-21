@@ -9,9 +9,9 @@
 > - [`tests/README.md`](tests/README.md)（手工冒烟脚本：requests 打在线接口 + IOP 直连，**不是 pytest 单元测试**）
 > - [`io_samples/README.md`](io_samples/README.md)（AVL / IOP 响应 / 维表 xlsx 样例；**维表实际投放目录是 `excels/`**，不是 `io_samples/`）
 
-> 原 `Missions_writer.md`（488 行）与 `Missions_reader.md`（1098 行）已按职责拆分：各包的说明进各自目录，在线业务与全局视角留在本文件。**那次拆分只整理文档**，代码、配置、行为均未改动。
+> 各包的说明进各自目录，在线业务与全局视角留在本文件。
 
-> 在线 API 的运行参数（端口、路由、日志目录）已内联在 `main.py` 顶部常量区，根目录不再保留 `config.py` / `config.yaml`；四个组件的配置仍在各自包内的 `.env` / `registry.json`。
+> 在线 API 的运行参数（端口、路由、日志目录）内联在 `main.py` 顶部常量区；四个组件的配置在各自包内的 `.env` / `registry.json`。
 
 > 第四个可独立复用组件 `call_stat/` 提供在线调用量统计，配置与产物均内聚在包目录内，见下文「调用量统计接入」。
 
@@ -31,8 +31,7 @@ dimensions.db ──→ reader.DimensionReader ──→ transform ────�
 
 > `sftp_avl2db/runtime/` 是**运行时数据目录**（写入侧产出：`log/` `state/`
 > `files/` `sqlite_db/`），同目录还有唯一的 `.env`；在线侧只读这些库。
-> 库内表名恒等于 AVL 名（分表为 `{AVL}_{分表号}`），旧库 `data_*` 表需重建或改名，
-> 见 [`sftp_avl2db/README.md`](sftp_avl2db/README.md)「表名口径变更」。
+> 库内表名恒等于 AVL 名（分表为 `{AVL}_{分表号}`）。
 > 部署时不要整目录覆盖 `sftp_avl2db/`，可把 `runtime/` 做成指向数据盘的软链。
 
 | 进程 | 数量 | 职责 |
@@ -216,18 +215,15 @@ python -m call_stat --self-check
 ## 未实现（在线业务）
 
 - **客户诊断新线（暂不实现）**：`output_script` 计划由多张维表结合 IOP 用户画像
-  拼装，不再依赖每日 AVL 宽表入库。这些表的结构与获取形式尚未确定，暂不在项目中
-  实现，也不建代码占位或空模块；相关业务线已分步清理完毕，本项目不再保留其
-  代码、配置、文档或样例。维表业务下线后，不属于商机回捞 / 控损的产品 ID
-  全部作为诊断兜底，当前统一输出 `code: "2"` 空话术，等新线实现后再切换；
-  维表库、`registry.json`、`reader.py` / `transform.py` 的加工能力均保留供复用。
-  诊断兜底声明 `RAW_LABELS`、一定触发 IOP；当前输出尚未消费标签，属已确认的
-  预留，不是遗漏的浪费。
-- 按业务声明 IOP / 画像依赖已落地，不再是待办：三态声明、请求级惰性标签提供者、
-  画像按 `product_id` 懒执行缓存、卖点表每请求 1 次，见「请求处理与路由」
+  拼装。这些表的结构与获取形式尚未确定，暂不在项目中实现，也不建代码占位或
+  空模块。不属于商机回捞 / 控损的产品 ID 全部作为诊断兜底，当前统一输出
+  `code: "2"` 空话术，等新线实现后再切换；维表库、`registry.json`、
+  `reader.py` / `transform.py` 的加工能力保留供复用。诊断兜底声明
+  `RAW_LABELS`、一定触发 IOP；当前输出尚未消费标签，属已确认的预留。
+- 按业务声明 IOP / 画像依赖：三态声明、请求级惰性标签提供者、画像按
+  `product_id` 懒执行缓存、卖点表每请求 1 次，见「请求处理与路由」
   「公共画像拼装」与「自检要点」。
 
-- 另：原根目录 `test_online.py` 与 `test_local/test_iop.py` 已合并进
-  [`tests/`](tests/README.md) 并重命名，端口修正为与 `main.py` 一致的 8989；
-  新增调用量统计、入参校验两组脚本。它们都是「跑一次、直接请求、打印返回」的
-  手工冒烟脚本，不是 pytest 单元测试。
+- [`tests/`](tests/README.md) 收录手工冒烟脚本（在线接口、入参校验、调用量统计、
+  IOP 直连），端口与 `main.py` 一致为 8989；它们都是「跑一次、直接请求、打印返回」
+  的脚本，不是 pytest 单元测试。

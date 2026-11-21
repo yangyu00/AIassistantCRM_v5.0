@@ -4,7 +4,7 @@
 配置锚在包内 ``.env``，产出锚在包内 ``runtime/``（都按 ``__file__`` 定位，
 与 CWD 无关）；``import sftp_avl2db`` 零 I/O、零第三方依赖。
 
-分层、公共 API 与调用链见包内 ``Readme.md``。
+分层、公共 API 与调用链见包内 ``README.md``。
 
 在线查询子模块 ``data_query`` 不在本文件顶层导入：它加载时会读包内 ``.env``，
 调用方需显式 ``from sftp_avl2db import data_query``，以保证 ``import sftp_avl2db``

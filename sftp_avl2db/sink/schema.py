@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""SQLite 表结构与 SQL 文本生成（三条 SQL 拼法刻意保真）。
+"""SQLite 表结构与 SQL 文本生成。
 
-保真清单见 ``Readme.md``；主键 / 时间列做成字段，方便其他项目替换。
+三条 SQL 的拼法约定见 ``README.md``；主键 / 时间列做成字段，方便其他项目替换。
 """
 from __future__ import annotations
 
