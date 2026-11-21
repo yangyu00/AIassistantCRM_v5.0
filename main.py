@@ -136,8 +136,7 @@ async def marketAssistant(args: Args):
     for one_product_obj in args.productId:
         # 是否查标签由业务层 need_labels() 声明；提供者保证整请求最多查一次 IOP。
         # 逐个判断等价于对全部 ID 取并集，不会因首个 ID 不需要而漏查。
-        # 「要不要拼画像」不在这里判断：只有商机对象持有画像组件，空标签 /
-        # 空标签 ID 子集时它自然返回空串。
+        # 「要不要拼画像」不在这里判断：只有商机对象持有画像组件，空标签 / 空标签 ID 子集时它自然返回空串。
         custom_label_info = (await label_provider.labels()
                              if need_labels(one_product_obj.id) else {})
         # 四类路由（商机 / 控损 / 诊断 / 兜底）、取数与对象构造都在
