@@ -81,7 +81,8 @@ AVL_SPECS: Final[Mapping[str, AvlSpec]] = {
 
     # ============ 诊断新线（project = diagnosis，8 个 AVL 各一个 db） ============
     # where = 该表业务定位键（PDF 取数口径）；全部是主键列的子集，保证查询
-    # 命中唯一键或主键前缀。后续多行 / 多条件查询入口在第二步扩展。
+    # 命中唯一键或主键前缀。多行 / 多条件取数走 data_query.query_many()，
+    # 场景交集与话术拼装见 services/diagnosis/。
     "F09627": AvlSpec(                       # DIM_MARKET_SCENE_RANK_ONCE
         name="F09627", project="diagnosis",
         schema="scene_rank", parser="dimension", where=("scene",),

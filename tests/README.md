@@ -33,6 +33,7 @@ export CRM_SMOKE_BASE_URL=http://10.0.0.5:8989
 | `check_param_validation.py` | `POST /api/speechQryService` | 手机号 / 产品 ID 的非法入参，期望 `res_code=1`；附一组正常请求做对照 |
 | `check_call_stat.py` | `GET /api/callStat` | 单日、整月、连续两次查询（计数规则）、4 组非法参数 |
 | `check_iop_direct.py` | IOP 上游（**不经在线服务**） | 单独查标签画像，用来区分「上游挂了」还是「在线编排有问题」 |
+| `check_diagnosis_offline.py` | **不打任何服务**（临时 SQLite + 内存桩） | 诊断新线端到端自检：注册 / 解析 / 入库 → 多行查询 → 7 表关联 → 话术拼装 → `main.py` 路由，结论 `ALL PASS` |
 
 ## 运行
 
@@ -56,6 +57,9 @@ python tests/check_iop_direct.py 13900000000
 python tests/check_call_stat.py 2026-11-16
 python tests/check_online_api.py
 python tests/check_call_stat.py 2026-11-16
+
+# 诊断新线离线自检：不需要起服务、不连 SFTP / IOP，临时库跑完即删
+python tests/check_diagnosis_offline.py
 ```
 
 ## 副作用与注意
@@ -66,6 +70,10 @@ python tests/check_call_stat.py 2026-11-16
   连续两次查询时，第二次会把第一次算进去。
 - `check_iop_direct.py` 会真实刷新 token、消耗上游调用，**不经过在线服务也不计调用量**。
 - 脚本只打印，不写文件；服务侧日志照常落在项目根 `log/`。
+- **例外**：`check_diagnosis_offline.py` 不打服务，在临时目录建 8 个诊断库跑完即删；
+  它会打桩 `IOPClient.get_customer_labels`（不消耗上游 token），并按 `.env.example`
+  临时补一份 `sftp_avl2db/.env` 供配置加载，结束后删除。末尾的在线路由段需要
+  fastapi / pydantic / loguru / aiohttp，缺依赖会自动跳过，不影响主体断言。
 - 这里的示例号码与产品 ID 都是占位值，换成真实数据才能拿到业务话术。
 
 ## 为什么没有 pytest

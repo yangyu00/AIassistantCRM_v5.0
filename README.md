@@ -20,16 +20,25 @@
 > 标签进入产品对象的路径——统一记在本文件「请求处理与路由」，不留在模块文档里。
 
 > 诊断新线 8 个 AVL（`F09627`～`F09633` / `F09635`）已完成 `sftp_avl2db` 表注册，
-> 尚未接入在线链路；生产拉起时按「一个 AVL 一个进程」另起 8 个 `sftp_avl2db` 任务，
-> 不计入下述当前部署的 6 个进程。注册详情见 [`sftp_avl2db/README.md`](sftp_avl2db/README.md)。
+> 且已接入在线链路（多行取数、场景交集与话术拼装、`main.py` 诊断路由）。
+> 生产拉起时按「一个 AVL 一个进程」另起 8 个 `sftp_avl2db` 任务，
+> 不计入下述当前部署的 6 个进程。实现说明见
+> [`诊断新线_在线链路实现说明.md`](诊断新线_在线链路实现说明.md)，
+> 注册详情见 [`sftp_avl2db/README.md`](sftp_avl2db/README.md)。
 
 本仓库由 **6 个进程**组成：4 个 `sftp_avl2db` 拉取任务（每个 AVL 一个 db、一个进程）、1 个 `local_excel2db` 维表写入、1 个 `main.py` 在线 API；在线侧只读 `sftp_avl2db` 业务库，**维表在线读取侧已下线**（卖点映射恒为空），唯一写入是调用量统计 `call_stat/runtime/call_sum.db`。`call_stat/` 是在线进程内的自包含模块：配置、代码、产物、说明都在包目录内，按 `__file__` 定位，与启动 CWD 无关；`sftp_avl2db/runtime/` 与 `local_excel2db/runtime/` 同理是写入侧产出的运行时数据目录。业务库未就绪时 API 按「无业务记录」降级，不会 500；维表不再参与在线链路，维表侧故障不影响 API。
 
 ## 架构与数据流向
 
 ```
-sftp_avl2db/runtime/sqlite_db/{项目名}/{AVL}.db ──→ sftp_avl2db/data_query.py ──→ main.py（路由）→ services/（重组）→ output_script
-                                    ↑ 只收 AVL 前缀（product_id 留在 main.py）
+sftp_avl2db/runtime/sqlite_db/{项目名}/{AVL}.db ──→ data_query.py ──→ main.py（路由）
+   │                                                │
+   │                                                ├─ 商机 / 控损：query() 单条
+   │                                                │    └─→ services/rewrite_by_spec_* → output_script
+   │                                                └─ 诊断新线：query_many() 多行 / 多条件
+   │                                                     └─→ services/diagnosis/（7 表关联、
+   │                                                         场景交集、按位置配对）→ output_script
+   └─ 读取侧只收 AVL 前缀（product_id 留在 main.py / F09629）
 
 local_excel2db：项目根 excels/*.xlsx ──→ 写入进程 ──→ local_excel2db/runtime/sqlite_db/dimensions.db
                                                     （只写，不参与在线请求链路）
@@ -97,16 +106,20 @@ local_excel2db：项目根 excels/*.xlsx ──→ 写入进程 ──→ local_
 |---|---|---|---|
 | 1 | `OPPORTUNITY_RECALL_PRODUCT_IDS`（202608041615335173 / 172 / 174） | `data_query.query(OPPORTUNITY_RECALL_AVLS[id], telnum)` | `ProductInfoBySpec9554` |
 | 2 | `LOSS_CONTROL_PRODUCT_IDS`（202609180955095402） | `data_query.query(LOSS_CONTROL_AVLS[id], telnum)`，有记录才命中 | `ProductInfoBySpec9591` |
-| 3 | 其余全部 | —（新线待完成） | `ProductInfoRaw` |
+| 3 | 其余 ID 且 `F09629` 命中该 `product_id` | `services.diagnosis.build_diagnosis_record(product_id, telnum)`，六项输出全空才不命中 | `ProductInfoByDiagnosis` |
+| 4 | 其余全部 | — | `ProductInfoRaw` |
 
-`product_id → AVL 前缀` 的对应关系**集中在 `main.py` 顶部的
+商机回捞 / 控损的 `product_id → AVL 前缀` 对应关系**集中在 `main.py` 顶部
 `OPPORTUNITY_RECALL_AVLS` / `LOSS_CONTROL_AVLS` 两张表**，两个 ID 集合由它们的 key
 派生。数据访问层 `sftp_avl2db` 完全不知道产品 ID：命中后把 AVL 前缀传给
-`data_query.query(avl, telnum)` 即可，读取侧只按 `{AVL}.db` 定位。
+`data_query` 即可，读取侧只按 `{AVL}.db` 定位。
 
-第 3 类是唯一的兜底：不属于商机回捞 / 控损的产品 ID 全部落到这里，当前统一
-输出 `code: "2"` 空话术，等客户诊断新线实现后再切换。维表业务路由与在线读取
-均已下线，卖点映射恒为空 dict，不再参与路由判断、产品名或标签子集。
+**诊断新线不维护静态 product_id 映射**：`F09629`（`DIM_MARKET_PRODUCT_BUSINESS_ONCE`）
+本身就是「产品ID → 策略 / 产品」的映射表，按 `product_id` 查到即命中；随后由
+`services/diagnosis/query.py` 用 `query_many()` 关联另外 6 张维表，取数规则见
+[`诊断新线_在线链路实现说明.md`](诊断新线_在线链路实现说明.md)。第 4 类才是兜底，
+统一输出 `code: "2"` 空话术。维表业务路由与在线读取均已下线，卖点映射恒为
+空 dict，不再参与路由判断、产品名或标签子集。
 
 **按业务声明 IOP / 画像依赖**（`main.py::iop_need()`，由本文件的路由集合
 派生；判定按全部 `productId` 取并集，不短路到第一个）：
@@ -115,7 +128,7 @@ local_excel2db：项目根 excels/*.xlsx ──→ 写入进程 ──→ local_
 |---|---|---|---|
 | 商机回捞 3 个 ID | `PORTRAIT` | 取 | 取，按 `product_id` 在一次请求内复用 |
 | 控损 | `NONE` | **不取** | 不计算 |
-| 其余全部（诊断兜底） | `RAW_LABELS` | 取（当前输出未消费，属新线预留） | 不计算 |
+| 诊断新线 / 兜底 | `RAW_LABELS` | 取（当前输出未消费，属已确认预留） | 不计算 |
 
 一次请求内的次数（不含 token 刷新，刷新次数另见 [`IOP/README.md`](IOP/README.md) 的「并发与可靠性约束 → token 单飞」）：
 
@@ -132,10 +145,12 @@ local_excel2db：项目根 excels/*.xlsx ──→ 写入进程 ──→ local_
 标签属于单个手机号，放模块级或 `app.state` 缓存会把上一个用户的标签带给
 下一个用户，不报错、只在话术里悄悄错。
 
-4. 输出：仅 `ProductInfoBySpec9554` / `ProductInfoBySpec9591` 返回 `code: "0"`
-   带话术；兜底返回 `code: "2"`、产品名与话术为空。这里不能靠 `product_name`
-   是否为空判定：维表命中的 ID 落到兜底后 `product_name` 仍会从维表取到非空值，
-   只看它会返回 `code: "0"` + 空话术，看起来成功、实际没有内容。
+4. 输出：`ProductInfoBySpec9554` / `ProductInfoBySpec9591` / `ProductInfoByDiagnosis`
+   三类对象返回 `code: "0"` 带话术；兜底返回 `code: "2"`、产品名与话术为空。
+   这里按对象类型判定，不能靠 `product_name` 是否为空：兜底对象也可能因维表残留
+   拿到非空名称，只看它会返回 `code: "0"` + 空话术，看起来成功、实际没有内容。
+   诊断对象的 `productName` 取「资费名称」（【】内），`output_script` 是六段
+   【资费名称 / 资费摘要 / 痛点诊断 / 切入话术 / 营销话术 / 挽留话术】HTML。
 
 ## 公共画像拼装（`services/product_info_raw.py`）
 
@@ -153,7 +168,7 @@ local_excel2db：项目根 excels/*.xlsx ──→ 写入进程 ──→ local_
 都不涉及名称映射或按标签 ID 硬编码的值转换，这两类规则已一并取消。
 
 只有声明 `PORTRAIT` 的商机对象会拿到 `portrait_cache`（`main.py` 在请求内
-创建的空 dict），按 `product_id` 查/算并写入；控损与诊断兜底拿到 `None`，
+创建的空 dict），按 `product_id` 查/算并写入；控损 / 诊断新线 / 兜底拿到 `None`，
 property 直接返回 `""`，**连 `build_auxiliary_portrait()` 都不进**。`__str__`
 仍打印 `auxiliary_portrait` 一行，这两类业务该行为空字符串。缓存只在函数内
 创建、不跨请求共享，同一商机 ID 在一次请求里重复出现也只拼一次。
@@ -189,10 +204,15 @@ python -m call_stat --self-check
 ## 自检要点（在线业务 / 路由）
 
 - `import main` 正常，`app.router.on_startup` 为空（无定时任务）。
-- 路由只有三类：商机 3 个 ID 走 `ProductInfoBySpec9554`、控损 ID 有记录时走
-  `ProductInfoBySpec9591`、其余全部落 `ProductInfoRaw` 并返回 `code: "2"`
+- 路由四类：商机 3 个 ID 走 `ProductInfoBySpec9554`、控损 ID 有记录时走
+  `ProductInfoBySpec9591`、`F09629` 命中的 ID 走 `ProductInfoByDiagnosis`
+  （`code: "0"` + 六段话术），其余落 `ProductInfoRaw` 并返回 `code: "2"`
   空话术（产品名与话术均为空）。维表读取侧已下线，卖点映射恒为 `{}`，
-  所有非商机 ID 的 `product_name` 都为空，不会误判为 `code: "0"`。
+  兜底对象的 `product_name` 为空，不会误判为 `code: "0"`。
+- **诊断新线一键自检**：`python tests/check_diagnosis_offline.py`（零第三方依赖主体，
+  不连 SFTP / IOP、不写包内 `runtime/`）。用 8 个样例 AVL 建库 + 补一组业务键
+  自洽数据，断言括号拆分、多值按位置配对、场景交集汇总、RN 优先级、多行话术、
+  挽留配对、`query()` 旧接口回归与 `main.py` 三类路由输出，结论应为 `ALL PASS`。
 
 - **按业务声明 IOP / 画像依赖**：`iop_need()` 对商机 3 个 ID 返回
   `PORTRAIT`、控损返回 `NONE`、其余（含维表里存在的业务 ID）返回
@@ -220,19 +240,30 @@ python -m call_stat --self-check
   `Application shutdown complete.`，且 `call_stat/runtime/call_sum.db` 里含这几条
   尾部增量（验证 lifespan shutdown，而非只依赖 `atexit`）。
 
-## 未实现（在线业务）
+## 客户诊断新线（已实现）与待确认项
 
-- **客户诊断新线（第一步已完成，在线拼装待实现）**：8 张诊断表已按
-  「话术涉及表结构.xls」与「营销话术字段取数逻辑说明」注册进 `sftp_avl2db`
-  （`project=diagnosis`，AVL `F09627`～`F09633` / `F09635`），可离线复跑入库；
-  字段名 / 主键 / 查询键见 [`sftp_avl2db/README.md`](sftp_avl2db/README.md)
-  「诊断新线：8 张表注册」。`output_script` 的多维表关联取数、场景交集与话术
-  拼装、按产品 ID 的在线路由仍未实现；不属于商机回捞 / 控损的产品 ID 继续
-  作为诊断兜底，统一输出 `code: "2"` 空话术。诊断兜底声明 `RAW_LABELS`、
-  一定触发 IOP；当前输出尚未消费标签，属已确认的预留。
-- 按业务声明 IOP / 画像依赖：三态声明、请求级惰性标签提供者、画像按
-  `product_id` 懒执行缓存、卖点表每请求 1 次，见「请求处理与路由」
-  「公共画像拼装」与「自检要点」。
+**已实现**：8 张表注册（`sftp_avl2db`）、多行 / 多条件查询（`query_many` /
+`query_in`）、7 表关联取数、场景交集与话术拼装（`services/diagnosis/`）、
+`main.py` 诊断路由与 `code: "0"` 输出。资费名称 / 资费摘要按本次确认的口径，
+直接取 `F09629` 的 `BUSINESS_NAME` 按【】内外拆分，**不走取数说明 03 里那张
+「话术维表」**。完整字段路径与验证见
+[`诊断新线_在线链路实现说明.md`](诊断新线_在线链路实现说明.md)，表注册见
+[`sftp_avl2db/README.md`](sftp_avl2db/README.md)「诊断新线：8 张表注册」。
+
+**待业务确认（不影响主链路运行，均集中在 `services/diagnosis/constants.py`）**：
+
+- 单元格多值的「指定分隔符」：样例未出现多值，默认支持竖线 / 全角竖线 /
+  单元格内换行；上游给出正式分隔符后改 `MULTI_VALUE_SPLIT_RE`。
+- `RN` 方向：按 rank 语义默认「RN 越小优先级越高」；若口径相反改
+  `SMALLER_RN_HIGHER_PRIORITY`。
+- `F09635`（标签ID-标签名）在取数说明里没有位置，未接入主链路；话术样例中的
+  `#客运个性化运营标签34&` 一类占位符也未做替换（缺映射依据）。
+- 诊断对象仍声明 `RAW_LABELS`、会触发 IOP，但当前输出未消费标签，属已确认预留。
+
+**未实现**：按业务声明 IOP / 画像依赖在诊断侧的应用（三态声明、请求级惰性
+标签提供者、画像按 `product_id` 懒执行缓存、卖点表每请求 1 次，见「请求处理
+与路由」「公共画像拼装」与「自检要点」）；诊断取数目前按产品 ID 逐个查库，
+一次请求多个产品 ID 时可加请求内缓存减少重复查询。
 
 - [`tests/`](tests/README.md) 收录手工冒烟脚本（在线接口、入参校验、调用量统计、
   IOP 直连），端口与 `main.py` 一致为 8989；它们都是「跑一次、直接请求、打印返回」

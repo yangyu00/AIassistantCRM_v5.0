@@ -101,7 +101,7 @@ runtime/
 2. `avl_specs.py`：加一条 `AvlSpec`，写明 `project` / `schema` / `parser` / `sharded` / `where` / `order_by`；**不写表名、不写主键、不写产品 ID、不写 PRAGMA**——表名自动就是 AVL 名，主键来自第 1 步。`where` 必须落在主键列上：商机回捞 / 控损为 `product_no`，诊断维表为各自的业务定位键。维表用 `parser="dimension"`（纯文本、不转末列、按注册主键跳过空行）。
 3. `config.py::_AVLS`：加一行 `(AVL 名, 项目名)`；项目名决定输入输出目录与 `.env` 键前缀。
 4. `.env`：只有**新项目**才需要加一组 `<项目名大写>_*` 参数；已有项目下的新 AVL 直接复用该组参数。
-5. 启动：`python -m sftp_avl2db --task {AVL 名}`；在线侧若需按 `product_id` 路由，在 `main.py` 顶部的路由表加一行 `product_id: AVL`，查库统一调 `data_query.query(avl, telnum)`——读取侧不需要任何产品 ID。
+5. 启动：`python -m sftp_avl2db --task {AVL 名}`；在线侧若需按 `product_id` 路由，在 `main.py` 顶部的路由表加一行 `product_id: AVL`，查库统一调 `data_query.query(avl, telnum)`（单条）或 `data_query.query_many(avl, where={...})`（多行 / 多条件）——读取侧不需要任何产品 ID。
 
 ## AVL 与库表契约
 
@@ -135,7 +135,7 @@ runtime/
 
 - 取数说明 09 把「挽留话术」也记作 `YX_HUASHU`，但 xls 物理 DDL 与 4 列 AVL 样例都明确 F09632 第 4 列是 `WL_HUASHU`，故注册 `wl_huashu`；业务侧按说明文档取别名时另做映射，不改物理列名。
 - F09635 未在 xls 给 DDL：按 `io_samples/README.md` 的 `TAGID_TAGNAME` 与 5 列样例推定 `tag_id / tag_name / table_name / column_name`；上游若有正式 DDL，以正式 DDL 复核。
-- F09629 的 `business_name` 含【】内外文本，是「资费名称 / 资费摘要」的拆分来源（取数说明 03），属第二步业务拼装，不影响注册。
+- F09629 的 `business_name` 含【】内外文本，是「资费名称 / 资费摘要」的拆分来源。本次已确认：**按 `product_id` 取 `F09629.BUSINESS_NAME` 后直接按【】内外拆分**，不走取数说明 03 里那张「话术维表」。
 
 **离线复跑**（8 个 AVL 各 10 行样例，日期按文件名取 `20261120`）：
 
@@ -146,7 +146,7 @@ for t in F09627 F09628 F09629 F09630 F09631 F09632 F09633 F09635; do
 done
 ```
 
-表结构与主键见 `table_schemas.py`，静态声明见 `avl_specs.py`，AVL 归属见 `config.py::_AVLS`，`.env` 参数组见 `.env.example` 的 `DIAGNOSIS_*`。在线侧多行 / 多条件取数与话术拼装属诊断新线后续步骤，本步只完成注册与入库。
+表结构与主键见 `table_schemas.py`，静态声明见 `avl_specs.py`，AVL 归属见 `config.py::_AVLS`，`.env` 参数组见 `.env.example` 的 `DIAGNOSIS_*`。**本节只描述注册与入库**；在线侧多行 / 多条件取数、场景交集与话术拼装、`main.py` 路由已实现，见根 [`诊断新线_在线链路实现说明.md`](../诊断新线_在线链路实现说明.md) 与下文「在线读取与话术重组」。
 
 ## 解析与写入行为
 
@@ -165,11 +165,36 @@ done
 
 ## 在线读取与话术重组
 
-包内 `data_query.py` **只认 AVL 前缀**：唯一入口 `query(avl, telnum)`，`async`、内部同步 `sqlite3`，`SELECT * … LIMIT 1` 按 `op_time DESC` 取最新一条，直接定位 `sqlite_db/{project}/{avl}.db`。第二个参数按 `AvlSpec.where` 绑定：商机回捞 / 控损传手机号，诊断维表传各自的业务定位键值（`scene` / `business_type` / `product_id` / `tag_id`）；多行 / 多条件取数属诊断新线后续步骤。
+包内 `data_query.py` **只认 AVL 前缀**，`async`、内部同步 `sqlite3`，直接定位
+`sqlite_db/{project}/{avl}.db`，三个入口：
 
-**业务路由的 `product_id` 不进数据访问层**：`main.py` 顶部的 `OPPORTUNITY_RECALL_AVLS` / `LOSS_CONTROL_AVLS` 维护 `product_id → AVL 前缀`，业务路由命中后把 AVL 前缀传进来即可；`avl_specs.py` 里也没有任何产品 ID 映射。`F09629` 的 `product_id` 是表内物理列、按主键查询，与业务路由无关。表名由 AVL 名派生、列顺序来自声明，用户输入只走参数绑定。库/表缺失、AVL 未注册或查询异常一律返回 `{}`，不会让 API 500。`validate_specs()` 还会拦住把非主键业务字段写进 `where` 的漂移。
+| 入口 | 返回 | 用途 |
+|---|---|---|
+| `query(avl, key)` | `dict` | 单条，`LIMIT 1` 按 `op_time DESC` 取最新一条；`key` 按 `AvlSpec.where` 绑定 |
+| `query_many(avl, *, where, limit=None)` | `list[dict]` | 多行 / 多条件；`where={列名: 标量｜序列}`，标量走 `=`、序列走 `IN`，多键 AND |
+| `query_in(avl, column, values, *, limit=None)` | `list[dict]` | 单列 IN 的便捷形式 |
 
-**库里保存原始文本**，话术重组在业务侧执行：`rewrite_by_spec_f09554` 拼【通话总结】【用户需求】【已推荐政策】【拒绝原因】四段并追加辅助画像；`rewrite_by_spec_f09591` 把 `<$B>` / `<$I>` / `<$U>` / `<#RRGGBB>` 等自定义标签转成 HTML 并闭合 `</>`。
+诊断新线靠 `query_many` 一次取回某产品的全部场景、某号码的全部用户场景，
+以及按交集场景列表批量查优先级 / 切入话术。约束：列名走 `schema_columns()`
+白名单、值一律参数绑定；排序固定取 `AvlSpec.order_by` 静态声明，不开放
+`ORDER BY` 注入口（场景按 RN 重排在业务层用 Python 做）；分表 AVL 需标量
+`product_no` 定位分表。空 IN 集合直接返回 `[]`，非法列名 / 库表缺失 / 异常
+一律降级为空结果，不抛给在线接口。
+
+**业务路由的 `product_id` 不进数据访问层**：`main.py` 顶部的
+`OPPORTUNITY_RECALL_AVLS` / `LOSS_CONTROL_AVLS` 维护商机 / 控损的
+`product_id → AVL 前缀`；诊断新线不维护静态映射，直接按 `product_id` 查
+`F09629`（该表本身就是产品ID映射表），命中后再按 `business_type` 用
+`query_many` 关联其余维表。`avl_specs.py` 里没有任何产品 ID 映射。表名由
+AVL 名派生、列顺序来自声明。`validate_specs()` 还会拦住把非主键业务字段
+写进 `where` 的漂移。
+
+**库里保存原始文本**，话术重组在业务侧执行：`rewrite_by_spec_f09554` 拼
+【通话总结】【用户需求】【已推荐政策】【拒绝原因】四段并追加辅助画像；
+`rewrite_by_spec_f09591` 把 `<$B>` / `<$I>` / `<$U>` / `<#RRGGBB>` 等自定义标签
+转成 HTML 并闭合 `</>`；`services/diagnosis/` 关联 7 张表做场景交集与配对，
+拼出【资费名称】【资费摘要】【痛点诊断】【切入话术】【营销话术】【挽留话术】
+六段，见根 [`诊断新线_在线链路实现说明.md`](../诊断新线_在线链路实现说明.md)。
 
 ## 测试与复跑
 
@@ -178,4 +203,4 @@ python -m sftp_avl2db --task F09591 --date 20261110 \
   --local-dir io_samples --runtime-dir /tmp/replay
 ```
 
-`build_task()` 的 `logger=`（可用 `InMemoryLogger`）、`local_dir=`、`day=`、`now=`、`sleeper=`、`batch_size=`、`table_schema=` 都是显式注入点；`runner.serve_forever()` 另有 `max_rounds` / `date_strings` 测试钩子。离线复跑产出隔离到临时目录，不碰包内 `runtime/`。诊断新线 8 个 AVL 的批量复跑命令见上文「诊断新线：8 张表注册」。
+`build_task()` 的 `logger=`（可用 `InMemoryLogger`）、`local_dir=`、`day=`、`now=`、`sleeper=`、`batch_size=`、`table_schema=` 都是显式注入点；`runner.serve_forever()` 另有 `max_rounds` / `date_strings` 测试钩子。离线复跑产出隔离到临时目录，不碰包内 `runtime/`。诊断新线 8 个 AVL 的批量复跑命令见上文「诊断新线：8 张表注册」；端到端自检（含 `query_many`、7 表关联、话术拼装与 `main.py` 路由）跑 `python tests/check_diagnosis_offline.py`。

@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from IOP import IOPClient
 from call_stat import startup, flush, count_call_middleware, build_router
+from services.diagnosis import ProductInfoByDiagnosis, build_diagnosis_record
 from services.product_info_raw import ProductInfoRaw as ProductInfoRaw
 from services.rewrite_by_spec_f09554.rewrite import ProductInfoRewrite as ProductInfoBySpec9554
 from services.rewrite_by_spec_f09591.rewrite import ProductInfoRewrite as ProductInfoBySpec9591
@@ -26,8 +27,11 @@ MARKET_ASSISTANT_USERS = ["CRM"]
 
 # ===== 业务路由：product_id → AVL 前缀（本文件是唯一维护点）=====
 # 数据访问层 sftp_avl2db 只认 AVL 前缀；产品 ID 属业务概念，不进查询层。
-# 新增业务 / 新增产品 ID 只改这里：查库时把映射出的 AVL 前缀传给
-# data_query.query(avl, telnum)，读取侧无需知道任何产品 ID。
+# 商机回捞 / 控损是静态映射：新增产品 ID 只改下面两张表，把 AVL 前缀传给
+# data_query.query(avl, telnum)。
+# 诊断新线不同：F09629（PRODUCT_BUSINESS）本身就是「产品ID → 策略/产品」的
+# 映射表，不需要在 main.py 再维护一张静态表；命中该表即走诊断业务，
+# 由 services/diagnosis 按 AVL 前缀关联其余 6 张维表，读取侧仍只认 AVL 前缀。
 OPPORTUNITY_RECALL_AVLS = {
     "202608041615335173": "F09554",  # 号卡业务
     "202608041615335172": "F09555",  # 套餐业务
@@ -121,8 +125,8 @@ def iop_need(product_id):
     """按产品 ID 声明标签依赖，业务归属由本文件的路由表派生。
 
     控损话术只由数据库字段拼装，不依赖用户标签，声明为 NONE；商机回捞
-    需要标签拼装用户画像；其余产品 ID 作为诊断兜底，只取原始标签、
-    不做画像规则转换。
+    需要标签拼装用户画像；其余产品 ID（诊断新线 / 兜底）只取原始标签、
+    不做画像规则转换。诊断新线当前输出尚未消费标签，属已确认的预留。
     """
     if product_id in OPPORTUNITY_RECALL_PRODUCT_IDS:
         return IopNeed.PORTRAIT
@@ -199,21 +203,33 @@ async def marketAssistant(args: Args):
                                                               portrait_cache_for_obj))
                 continue
 
-        # 3. 诊断兜底
-        # 不属于上述两类的产品 ID 全部落到这里。新线输出待完成，当前
-        # 统一输出 code=2 空话术；等新线实现后再切换。
+        # 3. 诊断新线
+        # product_id 命中 F09629 即走诊断：按 BUSINESS_TYPE 关联产品场景 /
+        # 营销 / 挽留话术，按手机号取用户场景做交集，再按场景优先级取切入话术。
+        # 六项输出全为空时 build_diagnosis_record 返回 None，继续落兜底。
+        diagnosis_record = await build_diagnosis_record(one_product_obj.id,
+                                                        args.telnum)
+        if diagnosis_record:
+            product_obj_list.append(ProductInfoByDiagnosis(
+                one_product_obj.id, custom_label_info,
+                product_selling_point_match_dict, diagnosis_record,
+                portrait_cache_for_obj))
+            continue
+
+        # 4. 兜底：不属于商机回捞 / 控损，且产品ID 未命中 F09629
         product_obj_list.append(ProductInfoRaw(one_product_obj.id, custom_label_info,
                                                product_selling_point_match_dict,
                                                portrait_cache_for_obj))
 
     # 3. 输出话术
-    # 诊断兜底统一输出 code=2 空话术。这里不能再靠 product_name 是否为空判定：
-    # 维表命中的产品 ID 落到兜底后，product_name 仍会从维表取到非空值，只看它
-    # 会返回 code=0 + 空话术，看起来成功、实际没有内容。
+    # 商机回捞 / 控损 / 诊断新线三类业务对象返回 code=0；其余兜底 code=2。
+    # 这里按对象类型判定，不能靠 product_name 是否为空：兜底对象也可能因
+    # 维表残留拿到非空名称，只看它会返回 code=0 + 空话术，看起来成功、实际无内容。
     allScripts = []
     for product_obj in product_obj_list:
         my_log.info(product_obj)
-        if isinstance(product_obj, (ProductInfoBySpec9554, ProductInfoBySpec9591)):
+        if isinstance(product_obj, (ProductInfoBySpec9554, ProductInfoBySpec9591,
+                                    ProductInfoByDiagnosis)):
             allScripts.append(
                 {"productId": product_obj.product_id, "productName": product_obj.product_name,
                  "script": product_obj.output_script, "code": "0"})
