@@ -1,12 +1,9 @@
 # local_excel2db · 本地 Excel 维表 → SQLite（只写）
 
-**本包只保留写入侧**：定时监控项目根 `excels/` 里注册 xlsx 的内容变化，抽列写
-SQLite、按表递增 version、记录指纹与元信息。在线读取侧（查库、重建业务 dict、
-话术拆分）已整体删除：`reader.py` / `transform.py`、`DimensionReader` /
-`load_product_selling_point()`、`mode=ro` 连接、只读契约与 registry 里的
-`main.py` 不从本包取数，卖点映射恒为 `{}`。
+**本包只写入**：定时监控项目根 `excels/` 里注册 xlsx 的内容变化，抽列写
+SQLite、按表递增 version、记录指纹与元信息。
 
-与 `IOP` / `sftp_avl2db` / `call_stat` 一致：**配置与运行时产出都锚在包内、按
+**配置与运行时产出都锚在包内、按
 `__file__` 定位，与启动 CWD 无关**。`import local_excel2db` 零 I/O（不读 registry、
 不连库、不建目录、不改全局 logger、不拉起 openpyxl / sqlite3）。
 
@@ -31,12 +28,10 @@ SQLite、按表递增 version、记录指纹与元信息。在线读取侧（查
 | 单实例锁 | `local_excel2db/runtime/state/dim_watcher.lock` | `config.LOCK_PATH` |
 | 日志 | `local_excel2db/runtime/log/dim_watcher.log` | `config.LOG_DIR` |
 
-- 不读系统环境变量；没有 `--config` / `--runtime-dir` / `--interval` 覆盖入口，
-  也没有 `from_mapping()` 之类的第二套配置解析。
 - `registry.json` 里**不写库路径**，产物目录是代码常量，配置改不动它。
 - `source` 只能是 `卖点维表.xlsx` 这样的纯文件名，加载时强制拼到 `INPUT_DIR`；
   写 `../`、子目录或绝对路径直接抛 `ValueError`，保证永远只扫根 `excels/`。
-- 部署时不要整目录覆盖本包；需要把数据挂到独立盘，可把 `runtime/` 做成软链。
+- 需要把数据挂到独立盘，可把 `runtime/` 做成软链。
   根目录 `.gitignore` 已忽略 `local_excel2db/runtime/*`（保留 `.gitkeep`）。
 
 ## 运行
@@ -47,8 +42,7 @@ python -m local_excel2db --once         # 只检测一轮后退出（crontab / �
 python -m local_excel2db --once --force # 忽略指纹强制重导并递增 version
 ```
 
-写入进程与 `sftp_avl2db` 的拉取任务、在线 API 并列部署；`main.py` 不写任何
-业务库或维表。单机单实例由 `fcntl` 非阻塞文件锁保证，锁冲突退出码 1，
+单机单实例由 `fcntl` 非阻塞文件锁保证，锁冲突退出码 1，
 配置损坏退出码 2。改轮询间隔或列映射后**重启写入进程**生效。
 
 ## 配置（`registry.json`，唯一来源、唯一入口 `load_registry()`）
@@ -118,9 +112,3 @@ python -m local_excel2db --once
 - `fcntl` 文件锁为 Linux 单机单实例设计，与部署环境一致。
 - 组件通过 `protocols.py` 的 `ExcelSource` / `WritableRepository` / `InstanceLock` /
   `LogSink` / `Sleeper` 契约解耦，可逐层替换；注入只替换组件，不改任何路径。
-
-## 与在线侧的关系
-
-本包只写不读。在线 API 在 `main.py` 里把卖点映射固定为 `{}` 传给业务对象；
-维表库只由本进程维护，维表侧故障不会
-让 API 500。若诊断新线需要维表数据，应另起读取组件，不由本包提供。

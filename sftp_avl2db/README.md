@@ -98,10 +98,10 @@ runtime/
 ## 新增业务 / 新增 AVL 的步骤
 
 1. `table_schemas.py`：每种表结构加一份 `TABLE_SCHEMAS["新名字"]`，并在 `TABLE_PRIMARY_KEYS` 里按同名注册主键（单列或复合）；结构相同的 AVL 直接复用已有名字。
-2. `avl_specs.py`：加一条 `AvlSpec`，写明 `project` / `schema` / `parser` / `sharded` / `where` / `order_by`；**不写表名、不写主键、不写产品 ID、不写 PRAGMA**——表名自动就是 AVL 名，主键来自第 1 步。`where` 必须落在主键列上：商机回捞 / 控损为 `product_no`，诊断维表为各自的业务定位键。一行一条的表统一用 `parser="flat"`，列数 / 主键列 / 跳过规则全部由 profile 的注册信息驱动，不需要新增解析器类。
+2. `avl_specs.py`：加一条 `AvlSpec`，写明 `project` / `schema` / `parser` / `sharded` / `where` / `order_by`；**不写表名、不写主键、不写 PRAGMA**——表名自动就是 AVL 名，主键来自第 1 步。`where` 必须落在主键列上。一行一条的表统一用 `parser="flat"`，列数 / 主键列 / 跳过规则全部由 profile 的注册信息驱动，不需要新增解析器类。
 3. `config.py::_AVLS`：加一行 `(AVL 名, 项目名)`；项目名决定输入输出目录与 `.env` 键前缀。
 4. `.env`：只有**新项目**才需要加一组 `<项目名大写>_*` 参数；已有项目下的新 AVL 直接复用该组参数。
-5. 启动：`python -m sftp_avl2db --task {AVL 名}`；在线侧若需按 `product_id` 路由，在 `main.py` 顶部的路由表加一行 `product_id: AVL`，查库统一调 `data_query.query(avl, telnum)`（单条）或 `data_query.query_many(avl, where={...})`（多行 / 多条件）——读取侧不需要任何产品 ID。
+5. 启动：`python -m sftp_avl2db --task {AVL 名}`；查库统一调 `data_query.query(avl, telnum)`（单条）或 `data_query.query_many(avl, where={...})`（多行 / 多条件）。
 
 ## AVL 与库表契约
 
@@ -116,25 +116,20 @@ runtime/
 
 ## 诊断新线：8 张表注册（project = diagnosis）
 
-依据「话术涉及表结构.xls」（物理 DDL / 经分接口号 / 文件名）与「营销话术字段取数逻辑说明」（业务口径），把 `io_samples/README.md` 里罗列的 8 个诊断 AVL 注册成 8 个 db，统一落在 `runtime/sqlite_db/diagnosis/`。列顺序 = AVL 制表符分隔顺序，全表 `op_time`（数据日期，TEXT）为过期清理列。
+| AVL | 中文名 | schema | 列（按 AVL 顺序）                                        | 主键 | where |
+|---|---|---|----------------------------------------------------|---|---|
+| `F09627` | 场景优先级 | `scene_rank` | `op_time, scene, rn`                               | `scene` | `scene` |
+| `F09628` | 产品-场景 | `product_scene` | `op_time, business_type, scene`                    | `business_type, scene` | `business_type` |
+| `F09629` | 产品策略 | `product_business` | `op_time, business_type, product_id, business_name` | `product_id` | `product_id` |
+| `F09630` |  场景-切入话术 | `scene_qrhuashu` | `op_time, scene, qr_huashu`                        | `scene` | `scene` |
+| `F09631` |  产品-营销话术 | `product_yxhuashu` | `op_time, business_type, yx_huashu`                | `business_type, yx_huashu` | `business_type` |
+| `F09632` |  产品-挽留话术 | `product_wlhuashu` | `op_time, business_type, reject_reason, wl_huashu` | `business_type, reject_reason, wl_huashu` | `business_type` |
+| `F09633` |  用户场景对应关系 | `conf_user_scene` | `op_time, user_id, product_no, scene, reason`      | `product_no, scene` | `product_no` |
+| `F09635` |  标签ID-标签名 | `tagid_tagname` | `op_time, tag_id, tag_name, unknown1, unknown2`    | `tag_id` | `tag_id` |
 
-| AVL | 物理表 / 中文名 | schema | 列（按 AVL 顺序） | 主键 | where |
-|---|---|---|---|---|---|
-| `F09627` | `DIM_MARKET_SCENE_RANK_ONCE` 场景优先级 | `scene_rank` | `op_time, scene, rn` | `scene` | `scene` |
-| `F09628` | `DIM_MARKET_PRODUCT_SCENE_ONCE` 产品-场景 | `product_scene` | `op_time, business_type, scene` | `business_type, scene` | `business_type` |
-| `F09629` | `DIM_MARKET_PRODUCT_BUSINESS_ONCE` 产品策略 | `product_business` | `op_time, business_type, product_id, business_name` | `product_id` | `product_id` |
-| `F09630` | `DIM_MARKET_SCENE_QRHUASHU_ONCE` 场景-切入话术 | `scene_qrhuashu` | `op_time, scene, qr_huashu` | `scene` | `scene` |
-| `F09631` | `DIM_MARKET_PRODUCT_YXHUASHU_ONCE` 产品-营销话术 | `product_yxhuashu` | `op_time, business_type, yx_huashu` | `business_type, yx_huashu` | `business_type` |
-| `F09632` | `DIM_MARKET_PRODUCT_WLHUASHU_ONCE` 产品-挽留话术 | `product_wlhuashu` | `op_time, business_type, reject_reason, wl_huashu` | `business_type, reject_reason, wl_huashu` | `business_type` |
-| `F09633` | `DWD_MARKET_CONF_USER_SCENE_DS` 用户场景对应关系 | `conf_user_scene` | `op_time, user_id, product_no, scene, reason` | `product_no, scene` | `product_no` |
-| `F09635` | `TAGID_TAGNAME` 标签ID-标签名 | `tagid_tagname` | `op_time, tag_id, tag_name, table_name, column_name` | `tag_id` | `tag_id` |
-
-**主键口径**：`op_time` 不进主键，维表每日全量按主键 `INSERT OR REPLACE` 覆盖最新批次（与商机 / 控损一致）；主键列自动补 `NOT NULL`。F09631 / F09632 把话术全文纳入主键，是为了避免样例中的重复行、以及「同一产品 + 同一拒绝原因对应两条不同挽留话术」（取数说明 08「单元格多值按位置拆分」）被 REPLACE 丢行。
+**主键口径**：`op_time` 不进主键，维表每日全量按主键 `INSERT OR REPLACE` 覆盖最新批次（与商机 / 控损一致）；主键列自动补 `NOT NULL`。F09631 / F09632 把话术全文纳入主键，是为了避免样例中的重复行、以及「同一产品 + 同一拒绝原因对应两条不同挽留话术」被 REPLACE 丢行。
 
 **口径裁决**：
-
-- 取数说明 09 把「挽留话术」也记作 `YX_HUASHU`，但 xls 物理 DDL 与 4 列 AVL 样例都明确 F09632 第 4 列是 `WL_HUASHU`，故注册 `wl_huashu`；业务侧按说明文档取别名时另做映射，不改物理列名。
-- F09635 未在 xls 给 DDL：按 `io_samples/README.md` 的 `TAGID_TAGNAME` 与 5 列样例推定 `tag_id / tag_name / table_name / column_name`；上游若有正式 DDL，以正式 DDL 复核。
 - F09629 的 `business_name` 含【】内外文本：按 `product_id` 取该字段后直接拆分，【】内为资费名称、【】外为资费摘要。
 
 **离线复跑**（8 个 AVL 各 10 行样例，日期按文件名取 `20261120`）：

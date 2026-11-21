@@ -29,21 +29,13 @@
 | `卖点维表.xlsx`                   | `local_excel2db` | `custom_script` 表的格式样例（业务 ID 表头 → 库列 `product_id`、话术、标签 ID、`标签0…标签27` 等）                              |
 | `标签转换维表.xlsx`                 | `local_excel2db` | `label_name_mapping` 表的格式样例，取名为「标签名称--标签ID」的 sheet                                                    |
 
-AVL 命名遵循 `{业务前缀}{YYYYMMDD}000000.AVL`，制表符分隔、UTF-8、无表头、一行一条记录；
-原四个商机 / 控损样例的日期部分是 `20261110`，8 个诊断样例按
-`话术涉及表结构.xls` 的当天批次取 `20261120`（`F09627`～`F09633`，另加
-`F09635` 标签ID-标签名样例；xls 只给出前 7 张表的 DDL）。这 8 个 AVL 注册在
-`sftp_avl2db` 的 `diagnosis` 项目，可用 `--date 20261120 --local-dir io_samples`
-批量离线复跑；字段含义、表结构 / 主键 / 查询键与 AVL 映射见
+AVL 命名遵循 `{业务前缀}{YYYYMMDD}000000.AVL`，制表符分隔、UTF-8、无表头；
+字段含义、表结构 / 主键 / 查询键与 AVL 映射见
 [`sftp_avl2db/README.md`](../sftp_avl2db/README.md) 与
 `sftp_avl2db/avl_specs.py`、`sftp_avl2db/table_schemas.py`。
 
 > 诊断链路的完整取数规则见根
-> [`诊断新线_在线链路实现说明.md`](../诊断新线_在线链路实现说明.md)，一键自检见
-> `python tests/check_diagnosis_offline.py`。注意这 8 张样例表的**业务键彼此不对齐**
-> （例如 `F09629` 的 `BUSINESS_TYPE` 与 `F09628` / `F09631` / `F09632` 的产品对不上），
-> 直接用样例跑会看到部分字段降级为「无」；自检会先补一组业务键自洽的数据，
-> 再验证 6 个输出字段。
+> [`诊断新线_在线链路实现说明.md`](../诊断新线_在线链路实现说明.md)
 
 
 ## 三个子系统分别怎么用这些样例
