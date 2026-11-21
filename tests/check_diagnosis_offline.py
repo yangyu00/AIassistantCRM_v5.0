@@ -25,9 +25,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-# services.reader 在 import 时按 __file__ 装配 profiles（读包内 .env）；
-# CI / 干净检出里没有 .env，临时从模板复制一份，脚本结束删除
-# （.gitignore 已忽略 .env）。
+# 写入侧 load_profiles() 读包内 .env；CI / 干净检出里没有 .env，临时从模板
+# 复制一份，脚本结束删除（.gitignore 已忽略 .env）。
+# 在线侧 services 读自己的 services/.env（不存在时用 db_config 的代码内默认值），
+# 不依赖这份文件。
 ENV = ROOT / "sftp_avl2db" / ".env"
 _created_env = not ENV.is_file()
 if _created_env:
@@ -36,14 +37,13 @@ if _created_env:
 _log_dir = ROOT / "log"
 _log_existed = _log_dir.exists()
 
-from services import dimensions, reader                # noqa: E402
+from services import db_config, dimensions, reader     # noqa: E402
 from services.product_info_raw import (                  # noqa: E402
     AuxiliaryPortrait, ProductInfoBase, ProductInfoRaw)
 from services.loss_control import (                      # noqa: E402
     ProductInfoByLossControl, parse_custom_tags)
 from services.opportunity_recall import (                # noqa: E402
     ProductInfoByOpportunityRecall)
-from local_excel2db.config import load_registry        # noqa: E402
 from sftp_avl2db.avl_specs import (                     # noqa: E402
     AVL_SPECS, shard_index, table_name, validate_specs)
 from sftp_avl2db.config import load_profiles            # noqa: E402
@@ -59,9 +59,16 @@ from services.diagnosis import (                        # noqa: E402
 SAMPLES = ROOT / "io_samples"
 TMP = Path(tempfile.mkdtemp(prefix="diagnosis_check_"))
 
-# 在线侧与写入侧同源：把所有查询隔离到临时 runtime，不碰包内 runtime/。
-reader.configure(load_profiles(runtime_dir=str(TMP)))
-validate_specs(reader.PROFILES)
+# 写入侧配置（建库）与在线侧配置（查询）各自独立装配，指向同一批临时库文件：
+# 两侧代码 / 配置互不引用，只在磁盘上的 db 文件交汇。
+write_profiles = load_profiles(runtime_dir=str(TMP))
+validate_specs(write_profiles)
+read_config = db_config.load(
+    avl_db_root=TMP / "sqlite_db",
+    dimensions_db=TMP / "dimensions.db",
+)
+reader.configure(read_config)
+db_config.validate(read_config)
 
 DIAG_AVLS = [n for n, s in AVL_SPECS.items() if s.project == "diagnosis"]
 
@@ -97,7 +104,7 @@ def build_avl(avl, date):
     与生产写入侧 ``build_task()`` 走同一条布局路径：分表 AVL 先建全部
     ``{AVL}_{i}``，再按 ``layout.target()`` 逐行路由；固定表只建一张。
     """
-    conf = reader.PROFILES[avl]
+    conf = write_profiles[avl]
     schema = TableSchema.from_profile(conf)
     layout = build_layout(conf)
     db = conf.db_dir / f"{avl}.db"
@@ -118,7 +125,7 @@ def build_avl(avl, date):
 
 
 def append_rows(avl, rows):
-    conf = reader.PROFILES[avl]
+    conf = write_profiles[avl]
     schema = TableSchema.from_profile(conf)
     layout = build_layout(conf)
     db = conf.db_dir / f"{avl}.db"
@@ -144,7 +151,7 @@ def main():
           PARSER_KINDS == ("flat", "continuation"), str(PARSER_KINDS))
     check("12 个 AVL 的 parser 全部合法",
           all(s.parser in PARSER_KINDS for s in AVL_SPECS.values()))
-    old_p = build_parser(reader.PROFILES["F09554"])
+    old_p = build_parser(write_profiles["F09554"])
     check("商机用 FlatColumnParser / 12 列 / 主键第 3 列",
           type(old_p).__name__ == "FlatColumnParser" and
           old_p.column_count == 12 and old_p.primary_key_indexes == (2,),
@@ -152,26 +159,32 @@ def main():
     for avl, expect in [("F09627", (1,)), ("F09628", (1, 2)),
                         ("F09629", (2,)), ("F09633", (2, 3)),
                         ("F09635", (1,))]:
-        p = build_parser(reader.PROFILES[avl])
+        p = build_parser(write_profiles[avl])
         check(f"{avl} 主键下标按注册换算", p.primary_key_indexes == expect,
               f'{p.primary_key_indexes} expect={expect}')
     # 末列原样保留文本：商机 "3" 由 SQLite 亲和性转整数，切入话术保持全文
-    qr_first = next(build_parser(reader.PROFILES["F09630"]).parse(
+    qr_first = next(build_parser(write_profiles["F09630"]).parse(
         SAMPLES / "F0963020261120000000.AVL"))
     check("诊断末列原样保留文本（未被转 int）",
           isinstance(qr_first[-1], str) and len(qr_first[-1]) > 20 and
           "电视会员" in qr_first[-1], repr(qr_first[-1][:30]))
-    old_first = next(build_parser(reader.PROFILES["F09554"]).parse(
+    old_first = next(build_parser(write_profiles["F09554"]).parse(
         SAMPLES / "F0955420261110000000.AVL"))
     check("商机末列原样保留文本", old_first[-1] == "3", repr(old_first[-1]))
 
     print("=== 1c. F09633 分表（千万级用户场景表）===")
-    conf33 = reader.PROFILES["F09633"]
+    conf33 = write_profiles["F09633"]
     n33 = conf33.num_tables
-    check("F09633 声明为分表", AVL_SPECS["F09633"].sharded is True)
-    check("分表键与在线查询键一致（product_no）",
-          AVL_SPECS["F09633"].where == ("product_no",))
-    check("分表数来自 .env", n33 == 128, str(n33))
+    check("F09633 声明为分表（写入侧 / 在线侧各自声明）",
+          AVL_SPECS["F09633"].sharded is True and
+          db_config.AVL_DB_SPECS["F09633"].sharded is True)
+    check("在线侧查询键与分表键一致（product_no）",
+          db_config.AVL_DB_SPECS["F09633"].where == ("product_no",))
+    check("分表数来自两侧各自的声明",
+          n33 == 128 and
+          read_config.profiles["F09633"].num_tables == 128, str(n33))
+    check("两侧分表口径一致（同一算法，各自实现）",
+          db_config.shard_index(TEL, n33) == shard_index(TEL, n33))
     expect_tbl = table_name("F09633", shard_index(TEL, n33))
     db33 = conf33.db_dir / "F09633.db"
     conn = sqlite3.connect(str(db33))
@@ -199,21 +212,22 @@ def main():
               "F09633", where={"scene": "超套"})) == [])
 
     print("=== 1d. 卖点维表 → 商机标签 ID（不再用固定集）===")
-    # 按 registry.json 的 selling_points 列定义建临时 dimensions.db。
+    # 按 services/db_config.py 的在线侧声明建临时 dimensions.db
+    #（不再读写入侧 registry.json）。
     # 3 行商机 ID 用于画像；3 行诊断 ID 用于 1e / 5b 的卖点维表兜底。
-    dim_spec = load_registry().table("selling_points")
     dim_db = TMP / "dimensions.db"
-    tag_cols = list(dim_spec.dynamic_columns[:3])
+    tag_cols = list(db_config.SELLING_POINTS_TAG_COLUMNS[:3])
     conn = sqlite3.connect(str(dim_db))
     try:
         defs = []
-        for c in dim_spec.columns:
-            not_null = " NOT NULL" if c.column in dim_spec.primary_key else ""
-            defs.append(f"{c.column} {c.type}{not_null}")
+        for col, typ in db_config.SELLING_POINTS_SCHEMA:
+            not_null = (" NOT NULL" if col in db_config.SELLING_POINTS_PRIMARY_KEY
+                        else "")
+            defs.append(f"{col} {typ}{not_null}")
         conn.execute(
-            f"CREATE TABLE {dim_spec.table} ({', '.join(defs)}, "
+            f"CREATE TABLE {db_config.SELLING_POINTS_TABLE} ({', '.join(defs)}, "
             f"version INTEGER NOT NULL, "
-            f"PRIMARY KEY ({', '.join(dim_spec.primary_key)}))")
+            f"PRIMARY KEY ({', '.join(db_config.SELLING_POINTS_PRIMARY_KEY)}))")
 
         def add(pid, name, label_ids, match_result, tags=()):
             cols = ["product_id", "product_name", "label_id", "match_result"]
@@ -222,7 +236,7 @@ def main():
             tag_values = (list(tags) + [""] * len(tag_cols))[:len(tag_cols)]
             vals = [pid, name, label_ids, match_result] + tag_values
             conn.execute(
-                f"INSERT INTO {dim_spec.table} ({', '.join(cols)}, version) "
+                f"INSERT INTO {db_config.SELLING_POINTS_TABLE} ({', '.join(cols)}, version) "
                 f"VALUES ({', '.join('?' for _ in cols)}, 1)", vals)
 
         add("202608041615335173", "维表产品-173", "DIM_LABEL_A\nDIM_LABEL_B", "")
@@ -467,7 +481,7 @@ def main():
     check("非法列名 → []（不抛异常）",
           asyncio.run(reader.query_many("F09627", where={"bogus": "x"})) == [])
     # 单条查询回归：用样例里真实存在的手机号
-    old_rows = list(build_parser(reader.PROFILES["F09554"]).parse(
+    old_rows = list(build_parser(write_profiles["F09554"]).parse(
         SAMPLES / "F0955420261110000000.AVL"))
     key = old_rows[0][2] if old_rows else ""
     rec = asyncio.run(reader.query("F09554", key))

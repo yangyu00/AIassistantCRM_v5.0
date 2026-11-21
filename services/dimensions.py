@@ -1,33 +1,32 @@
 # -*- coding: utf-8 -*-
 """在线侧卖点维表只读（``services`` 读取侧之一）。
 
-与 ``services.reader``（业务库只读）并列：本模块只读 ``local_excel2db``
-写入侧产出的 ``dimensions.db``，按 ``product_id`` 批量取 ``selling_points``
-表，供两处在线业务消费：
+与 ``services.reader``（业务库只读）并列：本模块只读磁盘上的
+``dimensions.db``，按 ``product_id`` 批量取 ``selling_points`` 表，供两处在线
+业务消费：
 
 - **商机回捞**：``label_id``（「标签ID」）切成标签 ID 元组，拼辅助画像；
 - **诊断新线兜底**：``product_name``（产品名称）、``match_result``
   （「匹配结果2」的场景标签 ID 列表）与 ``tag_*``（「标签0…标签N」话术单元格），
   见 ``services/diagnosis/fallback.py``。
 
-**契约与写入侧同源，不另写一套列名**：
-
-- 库路径取 ``local_excel2db.config.DB_PATH``（纯常量，零 I/O）；
-- 表名 / 列名 / 主键来自 ``local_excel2db.config.load_registry()`` 里
-  ``selling_points`` 的 ``TableSpec``，即 ``registry.json`` 的声明；
-- 只认 registry 白名单里的列，值一律参数绑定；只读连接 ``mode=ro``。
+**库路径、表名、列名由 ``services.db_config`` 独立声明**，不 import 后台写入侧
+（``local_excel2db``）的任何配置或 registry：写入侧建表用的字段在这里冗余再写
+一遍，读在线侧代码时一眼就能看清 SELECT 了哪些列。字段声明重复是本次解耦
+刻意接受的成本。只认 ``db_config`` 白名单里的列，值一律参数绑定；只读连接
+``mode=ro``。
 
 唯一入口 ``load_selling_points(product_ids)``：一次请求调一次（批量 IN），
-返回 ``{product_id: SellingPointRow}``。写入侧按 ``poll_interval_seconds``
-整表覆盖，所以**不做进程级缓存**，避免新维表不生效；同一请求内靠返回的
-dict 复用，多个相同 ID 只查一次。
+返回 ``{product_id: SellingPointRow}``。写入侧按固定间隔整表覆盖，所以**不做
+进程级缓存**，避免新维表不生效；同一请求内靠返回的 dict 复用，多个相同 ID
+只查一次。
 
 库 / 表 / 必需列缺失或任何查询异常 → 降级返回 ``{}``，不抛给在线接口；
 此时商机对象的标签子集为空、辅助画像为空，诊断兜底也无维表来源（维持原有
 code=2 降级），其余话术段照常输出。
 
 离线自检可用 ``configure(db_path)`` 把查询隔离到临时库（与
-``reader.configure()`` 同风格），不影响写入侧任何路径。
+``reader.configure()`` 同风格），注入只改库文件位置，不改列映射。
 """
 from __future__ import annotations
 
@@ -36,19 +35,14 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from local_excel2db.config import DB_PATH, load_registry
-
-# registry 里 selling_points 的列名。必需列缺失直接降级，可选列缺失填空串。
-_REQUIRED_COLUMNS = ("product_id", "label_id")
-_OPTIONAL_COLUMNS = ("product_name", "selling_point", "fallback_script",
-                     "match_result")
+from services import db_config
 
 # 「标签ID」单元格是多个 ID，样例用换行分隔；兼容竖线 / 逗号 / 分号与全角变体。
 _SPLIT_LABEL_IDS_RE = re.compile(r"[\n\r|｜,，;；]+")
 
 _CHUNK = 500                      # SQLite 绑定参数上限的保守分块
-_DB_PATH = None                   # None → local_excel2db.config.DB_PATH
-_SPEC = None                      # 懒加载的 selling_points TableSpec，进程内缓存一次
+DEFAULT_DIMENSIONS_DB = db_config.default_dimensions_db()
+_DB_PATH = None                   # None → db_config 声明的默认库路径
 
 
 def _warn(msg):
@@ -108,48 +102,20 @@ def split_label_ids(raw, *, unique: bool = True) -> tuple[str, ...]:
 def configure(db_path) -> None:
     """替换读取侧的库路径（仅离线自检 / 单测注入用）。
 
-    传 ``None`` 还原为 ``local_excel2db.config.DB_PATH``。表名与列契约仍来自
-    ``registry.json``，注入只改库文件位置，不改列映射。
+    传 ``None`` 还原为 ``db_config`` 声明的默认库路径。表名与列契约是本模块
+    的静态声明，注入只改库文件位置，不改列映射。
     """
-    global _DB_PATH, _SPEC
+    global _DB_PATH
     _DB_PATH = Path(db_path) if db_path is not None else None
-    _SPEC = None
 
 
 def _db_path() -> Path:
-    return _DB_PATH if _DB_PATH is not None else DB_PATH
+    return _DB_PATH if _DB_PATH is not None else DEFAULT_DIMENSIONS_DB
 
 
-def _spec():
-    """懒加载 selling_points 的 TableSpec；registry 改了重启在线进程生效。"""
-    global _SPEC
-    if _SPEC is None:
-        spec = load_registry().table("selling_points")
-        if spec is None:
-            raise ValueError("registry.json 未注册 selling_points 表")
-        names = set(spec.column_names)
-        missing = [c for c in _REQUIRED_COLUMNS if c not in names]
-        if missing:
-            raise ValueError(
-                f"selling_points 缺必需列 {missing}；请检查 registry.json")
-        _SPEC = spec
-    return _SPEC
-
-
-def _select_columns(spec):
-    """返回 ``(全部 SELECT 列, tag 动态列)``；列名全部来自 registry 白名单。
-
-    ``tag_*`` 顺序取 ``TableSpec.dynamic_columns``（即 registry 的
-    ``dynamic_columns`` 展开结果），与「匹配结果2」的下标一一对齐。
-    """
-    names = set(spec.column_names)
-    cols = list(_REQUIRED_COLUMNS)
-    cols += [c for c in _OPTIONAL_COLUMNS if c in names]
-    tag_cols = tuple(c for c in spec.dynamic_columns if c in names)
-    return cols + list(tag_cols), tag_cols
-
-
-def _row_to_value(row, cols, tag_cols) -> SellingPointRow:
+def _row_to_value(row) -> SellingPointRow:
+    cols = db_config.SELLING_POINTS_SELECT_COLUMNS
+    tag_cols = db_config.SELLING_POINTS_TAG_COLUMNS
     d = dict(zip(cols, row))
     return SellingPointRow(
         product_id=str(d.get("product_id") or "").strip(),
@@ -185,8 +151,7 @@ def load_selling_points(product_ids) -> dict[str, SellingPointRow]:
         return {}
 
     try:
-        spec = _spec()
-        cols, tag_cols = _select_columns(spec)
+        cols = list(db_config.SELLING_POINTS_SELECT_COLUMNS)
         quoted = ", ".join(cols)
         uri = Path(db).resolve().as_uri() + "?mode=ro"
         out: dict[str, SellingPointRow] = {}
@@ -196,10 +161,10 @@ def load_selling_points(product_ids) -> dict[str, SellingPointRow]:
             for start in range(0, len(ids), _CHUNK):
                 chunk = ids[start:start + _CHUNK]
                 placeholders = ", ".join("?" for _ in chunk)
-                sql = (f"SELECT {quoted} FROM {spec.table} "
+                sql = (f"SELECT {quoted} FROM {db_config.SELLING_POINTS_TABLE} "
                        f"WHERE product_id IN ({placeholders})")
                 for row in conn.execute(sql, tuple(chunk)):
-                    value = _row_to_value(row, cols, tag_cols)
+                    value = _row_to_value(row)
                     if value.product_id:
                         out[value.product_id] = value
         finally:

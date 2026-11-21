@@ -2,7 +2,7 @@
 """诊断新线的 AVL 前缀与业务口径常量（纯静态、零 I/O）。
 
 字段口径来自《营销话术字段取数逻辑说明_中英对照版.pdf》与
-《话术涉及表结构.xls》；表注册见 ``sftp_avl2db/table_schemas.py``。
+《话术涉及表结构.xls》；在线侧读取的表字段声明见 ``services/db_config.py``。
 不确定的两处口径（多值分隔符、优先级方向）集中在这里，便于上游确认后只改一处。
 """
 from __future__ import annotations

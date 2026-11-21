@@ -9,7 +9,7 @@ AVL 可以引用同一个名字；不同表结构的 AVL 在这里加一份定�
 ``config.load_profiles()`` 写进 profile，建表 DDL 与空主键跳过判定共用：
 主键列自动补 ``NOT NULL``，``INSERT OR REPLACE`` 按主键幂等。
 
-纯静态、零 I/O；写入侧建表 DDL 与读取侧 ``SELECT *`` 组装 dict 共用列顺序。
+纯静态、零 I/O；列顺序供写入侧建表 DDL 与解析器列数校验使用。
 
 诊断新线 8 张表按「话术涉及表结构.xls」的物理 DDL 与 io_samples 的 AVL 列顺序
 注册；业务口径见「营销话术字段取数逻辑说明」。两处口径不一致时以 xls 物理 DDL
@@ -107,7 +107,7 @@ TABLE_SCHEMAS: Final[Mapping[str, tuple[tuple[str, str], ...]]] = {
 }
 
 
-# 主键注册：与 TABLE_SCHEMAS 同名同键，读写两侧共用。复合主键保证
+# 主键注册：与 TABLE_SCHEMAS 同名同键，写入侧建表 / 幂等 / 跳过判定共用。复合主键保证
 # INSERT OR REPLACE 幂等且不丢样例行；op_time 不进主键（每日全量覆盖最新批次，
 # 与商机回捞 / 控损「同一键只保留一条」的既有口径一致）。
 TABLE_PRIMARY_KEYS: Final[Mapping[str, tuple[str, ...]]] = {
@@ -143,7 +143,7 @@ def schema_of(name: str) -> tuple[tuple[str, str], ...]:
 
 
 def schema_columns(name: str) -> list[str]:
-    """列名顺序（不含类型），写入 DDL 与读取侧组装 dict 共用。"""
+    """列名顺序（不含类型）；写入侧建表 DDL 与解析器列数校验用。"""
     return [c[0] for c in schema_of(name)]
 
 

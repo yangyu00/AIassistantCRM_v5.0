@@ -19,9 +19,9 @@ RUNTIME_DIR = Path(__file__).with_name("runtime")
 
 # AVL 声明表：(AVL 名 / 文件前缀, 项目名)。
 # 项目名同时用于：.env 键前缀（大写）、files/ 与 sqlite_db/ 的目录名。
-# 每个 AVL 的其他静态信息（schema / parser / 是否分表 / 查询声明）都在
-# avl_specs.py；表名自动取 AVL 名，产品 ID 归 main.py，SQLite 连接配置
-# 在 sink/sqlite_sink.py 全局统一，本层都不声明。分表数读
+# 每个 AVL 的其他静态信息（schema / parser / 是否分表）都在 avl_specs.py；
+# 表名自动取 AVL 名，产品 ID 归业务路由，SQLite 连接配置在
+# sink/sqlite_sink.py 全局统一，本层都不声明。分表数读
 # <AVL>_NUM_TABLES（优先）或 <项目>_NUM_TABLES（兜底），见 _num_tables()。
 # 新增 AVL = 这里加一行 + avl_specs.py 加一份声明。
 _AVLS = (
@@ -140,7 +140,7 @@ class TaskProfileConfig:
 
     @property
     def columns(self) -> list[str]:
-        """列名顺序（写入侧 DDL 与读取侧 dict 组装共用）。"""
+        """列名顺序（写入侧建表 DDL 与解析器列数校验用）。"""
         return [c[0] for c in self.schema]
 
     @property
@@ -158,7 +158,7 @@ class TaskProfileConfig:
 def load_profiles(runtime_dir=None) -> dict[str, TaskProfileConfig]:
     """读包内 ``.env``、按 AVL 装配、跑契约校验，返回冻结的 profile 表。
 
-    ``runtime_dir=None`` → 包内 ``runtime/``（生产 / 在线侧都用这个）。
+    ``runtime_dir=None`` → 包内 ``runtime/``（写入侧默认产出目录）。
     显式传目录 → 产出隔离到该目录；相对路径按 CWD 解析，部署建议用绝对路径
     或把 ``runtime/`` 做成软链。
 

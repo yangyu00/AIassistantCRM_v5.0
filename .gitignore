@@ -2,6 +2,7 @@
 .env
 !IOP/.env
 sftp_avl2db/.env
+services/.env
 !IOP/.env.example
 !sftp_avl2db/.env.example
 # call_stat/.env 不含凭据，作为默认配置随仓库提交

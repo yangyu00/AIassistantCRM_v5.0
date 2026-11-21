@@ -25,7 +25,8 @@ IOP 标签与卖点维表行映射不再让控损 / 诊断 / 兜底被动继承�
 
 **包根零 I/O**：所有业务对象与读取侧都在 ``__getattr__`` 里延迟导出，
 ``import services`` 不读 ``.env``、不连库、不加载 fastapi / aiohttp。
-显式访问 ``services.reader`` 或任一业务对象时才会装配读取侧 profiles。
+显式访问 ``services.reader`` 或任一业务对象时才会装配本层 ``db_config``
+的读取配置；各 db 文件、表字段与查询声明都在本层独立维护。
 """
 from __future__ import annotations
 
@@ -36,7 +37,7 @@ _LAZY_EXPORTS = {
     "AuxiliaryPortrait": ("product_info_raw", "AuxiliaryPortrait"),
     "ProductInfoRaw": ("product_info_raw", "ProductInfoRaw"),
     "build_auxiliary_portrait": ("product_info_raw", "build_auxiliary_portrait"),
-    # 卖点维表读取侧（显式访问才装配 registry 契约）
+    # 卖点维表读取侧（显式访问才装配本层 db_config 配置）
     "SellingPointRow": ("dimensions", "SellingPointRow"),
     "split_label_ids": ("dimensions", "split_label_ids"),
     "load_selling_points": ("dimensions", "load_selling_points"),

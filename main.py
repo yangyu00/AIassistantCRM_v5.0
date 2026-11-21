@@ -51,13 +51,12 @@ async def lifespan(app: FastAPI):
         flush()
 
 
-# 数据更新（SFTP 拉取 → SQLite 入库）由 sftp_avl2db 每个 AVL 各一个独立进程负责
-# （运行时数据目录为包内 runtime/）；
-# 卖点维表写入由 python -m local_excel2db 独立进程负责（只写，产物在包内 runtime/），
-# 本进程经 services.dimensions 每请求只读一次它的 dimensions.db，取商机标签 ID
-# 子集与诊断兜底所需的产品名称 /「匹配结果2」/「标签N」话术。
-# 本进程经 services.reader 只读 sftp_avl2db 产出的业务库，唯一写入是调用量统计
-# （call_stat/runtime/call_sum.db，配置与产物都在 call_stat/ 包内）。
+# 后台写入侧（sftp_avl2db / local_excel2db）各自独立进程把数据写进磁盘；
+# 本进程只读磁盘上的 db 文件：读哪些库、库里有哪些列、怎么查，全部由
+# services/db_config.py 独立声明，不引用后台写入侧的任何代码或配置。
+# 每请求经 services.dimensions 批量只读一次 dimensions.db（商机标签 ID 子集与
+# 诊断兜底所需的产品名称 /「匹配结果2」/「标签N」话术），经 services.reader
+# 只读业务库；唯一写入是调用量统计（call_stat/runtime/call_sum.db）。
 app = FastAPI(lifespan=lifespan)
 register_errors_handlers(app)
 app.middleware("http")(count_call_middleware)

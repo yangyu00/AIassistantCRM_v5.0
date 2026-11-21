@@ -9,7 +9,7 @@
     LogSink                日志出口
     Sleeper                轮询休眠（可替换成立即返回）
 
-本包不含任何只读查库 / 业务 dict 重建契约，在线读取侧已整体删除。
+本包只写库，不含任何只读查库 / 业务 dict 重建契约。
 """
 from __future__ import annotations
 

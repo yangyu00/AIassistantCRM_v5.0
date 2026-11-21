@@ -8,7 +8,7 @@
 > - [`call_stat/Readme.md`](call_stat/Readme.md)（运行参数改 `call_stat/.env`，库与 CSV 落在包内 `runtime/`，可 `python -m call_stat` 独立调用）
 >
 > 在线业务层单独一份说明：
-> - [`services/README.md`](services/README.md)（四类路由、三类业务话术对象、读取侧与降级；**不是可独立复用组件**）
+> - [`services/README.md`](services/README.md)（四类路由、三类业务话术对象、**独立维护的读取配置**与降级；**不是可独立复用组件**）
 >
 > 另有两份随仓库提交的辅助说明（`tests/`、`io_samples/` 不是可独立复用组件）：
 > - [`tests/README.md`](tests/README.md)（手工冒烟脚本：requests 打在线接口 + IOP 直连，**不是 pytest 单元测试**）
@@ -16,7 +16,7 @@
 
 > 各包的说明进各自目录，在线业务与全局视角留在本文件。
 
-> 在线 API 的运行参数（端口、路由、日志目录）内联在 `main.py` 顶部常量区；四个组件的配置与运行时产物都锚在各自包内（`.env` / `registry.json` / `runtime/`），按 `__file__` 定位、与启动 CWD 无关。
+> 在线 API 的运行参数（端口、路由、日志目录）内联在 `main.py` 顶部常量区；四个组件的配置与运行时产物都锚在各自包内（`.env` / `registry.json` / `runtime/`），按 `__file__` 定位、与启动 CWD 无关。在线业务侧读哪些库、库里有哪些列由 `services/db_config.py` / `services/.env` 独立声明，不引用写入侧配置。
 
 > 第四个可独立复用组件 `call_stat/` 提供在线调用量统计，配置与产物均内聚在包目录内，见下文「调用量统计接入」。
 
@@ -43,7 +43,7 @@
 ```
 写入侧：sftp_avl2db/runtime/sqlite_db/{项目名}/{AVL}.db
               │
-              │（只读；共用 avl_specs / table_schemas / load_profiles 静态契约）
+              │（只读；在线侧按 services/db_config.py 自己的配置定位文件）
               ↓
 在线侧：services/reader.py ──→ services/routing.py（四类路由）──→ 产品对象 ──→ main.py（响应组装）
               │                       │
@@ -64,11 +64,15 @@
 > `sftp_avl2db/runtime/` 与 `local_excel2db/runtime/` 都是**运行时数据目录**
 > （写入侧产出：`sqlite_db/` `state/` `log/`，前者另有 `files/`），配置在各自包内
 > （`.env` / `registry.json`），全部按 `__file__` 定位、与 CWD 无关。
-> 在线侧只读 `sftp_avl2db` 业务库；库内表名恒等于 AVL 名（分表为 `{AVL}_{分表号}`）。
+> 在线侧只读磁盘上的业务库；库路径、表字段、查询键与分表数由
+> `services/db_config.py` / `services/.env` **独立声明**，不引用写入侧配置；
+> 库内表名恒等于 AVL 名（分表为 `{AVL}_{分表号}`）。
 > `local_excel2db` 的输入固定为项目根 `excels/`（`source` 只允许纯文件名），
 > 产物固定落在包内 `runtime/`，registry 与 CLI 都不提供路径覆盖；在线侧经
-> `services/dimensions.py` 以 `mode=ro` 只读 `dimensions.db`，表名 / 列名仍取自
-> `registry.json`，与写入侧同源（**不新增进程、不做进程级缓存**）。
+> `services/dimensions.py` 以 `mode=ro` 只读 `dimensions.db`，表名 / 列名取自
+> `services/db_config.py` 的静态声明（**不新增进程、不做进程级缓存**）。
+> 两侧唯一的交集是磁盘上的 db 文件，改列 / 改分表数 / 改路径须同步两侧声明，
+> 见[解耦改造说明](解耦改造说明.md)。
 > 部署时不要整目录覆盖这两个包，可把各自的 `runtime/` 做成指向数据盘的软链。
 
 | 进程 | 数量 | 职责 |
@@ -206,7 +210,7 @@
 - `ProductInfoRaw` 现在只表示第 4 类兜底对象，不再兼任公共基类。
 
 **标签 ID 子集不再硬编码**：在线侧每请求从卖点维表 `selling_points` 表按
-`product_id` 查该行「标签ID」列（`registry.json` 映射为 `label_id`），拆成保序
+`product_id` 查该行「标签ID」列（`services/db_config.py` 声明为 `label_id`），拆成保序
 去重的 ID 元组；号码对应的名称与值仍来自 IOP 返回。维表决定「查哪些 ID」，
 IOP 决定「这些 ID 叫什么、值是多少」，两者职责分开。「标签ID」单元格按换行 /
 竖线 / 逗号 / 分号（含全角）拆分、去空、保序去重，见
@@ -225,7 +229,7 @@ IOP 决定「这些 ID 叫什么、值是多少」，两者职责分开。「标
 
 ## 调用量统计接入（`call_stat/`）
 
-调用量统计由独立模块 `call_stat/` 提供：配置唯一来源是 `call_stat/.env`，库与 CSV 恒落在 `call_stat/runtime/`。组件自身的入口、配置、链路、不变量、降级、部署与自检全部记在 [`call_stat/Readme.md`](call_stat/Readme.md)；在线侧运行参数（端口、路由、日志目录）集中在 `main.py` 顶部。卖点维表同理：写入侧配置锚在 `local_excel2db/registry.json`、产物锚在 `local_excel2db/runtime/`，输入固定为项目根 `excels/`；在线只读侧在 `services/dimensions.py`，共用同一份 registry 契约。
+调用量统计由独立模块 `call_stat/` 提供：配置唯一来源是 `call_stat/.env`，库与 CSV 恒落在 `call_stat/runtime/`。组件自身的入口、配置、链路、不变量、降级、部署与自检全部记在 [`call_stat/Readme.md`](call_stat/Readme.md)；在线侧运行参数（端口、路由、日志目录）集中在 `main.py` 顶部。卖点维表同理：写入侧配置锚在 `local_excel2db/registry.json`、产物锚在 `local_excel2db/runtime/`，输入固定为项目根 `excels/`；在线只读侧在 `services/dimensions.py`，库路径与列声明由 `services/db_config.py` 独立维护。
 
 集成层只做三件事（都在 `main.py`）：
 
@@ -267,8 +271,8 @@ python -m call_stat --self-check
   换算）、**业务包按业务名命名（无历史别名、商机 / 控损重构前后输出等价）**、
   `query()` 单条查询回归与 `main.py` 三类路由输出，结论应为 `ALL PASS`。
 
-- **卖点维表 → 商机画像自检**（同一脚本 1d 节）：按 `registry.json` 的
-  `selling_points` 列定义建临时 `dimensions.db`，插 3 行商机 ID；断言换行 / 竖线
+- **卖点维表 → 商机画像自检**（同一脚本 1d 节）：按 `services/db_config.py` 的
+  `SELLING_POINTS_*` 声明建临时 `dimensions.db`，插 3 行商机 ID；断言换行 / 竖线
   分隔的「标签ID」列被拆成保序去重元组、商机 `queried_label_ids` 与
   `auxiliary_portrait` 来自维表（用与旧固定集完全不同的 ID 验证）、库缺失与
   未命中降级为空画像且不抛异常；在线路由段再用 IOP 桩端到端验证
@@ -284,8 +288,9 @@ python -m call_stat --self-check
 
 - **`F09633` 分表自检**（同一脚本 1c 节）：建满 128 张 `F09633_{i}`、样例号码只落在
   `crc32(product_no) % 128` 指定的那一张、`reader.query_many(where={"product_no": telnum})`
-  能精确定位、缺 `product_no` 时降级 `[]` 而不广播。分表数由
-  `sftp_avl2db/.env` 的 `F09633_NUM_TABLES` 提供，写入侧与读取侧共用同一口径。
+  能精确定位、缺 `product_no` 时降级 `[]` 而不广播。分表数在两侧各自声明
+  （`sftp_avl2db/.env` 与 `services/.env` 的 `F09633_NUM_TABLES`），自检会断言
+  两侧分表口径一致。
 
 - **按业务声明 IOP / 画像依赖**：`iop_need()` 对商机 3 个 ID 返回
   `PORTRAIT`、控损返回 `NONE`、其余（含维表里存在的业务 ID）返回

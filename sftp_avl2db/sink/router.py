@@ -3,7 +3,7 @@
 
 ``{db_dir}/{avl}.db`` 是该 AVL 唯一的库文件；库内表名**恒以 AVL 名为基准**：
 固定表就叫 ``{avl}``，分表叫 ``{avl}_{分表号}``（分表号口径来自 avl_specs）。
-表名由 ``table_name()`` 统一派生，读写两侧共用。
+表名由 ``table_name()`` 统一派生，写入侧建表与逐行路由共用。
 """
 from __future__ import annotations
 
