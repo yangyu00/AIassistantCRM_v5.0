@@ -23,7 +23,7 @@
 > **职责边界**：四个可独立复用组件的说明只描述组件自身（入口、配置、链路、约束）；
 > 在线业务层的分层、四类路由与对外接口记在
 > [`services/README.md`](services/README.md)；`main.py` 如何调用与编排组件——
-> IOP 客户端的进程级共享、按业务决定是否查询、标签进入产品对象的路径——
+> IOP 客户端的进程级共享、按业务决定是否查标签、标签进入产品对象的路径——
 > 统一记在本文件「请求处理与路由」。
 
 > 诊断新线 8 个 AVL（`F09627`～`F09633` / `F09635`）注册在 `sftp_avl2db`，
@@ -115,25 +115,26 @@
 连接、重复刷新 token；**标签结果不共享**，仍按请求隔离（见步骤 1 与下文
 「请求内隔离」）。
 
-是否发起 IOP 查询由 `iop_need(product_id)` 逐 ID 声明（`NONE` / `PORTRAIT` /
-`RAW_LABELS`）；`IopLabelProvider` 在请求内惰性取一次标签，保证一次请求最多查
-一次、结果在 `productId` 循环内被各产品对象复用。`get_customer_labels()` 的
-返回值（任何失败统一降级为 `{}`）作为 `custom_label_info` 传给对象工厂：商机
-的 `AuxiliaryPortrait` 用它拼装 `queried_label_nvs` 与 `auxiliary_portrait`，
-诊断取数用它判定兜底场景标签；声明 `NONE` 的分支直接传 `{}`，连查询都不发生。
+是否发起 IOP 查询由 `services/routing.py::need_labels(product_id)` 逐 ID 声明
+（控损不查，其余都查）；声明只回答「查不查标签」，不回答「拼不拼画像」。
+`IopLabelProvider` 在请求内惰性取一次标签，保证一次请求最多查一次、结果在
+`productId` 循环内被各产品对象复用。`get_customer_labels()` 的返回值（任何失败
+统一降级为 `{}`）作为 `custom_label_info` 传给对象工厂：商机的
+`AuxiliaryPortrait` 用它拼装 `queried_label_nvs` 与 `auxiliary_portrait`，
+诊断取数用它判定兜底场景标签；不需要标签的分支直接传 `{}`，连查询都不发生。
 
 在此前提下，请求内的编排步骤为：
 
-1. 在请求处理函数内创建 `IopLabelProvider`（标签惰性提供者）与空的
-   `portrait_cache`；二者都是函数局部变量，不跨请求共享。
+1. 在请求处理函数内创建 `IopLabelProvider`（标签惰性提供者）；它是函数局部
+   变量，不跨请求共享。画像由商机对象自己拼，编排层不建任何缓存。
 2. 在循环外调一次 [`services.dimensions.load_selling_points()`](services/README.md)，
    按本次全部 `productId` 批量 `IN` 查 `selling_points` 表，得到
    `{product_id: SellingPointRow}`（核心是该行「标签ID」列拆出的 `label_ids`）；
    显式传给对象工厂，由工厂按业务只转发给真正消费的对象，避免一个对象读一次库。
-3. 按 `productId` 列表逐个建对象：先由 `iop_need(product_id)` 声明该 ID 对
-   IOP 标签的依赖，非 `NONE` 时经提供者取标签（整请求最多 1 次），再调
+3. 按 `productId` 列表逐个建对象：先由 `need_labels(product_id)` 判断是否
+   需要 IOP 标签，需要时经提供者取标签（整请求最多 1 次），再调
    [`services.build_product_object()`](services/README.md) 完成路由判定、取数与
-   对象构造（顺序不可调换）：
+   对象构造（顺序不可调换）。工厂只收标签与维表行，不再接收画像缓存：
 
 | 顺序 | 条件（ID 来自 services/routing.py 路由表） | 数据源 | 业务对象 |
 |---|---|---|---|
@@ -156,32 +157,45 @@
 [`诊断新线_在线链路实现说明.md`](诊断新线_在线链路实现说明.md) 2.1。
 卖点维表**不参与路由判断**：四类路由仍由 `routing.py` 的静态表与业务归属决定。
 
-**按业务声明 IOP / 画像依赖**（`services/routing.py::iop_need()`，由该模块的
+**按业务声明 IOP 查询依赖**（`services/routing.py::need_labels()`，由该模块的
 路由集合派生；判定按全部 `productId` 取并集，不短路到第一个）：
 
-| 业务 | 声明 | IOP 标签 | 画像 |
-|---|---|---|---|
-| 商机回捞 3 个 ID | `PORTRAIT` | 取 | 取，按 `product_id` 在一次请求内复用 |
-| 控损 | `NONE` | **不取** | 不计算 |
-| 诊断新线 / 兜底 | `RAW_LABELS` | 取（正常链路不消费；兜底链路用它判定哪个场景标签 ID 命中） | 不计算 |
+| 业务 | 是否查 IOP 标签 | 辅助画像 |
+|---|---|---|
+| 商机回捞 3 个 ID | 查 | 由商机对象的 `AuxiliaryPortrait` 拼装 |
+| 控损 | **不查** | 无画像组件 |
+| 诊断新线 / 兜底 | 查（正常链路不消费；兜底链路用它判定哪个场景标签 ID 命中） | 无画像组件 |
 
-一次请求内的次数（不含 token 刷新，刷新次数另见 [`IOP/README.md`](IOP/README.md) 的「并发与可靠性约束 → token 单飞」）：
+「是否生成画像」不再是一层需要传递的声明：只有商机对象持有画像组件，
+维表未命中 / 标签子集为空 / IOP 降级为 `{}` 时 `build_auxiliary_portrait()`
+自然返回空串，商机话术的 `if portrait` 就不追加。空输入即空输出，无需
+显式开关，也不需要请求级画像缓存。
 
-| 待查 `productId` 列表 | IOP 标签查询 | 画像拼装 |
+一次请求内的次数（不含 token 刷新，刷新次数另见 [`IOP/README.md`](IOP/README.md)
+的「并发与可靠性约束 → token 单飞」）：
+
+| 待查 `productId` 列表 | IOP 标签查询 | 辅助画像拼装 |
 |---|---|---|
 | 纯控损 | **0** | **0** |
-| 纯商机 / 纯兜底 / 控损+商机 / 控损+兜底 / 三混合 | 1 | 商机不同 ID 数 |
+| 纯商机 / 纯诊断 / 控损+商机 / 三混合 | 1 | 请求里的商机对象数（重复 ID 也各算 1 次） |
 | 3 个不同商机 | 1 | 3 |
-| 同一商机 ID 重复 3 次 | 1 | 1 |
+| 同一商机 ID 重复 3 次 | 1 | 3 |
+
+画像拼装是零 I/O 的纯字符串拼接，结果只缓存在**单个商机对象实例**上
+（话术拼装与日志各读一次，只算一遍）。原先按 `product_id` 跨对象复用的
+请求级缓存已去掉：它不省任何数据库或 IOP 查询，只省一次可以忽略的字符串
+拼接，却要求编排层、对象工厂和组件都多带一个可变状态。真要省重复 ID 的
+开销，应在编排层对 `productId` 去重或缓存整个产品对象的输出，那是明确的
+性能决策，不与「是否生成画像」混在一起。
 
 卖点维表另有 **每请求 1 次**只读查询（与设计稿口径一致，不按产品对象重复读），
 不随 `productId` 数量增长；它不计入上表的 IOP / 画像次数。库缺失时该次查询
-降级为 `{}`，商机标签子集为空、辅助画像为空串（上表的画像拼装次数指
-`build_auxiliary_portrait()` 的按 ID 调用次数，不受此影响）。
+降级为 `{}`，商机标签子集为空、辅助画像为空串。
 
-`custom_label_info` 与 `portrait_cache` 都只在 `marketAssistant` 函数体内创建：
-标签属于单个手机号，放模块级或 `app.state` 缓存会把上一个用户的标签带给
-下一个用户，不报错、只在话术里悄悄错。
+`IopLabelProvider` 与 `custom_label_info` 都只在 `marketAssistant` 函数体内
+创建：标签属于单个手机号，放模块级或 `app.state` 缓存会把上一个用户的标签
+带给下一个用户，不报错、只在话术里悄悄错。画像结果只挂在当次请求的商机对象
+实例上，随对象一起回收，同样不跨请求共享。
 
 4. 输出：`ProductInfoByOpportunityRecall` / `ProductInfoByLossControl` /
    `ProductInfoByDiagnosis` 三类对象返回 `code: "0"` 带话术；兜底返回
@@ -201,8 +215,8 @@
 日志由基类统一输出，子类通过 `_extra_str_lines()` 追加自己的行。
 
 - `AuxiliaryPortrait`：**商机专属组件**（组合，不是继承）。持有 IOP
-  `custom_label_info`、卖点维表行映射 `selling_point_rows`（旧名
-  `product_selling_point_match_dict` 已废弃）与请求级 `portrait_cache`。
+  `custom_label_info` 与卖点维表行映射 `selling_point_rows`（旧名
+  `product_selling_point_match_dict` 已废弃），画像结果缓存在实例上。
 - 控损 / 诊断新线 / 兜底对象**没有任何画像相关属性**：`routing.build_product_object()`
   按分支只传各自消费的参数。控损只收 `record`；诊断的 IOP 标签与维表行在
   `build_diagnosis_record()` 取数阶段用完，对象只收结构化 `record`；兜底只收
@@ -222,10 +236,11 @@ IOP 决定「这些 ID 叫什么、值是多少」，两者职责分开。「标
 `标签名: <strong><span style="color:blue;">值</span></strong>; `，跳过空值，
 最后补 `【辅助画像】` 前缀与 `rstrip`。不做名称映射或按标签 ID 硬编码的值转换。
 
-只有声明 `PORTRAIT` 的商机对象会拿到 `portrait_cache`（`main.py` 在请求内
-创建的空 dict），按 `product_id` 查/算并写入；传 `None` 时 `auxiliary_portrait`
-直接返回 `""`，**连 `build_auxiliary_portrait()` 都不进**。缓存只在函数内
-创建、不跨请求共享，同一商机 ID 在一次请求里重复出现也只拼一次。
+`build_auxiliary_portrait()` 是全链路唯一的画像入口，也是唯一的「不生成」
+判定：空列表或全空值直接返回 `""`，商机话术里 `if portrait` 就不追加这一段。
+只有商机对象会创建 `AuxiliaryPortrait`，控损 / 诊断 / 兜底连组件都没有；
+结果只缓存在当前对象实例上，话术拼装与日志各读一次只算一遍，不跨对象、
+不跨请求共享，编排层也不需要传任何缓存进来。
 
 ## 调用量统计接入（`call_stat/`）
 
@@ -292,18 +307,19 @@ python -m call_stat --self-check
   （`sftp_avl2db/.env` 与 `services/.env` 的 `F09633_NUM_TABLES`），自检会断言
   两侧分表口径一致。
 
-- **按业务声明 IOP / 画像依赖**：`iop_need()` 对商机 3 个 ID 返回
-  `PORTRAIT`、控损返回 `NONE`、其余（含维表里存在的业务 ID）返回
-  `RAW_LABELS`；判定按全部 `productId` 取并集，把控损 ID 排在商机之前也不能
-  漏查。
+- **按业务声明 IOP 查询依赖**：`need_labels()` 对控损 ID 返回 `False`、其余
+  （含商机与维表里存在的业务 ID）返回 `True`；判定按全部 `productId` 取并集，
+  把控损 ID 排在商机之前也不能漏查。控损请求不应发起任何 IOP 标签查询。
 
-- **画像次数**：打桩 `build_auxiliary_portrait()`，控损与非商机 ID
-  落兜底应为 **0** 次；纯商机 **1** 次；3 个不同商机 **3** 次；同一商机 ID 重复 3 次
-  仍 **1** 次；混合请求等于该请求里不同的商机 `product_id` 数。
-- **请求内隔离**：`IopLabelProvider` 与 `portrait_cache` 都在 `marketAssistant`
-  函数体内创建，模块级 / `app.state` 不应有标签或画像缓存；连续两个不同手机号
-  请求，响应互不串标签值、画像缓存也不串。提供者同实例第二次 `labels()`
-  不再发起查询、异常仍降级 `{}` 且不抛 500。
+- **画像归属**：控损 / 诊断 / 兜底对象不持有 `portrait`、`_portrait`、
+  `custom_label_info`、`selling_point_rows` 与画像相关 property；只有商机对象
+  拼画像。维表未命中或 IOP 降级为 `{}` 时 `auxiliary_portrait` 为空串，
+  `output_script` 不含 `【辅助画像】`，不需要显式开关。
+- **请求内隔离**：`IopLabelProvider` 与 `custom_label_info` 都在
+  `marketAssistant` 函数体内创建，模块级 / `app.state` 不应有标签缓存；画像
+  结果只挂在当次请求的商机对象实例上，随对象回收。连续两个不同手机号请求，
+  响应互不串标签值、也不串画像。提供者同实例第二次 `labels()` 不再发起查询、
+  异常仍降级 `{}` 且不抛 500。
 
 - `app.router.on_startup` / `on_shutdown` 均为 0，`router.lifespan_context` 已设置
   （确认走 lifespan 而非 `on_event`）；startup 日志有「调用量统计已恢复」。
@@ -344,13 +360,15 @@ python -m call_stat --self-check
   「IOP 无场景标签」的判定集中在 `fallback.has_scene_labels()`；「标签N」分段
   解析集中在 `fallback.parse_tag_script()`，三处口径要改都只改一处。
 
-**已实现**（见「请求处理与路由」「公共画像拼装」与「自检要点」）：按业务声明
-IOP / 画像依赖的三态声明、请求级惰性标签提供者、画像按 `product_id` 懒执行
-缓存、卖点维表每请求只读 1 次并据此取商机标签 ID 子集与诊断兜底内容（产品名 /
-「匹配结果2」/「标签N」），诊断任一环节失败输出四段兜底话术。
+**已实现**（见「请求处理与路由」「对象模型与辅助画像」与「自检要点」）：
+按业务声明 IOP 查询依赖的布尔判定、请求级惰性标签提供者、辅助画像由商机
+对象自行拼装并只缓存在实例上、卖点维表每请求只读 1 次并据此取商机标签 ID
+子集与诊断兜底内容（产品名 /「匹配结果2」/「标签N」），诊断任一环节失败
+输出四段兜底话术。
 
 **待优化**：诊断取数目前按产品 ID 逐个查库，一次请求多个产品 ID 时可加请求内
-缓存减少重复查询。
+缓存减少重复查询；若同一 `productId` 在请求里重复出现，也应在编排层去重或
+缓存整个产品对象的输出，而不是在业务对象里按 ID 复用局部结果。
 
 - [`tests/`](tests/README.md) 收录手工冒烟脚本（在线接口、入参校验、调用量统计、
   IOP 直连），端口与 `main.py` 一致为 8989；它们都是「跑一次、直接请求、打印返回」

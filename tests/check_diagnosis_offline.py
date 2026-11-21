@@ -285,7 +285,7 @@ def main():
         SCENE_IDS[1]: ("场景标签壹", "命中"),
     }
     opp_obj = ProductInfoByOpportunityRecall(
-        "202608041615335173", iop_stub, sp_opp, record={}, portrait_cache={})
+        "202608041615335173", iop_stub, sp_opp, record={})
     check("商机 queried_label_ids 来自维表",
           opp_obj.queried_label_ids == ["DIM_LABEL_A", "DIM_LABEL_B"],
           str(opp_obj.queried_label_ids))
@@ -347,7 +347,7 @@ def main():
     check("维表库缺失 → {}（不抛异常）",
           dimensions.load_selling_points(["202608041615335173"]) == {})
     empty_obj = ProductInfoByOpportunityRecall(
-        "202608041615335173", iop_stub, {}, record={}, portrait_cache={})
+        "202608041615335173", iop_stub, {}, record={})
     check("维表未命中 → 标签子集空、画像空",
           empty_obj.queried_label_ids == [] and empty_obj.auxiliary_portrait == "")
     # 还原到有效的临时维表库：第 7 段在线路由会读它，端到端验证「维表 → 画像 / 兜底」。
@@ -376,7 +376,7 @@ def main():
         "reason_note": "每月多 10 元",
     }
     opp_full = ProductInfoByOpportunityRecall(
-        "202608041615335173", {}, {}, opp_rec, None)
+        "202608041615335173", {}, {}, opp_rec)
     expected_opp = (
         "<strong>【通话总结】</strong>通话摘要<br>"
         '<strong>【用户需求】</strong><strong><span style="color:blue;">资费：</span></strong>想降费<br>'
@@ -391,7 +391,7 @@ def main():
           opp_full.product_name == "号卡业务回捞商机", str(opp_full.product_name))
     check("商机空 record → 空话术",
           ProductInfoByOpportunityRecall(
-              "202608041615335173", {}, {}, {}, None).output_script == "")
+              "202608041615335173", {}, {}, {}).output_script == "")
 
     check("控损组合标签 B/I/颜色 + 逆序闭合",
           parse_custom_tags("<$B$I#0070C0>加粗斜体蓝色</> 尾巴") ==
@@ -408,13 +408,12 @@ def main():
           == "无历史话术记录")
 
     print("=== 1g. 对象依赖按业务收窄（画像只属于商机）===")
-    portrait_attrs = ("portrait", "portrait_cache", "_portrait_cache",
-                      "custom_label_info", "selling_point_rows",
-                      "queried_label_ids", "queried_label_nvs",
-                      "auxiliary_portrait")
+    portrait_attrs = ("portrait", "_portrait", "custom_label_info",
+                      "selling_point_rows", "queried_label_ids",
+                      "queried_label_nvs", "auxiliary_portrait")
     for label, obj in (("控损", loss_obj), ("诊断", fb_obj),
                        ("兜底", ProductInfoRaw("x", sp))):
-        check(f"{label}不持有画像 / 标签 / 维表 / 缓存字段",
+        check(f"{label}不持有画像 / 标签 / 维表 / 实例缓存字段",
               all(not hasattr(obj, attr) for attr in portrait_attrs),
               str([a for a in portrait_attrs if hasattr(obj, a)]))
         check(f"{label}仍继承极简公共基类", isinstance(obj, ProductInfoBase))
@@ -629,7 +628,7 @@ def main():
               "【辅助画像】" in opp_script and "维度标签A" in opp_script
               and "维度标签B" in opp_script,
               opp_script[:120])
-        check("诊断 script 不带辅助画像（非 PORTRAIT）",
+        check("诊断 script 不带辅助画像（诊断业务不拼画像）",
               "【辅助画像】" not in (d.get("script") or ""))
         fb_resp = by_id.get(FALLBACK_PID, {})
         fb_script = fb_resp.get("script") or ""

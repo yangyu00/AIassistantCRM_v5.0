@@ -8,11 +8,12 @@ from services.product_info_raw import AuxiliaryPortrait, ProductInfoBase
 class ProductInfoByOpportunityRecall(ProductInfoBase):
     """号卡 / 套餐 / 宽带三类商机回捞的业务对象。
 
-    四类对象里**只有商机**需要辅助画像：卖点维表行映射、IOP 标签与请求级
-    ``portrait_cache`` 全部收在 ``self.portrait``（``AuxiliaryPortrait`` 组件）里，
-    用组合代替继承，控损 / 诊断 / 兜底不再被动带上这些字段。对外仍暴露
-    ``selling_point_rows`` / ``queried_label_ids`` / ``queried_label_nvs`` /
-    ``auxiliary_portrait``，供话术拼装、日志与离线自检使用。
+    四类对象里**只有商机**需要辅助画像：IOP 标签与卖点维表行映射收在
+    ``self.portrait``（``AuxiliaryPortrait`` 组件）里，用组合代替继承，控损 /
+    诊断 / 兜底不再被动带上这些字段。组件自己按需拼画像并缓存在实例上，
+    对外仍暴露 ``selling_point_rows`` / ``queried_label_ids`` /
+    ``queried_label_nvs`` / ``auxiliary_portrait``，供话术拼装、日志与离线自检
+    使用。标签子集或 IOP 标签为空时画像为空串，不需要额外的开关参数。
     """
 
     PRODUCT_NAMES = {
@@ -22,11 +23,11 @@ class ProductInfoByOpportunityRecall(ProductInfoBase):
     }
 
     def __init__(self, product_id, custom_label_info, selling_point_rows,
-                 record=None, portrait_cache=None):
+                 record=None):
         super().__init__(product_id,
                          product_name=self.PRODUCT_NAMES.get(product_id))
         self.portrait = AuxiliaryPortrait(
-            product_id, custom_label_info, selling_point_rows, portrait_cache)
+            product_id, custom_label_info, selling_point_rows)
         self.record = record
         self.output_script = self._build_output_script()
 

@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, field_validator
 from IOP import IOPClient
 from call_stat import startup, flush, count_call_middleware, build_router
 from services import (
-    BUSINESS_OBJECT_TYPES, IopNeed, build_product_object, dimensions, iop_need,
+    BUSINESS_OBJECT_TYPES, build_product_object, dimensions, need_labels,
 )
 from src.exceptions import telnumError, productIdError, register_errors_handlers
 from src.log_util import my_log, configure_logging
@@ -22,7 +22,7 @@ FASTAPI_CONFIG = {"host": "0.0.0.0", "port": 8989, "reload": False}
 MARKET_ASSISTANT_URL = "/api/speechQryService"
 MARKET_ASSISTANT_USERS = ["CRM"]
 
-# 业务路由（product_id → AVL 前缀、IOP 依赖、产品对象工厂）统一在
+# 业务路由（product_id → AVL 前缀、是否查 IOP 标签、产品对象工厂）统一在
 # services/routing.py，由 services/__init__.py 导出；本文件只保留在线服务的
 # 运行参数与请求级编排。分层与四类路由见 services/README.md。
 
@@ -126,9 +126,6 @@ async def marketAssistant(args: Args):
     # 标签提供者按请求创建：标签属于单个手机号，不能放在模块级或 app.state
     # 缓存，否则会把上一个用户的标签带给下一个用户且不会报错
     label_provider = IopLabelProvider(args.telnum)
-    # 画像按 product_id 在一次请求内共享：同一 ID 重复出现只拼一次。
-    # 只在请求处理函数内创建，避免把某个用户的画像串给下一个用户
-    portrait_cache = {}
 
     # 2. 建立产品对象列表
     # 卖点维表按本次请求的全部 product_id 批量查一次（不缓存、不跨请求共享）：
@@ -137,20 +134,18 @@ async def marketAssistant(args: Args):
         [one.id for one in args.productId])
     product_obj_list = []
     for one_product_obj in args.productId:
-        # 逐产品 ID 声明标签依赖；提供者保证整请求最多查一次 IOP。
-        # 逐个判断等价于对全部 ID 取并集，不会因首个 ID 不需要而漏查
-        need = iop_need(one_product_obj.id)
+        # 是否查标签由业务层 need_labels() 声明；提供者保证整请求最多查一次 IOP。
+        # 逐个判断等价于对全部 ID 取并集，不会因首个 ID 不需要而漏查。
+        # 「要不要拼画像」不在这里判断：只有商机对象持有画像组件，空标签 /
+        # 空标签 ID 子集时它自然返回空串。
         custom_label_info = (await label_provider.labels()
-                             if need != IopNeed.NONE else {})
-        # 只有声明 PORTRAIT 的业务需要画像；其余传 None，连拼装都不发生
-        portrait_cache_for_obj = portrait_cache if need == IopNeed.PORTRAIT else None
+                             if need_labels(one_product_obj.id) else {})
         # 四类路由（商机 / 控损 / 诊断 / 兜底）、取数与对象构造都在
         # services/routing.py::build_product_object；本函数只做请求级编排
         product_obj_list.append(await build_product_object(
             one_product_obj.id, args.telnum,
             custom_label_info=custom_label_info,
-            selling_points=selling_points,
-            portrait_cache=portrait_cache_for_obj))
+            selling_points=selling_points))
 
     # 3. 输出话术
     # 商机回捞 / 控损 / 诊断新线三类业务对象返回 code=0；其余兜底 code=2。

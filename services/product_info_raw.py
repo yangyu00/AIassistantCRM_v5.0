@@ -1,28 +1,25 @@
 # -*- coding: utf-8 -*-
 """产品对象的最小公共形状 + 商机专属的辅助画像组件。
 
-重构前这里把所有业务对象都塞进 ``ProductInfoRaw`` 一个基类：构造时统一接收
-``custom_label_info``、``product_selling_point_match_dict``（卖点维表行映射）与
-``portrait_cache``，并计算 ``queried_label_ids`` / ``queried_label_nvs`` /
-``auxiliary_portrait``。实际上：
+四类对象里只有商机回捞消费 IOP 标签、卖点维表标签 ID 子集与辅助画像：
+控损只消费 ``record['strategy_name']``；诊断新线的 IOP 标签与维表行在
+``build_diagnosis_record()`` 取数阶段就已用掉，对象只消费结构化 ``record``；
+兜底对象什么数据都不需要。
 
-- 只有商机回捞消费标签子集与辅助画像；
-- 控损只消费 ``record['strategy_name']``；
-- 诊断新线的 IOP 标签与维表行在 ``build_diagnosis_record()`` 取数阶段就已用掉，
-  对象只消费结构化 ``record``；
-- 兜底对象什么数据都不需要。
-
-现在拆成三层：
+因此拆成三层：
 
 - ``ProductInfoBase``：**极简公共基类**，只保留所有对象都有的
   ``product_id`` / ``product_name`` / ``output_script`` 与统一的日志输出；
-- ``AuxiliaryPortrait``：**商机专属组件**（组合，不是继承），持有 IOP 标签、
-  卖点维表行映射 ``selling_point_rows`` 与请求级 ``portrait_cache``，按需计算画像；
+- ``AuxiliaryPortrait``：**商机专属组件**（组合，不是继承），持有 IOP 标签与
+  卖点维表行映射 ``selling_point_rows``，按需计算画像并把结果缓存在实例上；
 - ``ProductInfoRaw``：第 4 类兜底对象，只继承 ``ProductInfoBase``。
 
-``build_product_object()`` 按业务只传各自需要的参数，控损 / 诊断对象不再接触
-``custom_label_info`` / 维表映射 / 画像缓存；旧的
-``product_selling_point_match_dict`` 属性名（既不像字典内容、也不像它的用途）已删除。
+**「是否生成画像」不是一个开关**：只有商机对象会创建 ``AuxiliaryPortrait``；
+维表未命中 / 标签子集为空 / IOP 降级为 ``{}`` 时，``build_auxiliary_portrait()``
+自然返回空串，商机话术里的 ``if portrait`` 就不会追加。编排层不需要传缓存，
+对象工厂也不需要按业务分发一个画像开关。旧的
+``product_selling_point_match_dict`` 属性名（既不像字典内容、也不像它的用途）
+已删除。
 """
 from __future__ import annotations
 
@@ -31,8 +28,8 @@ def build_auxiliary_portrait(queried_label_nvs):
     """按标签原本的名称与值逐项拼接，不做名称映射或按标签 ID 的值转换。
 
     ``queried_label_nvs`` 由 ``AuxiliaryPortrait`` 按维表给出的标签 ID 顺序与
-    ``custom_label_info`` 对齐后传入；函数只读入参、不访问对象状态，只在需要画像
-    时调用，结果按 ``product_id`` 在一次请求内复用。
+    ``custom_label_info`` 对齐后传入；函数只读入参、不访问对象状态。空列表或
+    全空值直接返回空串，这就是「不生成画像」的唯一路径。
     """
     portrait_str = ""
     for label_nv in queried_label_nvs:
@@ -75,25 +72,25 @@ class ProductInfoBase(object):
 
 
 class AuxiliaryPortrait(object):
-    """商机回捞专属：维表行 + IOP 标签 + 请求级画像缓存。
+    """商机回捞专属：维表行 + IOP 标签，按需拼辅助画像。
 
     **组合而非继承**：只有 ``ProductInfoByOpportunityRecall`` 会创建它，其它业务
     对象连这些字段都不存在。``selling_point_rows`` 是
     ``{product_id: SellingPointRow}``（由 ``dimensions.load_selling_points()``
     在请求开始时批量取回），替代旧名 ``product_selling_point_match_dict``。
 
-    ``portrait_cache`` 是 ``main.py`` 在请求内创建的空 dict，按 ``product_id``
-    复用画像：同一 ID 重复出现只拼一次；传 ``None`` 表示该对象不需要画像，
-    ``auxiliary_portrait`` 直接返回空串，连标签子集都不计算。缓存只在函数内
-    创建、不跨请求共享。
+    ``_portrait`` 是**实例级**懒缓存：同一对象的话术拼装与 ``__str__`` 日志会各
+    读一次 ``auxiliary_portrait``，只算一遍即可。它不跨对象、不跨请求共享，
+    也不由 ``main.py`` 传进来——画像只是一次纯字符串拼接，没有需要跨对象
+    复用的 I/O 结果。
     """
 
     def __init__(self, product_id, custom_label_info=None,
-                 selling_point_rows=None, portrait_cache=None):
+                 selling_point_rows=None):
         self.product_id = product_id
         self.custom_label_info = custom_label_info or {}
         self.selling_point_rows = selling_point_rows or {}
-        self._portrait_cache = portrait_cache
+        self._portrait = None
         self._label_ids = None
         self._label_nvs = None
 
@@ -132,13 +129,10 @@ class AuxiliaryPortrait(object):
 
     @property
     def auxiliary_portrait(self):
-        if self._portrait_cache is None:
-            return ""
-        key = self.product_id
-        if key not in self._portrait_cache:
-            self._portrait_cache[key] = build_auxiliary_portrait(
-                self.queried_label_nvs)
-        return self._portrait_cache[key]
+        """按标签名值拼画像；空输入自然返回 ``""``，不设显式开关。"""
+        if self._portrait is None:
+            self._portrait = build_auxiliary_portrait(self.queried_label_nvs)
+        return self._portrait
 
 
 class ProductInfoRaw(ProductInfoBase):

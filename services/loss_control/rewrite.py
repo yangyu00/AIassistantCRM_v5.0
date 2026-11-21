@@ -65,9 +65,9 @@ def parse_custom_tags(text: str) -> str:
 class ProductInfoByLossControl(ProductInfoBase):
     """控损业务话术对象：只消费 ``record['strategy_name']``。
 
-    构造只收 ``(product_id, record)``。IOP 标签、卖点维表行映射与请求级
-    ``portrait_cache`` 在 ``routing.build_product_object()`` 就被截断，本对象
-    不再持有任何画像相关状态（旧版继承 ``ProductInfoRaw`` 时全部被动带上）。
+    构造只收 ``(product_id, record)``。IOP 标签、卖点维表行映射与画像组件在
+    ``routing.build_product_object()`` 就被截断，本对象不再持有任何画像相关
+    状态（旧版继承 ``ProductInfoRaw`` 时全部被动带上）。
     """
 
     def __init__(self, product_id, record=None):

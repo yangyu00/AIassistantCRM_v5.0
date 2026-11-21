@@ -8,7 +8,7 @@
                                  AuxiliaryPortrait + 兜底对象 ProductInfoRaw
       reader.py                  业务库在线读取侧（AVL 前缀，单条 / 多行 / IN）
       dimensions.py              卖点维表在线读取侧（标签 ID / 产品名 / 匹配结果2 / 标签N）
-      routing.py                 业务路由表、IOP 依赖声明、产品对象工厂
+      routing.py                 业务路由表、IOP 查询依赖声明、产品对象工厂
       opportunity_recall/        商机回捞（ProductInfoByOpportunityRecall）
       loss_control/              控损（ProductInfoByLossControl）
       diagnosis/                 诊断新线（取数 / 纯逻辑 / 六段话术 / 卖点维表兜底）
@@ -17,8 +17,8 @@
     ``__init__.py`` 显式导出；不保留按 spec 编号的历史目录名与旧类名别名。
 
 对象模型：所有对象只继承 ``ProductInfoBase``（ID / 名称 / 话术 + 统一日志头）；
-辅助画像用组合挂在商机对象的 ``AuxiliaryPortrait`` 上，``portrait_cache``、
-IOP 标签与卖点维表行映射不再让控损 / 诊断 / 兜底被动继承。
+辅助画像用组合挂在商机对象的 ``AuxiliaryPortrait`` 上，由组件自己拼装并缓存
+在实例上；IOP 标签与卖点维表行映射不再让控损 / 诊断 / 兜底被动继承。
 ``build_product_object()`` 按业务只传各自需要的参数。
 
 ``main.py`` 只做 HTTP 编排，业务对象一律通过 ``build_product_object()`` 取得。
@@ -48,9 +48,8 @@ _LAZY_EXPORTS = {
         "loss_control", "ProductInfoByLossControl"),
     "ProductInfoByDiagnosis": ("diagnosis", "ProductInfoByDiagnosis"),
     "build_diagnosis_record": ("diagnosis", "build_diagnosis_record"),
-    # 路由与 IOP 依赖声明
-    "IopNeed": ("routing", "IopNeed"),
-    "iop_need": ("routing", "iop_need"),
+    # 路由与 IOP 查询依赖
+    "need_labels": ("routing", "need_labels"),
     "build_product_object": ("routing", "build_product_object"),
     "BUSINESS_OBJECT_TYPES": ("routing", "BUSINESS_OBJECT_TYPES"),
     "OPPORTUNITY_RECALL_AVLS": ("routing", "OPPORTUNITY_RECALL_AVLS"),
@@ -93,8 +92,8 @@ __all__ = [
     # 三类业务对象
     "ProductInfoByOpportunityRecall", "ProductInfoByLossControl",
     "ProductInfoByDiagnosis", "build_diagnosis_record",
-    # 路由与 IOP 依赖
-    "IopNeed", "iop_need", "build_product_object", "BUSINESS_OBJECT_TYPES",
+    # 路由与 IOP 查询依赖
+    "need_labels", "build_product_object", "BUSINESS_OBJECT_TYPES",
     "OPPORTUNITY_RECALL_AVLS", "LOSS_CONTROL_AVLS",
     "OPPORTUNITY_RECALL_PRODUCT_IDS", "LOSS_CONTROL_PRODUCT_IDS",
 ]
