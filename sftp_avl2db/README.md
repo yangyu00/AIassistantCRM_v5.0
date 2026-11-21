@@ -222,42 +222,6 @@ python tests/check_purge_rotation.py
 
 断言覆盖：AVL 粒度配置（缺键 fail-fast、项目级键不构成兜底、逐 AVL 独立取值）、7 组并集覆盖 128 张表且组间互斥、`cycle=0` 行为不变、固定表每日全清、每天只触发一次 `purge_expired()`、跨 7 天过期行全部清干净且新鲜行保留、补跑一次全量清。
 
-## F09633 分表
-
-`F09633`（用户场景对应关系）是诊断 8 表里唯一带 `product_no` 的表，千万级行；
-单表全量扫描与写入都吃不消，因此按 `product_no` 分表。
-
-| 项 | 值 |
-|---|---|
-| 声明 | `avl_specs.AVL_SPECS["F09633"].sharded = True` |
-| 分表键 | `product_no`（`conf_user_scene` 第 3 列） |
-| 分表数 | `.env` 的 `F09633_NUM_TABLES`（模板为 128，代码无默认值，缺键 fail-fast） |
-| 表名 | `F09633_0 … F09633_127` |
-| 路由 | `zlib.crc32(str(product_no)) % NUM_TABLES`，`avl_specs.shard_index()` |
-| 主键 | `(product_no, scene)`，同一号码恒在同一分表，幂等语义不变 |
-
-**写入侧自动生效**：`build_layout()` 按 `num_tables` 用 `all_targets()` 建满 128 张表，用 `target()` 逐行路由；`ensure_schema()`、`write()`、`purge_expired()` 都不需要为 F09633 改一行代码。在线业务侧按同一物理口径定位分表，其分表数由 `services/.env` 独立声明，改值必须两侧同步并重灌全量。
-
-### 改分表数：重灌全量
-
-分表数来自 `.env` 的 `F09633_NUM_TABLES`。按当前业务口径**不做历史单表兼容**——不存在「旧固定表 → 分表」的迁移路径，改这个值就是重灌：
-
-1. 停掉 F09633 的写入进程；
-2. 改本包 `.env` 的 `F09633_NUM_TABLES`，并把在线侧 `services/.env` 里它自己声明的分表数改成**相同的值**（两侧键名各自维护，不要求同名）；
-3. 删旧 `F09633.db`（或换 `--runtime-dir`），重跑全量入库：
-
-   ```bash
-   python -m sftp_avl2db --task F09633 --date YYYYMMDD
-   ```
-
-4. 用 `tests/check_diagnosis_offline.py` 或按真实号码回查确认，再恢复写入进程。
-
-> ⚠ **改 `NUM_TABLES` 等于改「号码 → 分表」映射**：运行中热改会让同一号码按新旧口径落进不同分表，历史数据查不到且是静默降级，必须停写重灌。
-
-> ⚠ **过期清理成本**：`op_time` 不在主键里、没有索引，逐表 DELETE 等于全表
-> 扫描。现已支持用 `*_PURGE_CYCLE_DAYS` 把库表清理降频到「每天一次、按天
-> 轮转清部分分表」，见下文「分表 db 的库表清理降频」。代码仍未擅自加索引，
-> 避免影响全量写入速度。
 
 ## 测试与复跑
 
