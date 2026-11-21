@@ -18,7 +18,7 @@
 | `F0955620261110000000.AVL` | `sftp_avl2db` · 商机回捞 | 宽带业务样例，2 行记录 |
 | `F0959120261110000000.AVL` | `sftp_avl2db` · 控损 | 控损样例，40 行；含 `<$B>` / `<$I>` / `<$U>` / `<#RRGGBB>` 自定义标签，供 `rewrite_by_spec_f09591` 的 HTML 转换对照 |
 | `iop_labels_query_raw_response.json` | `IOP` | 标签查询接口的原始响应样例：`res_code` / `res_desc` / `result.BUSIINFO[]`，每项含 `ITEMCODE` / `ITEMNAME` / `ITEMVALUE` |
-| `卖点维表.xlsx` | `local_excel2db` | `product_selling_point_match` 表的格式样例（业务 ID、话术、标签 ID、`标签0…标签27` 等） |
+| `卖点维表.xlsx` | `local_excel2db` | `custom_script` 表的格式样例（业务 ID 表头 → 库列 `product_id`、话术、标签 ID、`标签0…标签27` 等） |
 | `标签转换维表.xlsx` | `local_excel2db` | `label_name_mapping` 表的格式样例，取名为「标签名称--标签ID」的 sheet |
 
 AVL 命名遵循 `{业务前缀}{YYYYMMDD}000000.AVL`，制表符分隔、UTF-8；

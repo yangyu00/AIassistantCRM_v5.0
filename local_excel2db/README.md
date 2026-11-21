@@ -65,7 +65,7 @@ python -m local_excel2db --once --force # 忽略指纹强制重导并递增 vers
 
 | 表 | 主键 | 摘要 |
 |---|---|---|
-| `product_selling_point_match` | `business_id` | 8 个静态列 + 28 个 `tag_*` 动态列 |
+| `custom_script` | `product_id` | 8 个静态列 + 28 个 `tag_*` 动态列；`source` 表头仍为「业务ID」 |
 | `label_name_mapping` | `label_id` | 3 列 |
 
 完整列映射以 `registry.json` 为准。改列映射、主键、标签列数后必须删库重建：
