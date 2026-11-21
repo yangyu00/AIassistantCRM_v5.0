@@ -7,10 +7,15 @@
               落在同一对文件夹里，靠文件名体现归属
 - ``schema``  ``table_schemas.TABLE_SCHEMAS`` 的 key，多个 AVL 可复用同一份
 - ``sharded`` 该 db 内是否按 product_no 分表；无论分不分，都只有一个 db 文件
-- ``where`` / ``order_by`` 在线查询声明
+- ``where`` / ``order_by`` 在线查询声明。商机回捞 / 控损按 ``product_no``；
+              诊断新线的维表没有手机号列，按各自的业务定位键声明（必须是表内列、
+              且属于主键列，由 ``validate_specs()`` 拦漂移）
 
 **不声明表名**：固定表就叫 ``name``，分表叫 ``{name}_{分表号}``，由
 ``table_name()`` 统一派生，写入侧与读取侧共用这一条规则。
+
+**主键不在这里**：按 schema 名集中注册在 ``table_schemas.TABLE_PRIMARY_KEYS``，
+``config.load_profiles()`` 写进 profile，建表 DDL 与解析层共用。
 
 **产品 ID（product_id）不在这里，也不在读取侧**：它属于业务路由，由调用方
 （``main.py``）维护 ``product_id → AVL 前缀`` 的映射后，把 AVL 前缀传进来。
@@ -22,7 +27,7 @@ import zlib
 from dataclasses import dataclass
 from typing import Final, Mapping
 
-# product_no 在两种逻辑记录里都是第 3 列；解析、分表、校验共用这一个名字。
+# 商机回捞两种逻辑记录里 product_no 都在第 3 列；旧解析器与分表路由共用。
 PRODUCT_NO_INDEX: Final = 2
 
 
@@ -50,7 +55,7 @@ class AvlSpec:
     name: str
     project: str
     schema: str                       # table_schemas.py 里的名字
-    parser: str                       # "flat" | "continuation"
+    parser: str                       # "flat" | "continuation" | "dimension"
     sharded: bool = False
     where: tuple[str, ...] = ("product_no",)
     order_by: str | None = "op_time DESC"
@@ -73,6 +78,42 @@ AVL_SPECS: Final[Mapping[str, AvlSpec]] = {
         name="F09591", project="loss_control",
         schema="loss_control", parser="continuation", sharded=True,
     ),
+
+    # ============ 诊断新线（project = diagnosis，8 个 AVL 各一个 db） ============
+    # where = 该表业务定位键（PDF 取数口径）；全部是主键列的子集，保证查询
+    # 命中唯一键或主键前缀。后续多行 / 多条件查询入口在第二步扩展。
+    "F09627": AvlSpec(                       # DIM_MARKET_SCENE_RANK_ONCE
+        name="F09627", project="diagnosis",
+        schema="scene_rank", parser="dimension", where=("scene",),
+    ),
+    "F09628": AvlSpec(                       # DIM_MARKET_PRODUCT_SCENE_ONCE
+        name="F09628", project="diagnosis",
+        schema="product_scene", parser="dimension", where=("business_type",),
+    ),
+    "F09629": AvlSpec(                       # DIM_MARKET_PRODUCT_BUSINESS_ONCE
+        name="F09629", project="diagnosis",
+        schema="product_business", parser="dimension", where=("product_id",),
+    ),
+    "F09630": AvlSpec(                       # DIM_MARKET_SCENE_QRHUASHU_ONCE
+        name="F09630", project="diagnosis",
+        schema="scene_qrhuashu", parser="dimension", where=("scene",),
+    ),
+    "F09631": AvlSpec(                       # DIM_MARKET_PRODUCT_YXHUASHU_ONCE
+        name="F09631", project="diagnosis",
+        schema="product_yxhuashu", parser="dimension", where=("business_type",),
+    ),
+    "F09632": AvlSpec(                       # DIM_MARKET_PRODUCT_WLHUASHU_ONCE
+        name="F09632", project="diagnosis",
+        schema="product_wlhuashu", parser="dimension", where=("business_type",),
+    ),
+    "F09633": AvlSpec(                       # DWD_MARKET_CONF_USER_SCENE_DS
+        name="F09633", project="diagnosis",
+        schema="conf_user_scene", parser="dimension", where=("product_no",),
+    ),
+    "F09635": AvlSpec(                       # TAGID_TAGNAME（xls 未给 DDL）
+        name="F09635", project="diagnosis",
+        schema="tagid_tagname", parser="dimension", where=("tag_id",),
+    ),
 }
 
 
@@ -85,8 +126,8 @@ def spec_of(name: str) -> AvlSpec:
 
 
 def validate_specs(profiles: Mapping[str, object]) -> None:
-    """配置漂移在启动时暴露：AVL 集合、项目归属、表结构、分表声明逐一核对。"""
-    from .table_schemas import TABLE_SCHEMAS, schema_columns
+    """配置漂移在启动时暴露：AVL 集合、项目归属、表结构、主键、分表声明逐一核对。"""
+    from .table_schemas import TABLE_SCHEMAS, schema_columns, schema_primary_key
 
     names = set(profiles)
     if names != set(AVL_SPECS):
@@ -111,14 +152,23 @@ def validate_specs(profiles: Mapping[str, object]) -> None:
             raise ValueError(f"{name}: profile.schema 与 TABLE_SCHEMAS 不一致")
 
         cols = schema_columns(spec.schema)
+        pk = schema_primary_key(spec.schema)
+        if not pk or any(col not in cols for col in pk):
+            raise ValueError(
+                f"{name}: 主键 {pk} 含不在表结构 {spec.schema} 中的列")
+        if tuple(getattr(conf, "primary_key", ())) != tuple(pk):
+            raise ValueError(f"{name}: profile.primary_key 与注册主键不一致")
+
+        if not spec.where:
+            raise ValueError(f"{name}: where 不能为空")
         for col in spec.where:
             if col not in cols:
                 raise ValueError(f"{name}: where 列 {col} 不在表结构 {spec.schema} 中")
-            # 查询键恒为 product_no：产品 ID 等业务字段不进数据访问层。
-            if col != "product_no":
+            # 查询键必须落在主键列上：商机回捞 / 控损是 product_no，
+            # 诊断维表是各自的业务定位键；非主键的业务条件一律留在 main.py。
+            if col not in pk:
                 raise ValueError(
-                    f"{name}: 在线查询只按 product_no 定位，{col} 属业务侧条件，"
-                    "请在 main.py 的路由表处理")
+                    f"{name}: 查询键 {col} 不是主键列；业务侧条件请在 main.py 处理")
 
         # 表名恒由 name 派生，profile 里不再有 table_name / table_name_prefix。
         num_tables = getattr(conf, "num_tables", 0)

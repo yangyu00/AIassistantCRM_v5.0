@@ -2,6 +2,9 @@
 """SQLite 表结构与 SQL 文本生成。
 
 三条 SQL 的拼法约定见 ``README.md``；主键 / 时间列做成字段，方便其他项目替换。
+``primary_key`` 可为单列名或列名元组（复合主键），由 ``from_profile()`` 从
+``profile.primary_key`` 读取——诊断新线的维表主键不再是 ``product_no``。
+主键列自动补 ``NOT NULL``，与 ``local_excel2db`` 的建表口径一致。
 """
 from __future__ import annotations
 
@@ -14,13 +17,24 @@ class TableSchema:
     """一张业务表的列定义与 SQL 生成。"""
 
     columns: tuple[tuple[str, str], ...]
-    primary_key: str = "product_no"
+    primary_key: str | tuple[str, ...] = "product_no"
     time_column: str = "op_time"
 
     @classmethod
     def from_profile(cls, profile) -> "TableSchema":
         """从 ``TaskProfileConfig``（或任何有 ``.schema`` 的对象）构造。"""
-        return cls(columns=tuple(tuple(c) for c in profile.schema))
+        return cls(
+            columns=tuple(tuple(c) for c in profile.schema),
+            primary_key=getattr(profile, "primary_key", "product_no"),
+            time_column=getattr(profile, "time_column", "op_time"),
+        )
+
+    @property
+    def primary_key_columns(self) -> tuple[str, ...]:
+        """主键列统一成元组，单列写法与复合写法共用一条 SQL 生成路径。"""
+        if isinstance(self.primary_key, str):
+            return (self.primary_key,)
+        return tuple(self.primary_key)
 
     @property
     def column_names(self) -> list[str]:
@@ -28,12 +42,19 @@ class TableSchema:
         return [c[0] for c in self.columns]
 
     def column_ddl(self) -> str:
-        """列定义文本：``列名 类型`` 逗号连接。"""
-        return ", ".join(f"{c} {t}" for c, t in self.columns)
+        """列定义文本：``列名 类型`` 逗号连接；主键列补 NOT NULL。"""
+        pk = set(self.primary_key_columns)
+        parts = []
+        for name, decl in self.columns:
+            if name in pk and "NOT NULL" not in decl.upper():
+                decl = f"{decl} NOT NULL"
+            parts.append(f"{name} {decl}")
+        return ", ".join(parts)
 
     def create_table_sql(self, table_name: str) -> str:
+        pk = ", ".join(self.primary_key_columns)
         return (f"CREATE TABLE IF NOT EXISTS {table_name} "
-                f"({self.column_ddl()}, PRIMARY KEY ({self.primary_key}))")
+                f"({self.column_ddl()}, PRIMARY KEY ({pk}))")
 
     def insert_sql(self, table_name: str) -> str:
         names = ", ".join(self.column_names)

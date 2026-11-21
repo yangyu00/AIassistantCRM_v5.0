@@ -28,6 +28,15 @@ _AVLS = (
     ("F09555", "opportunity_recall"),
     ("F09556", "opportunity_recall"),
     ("F09591", "loss_control"),
+    # 诊断新线：8 张维表 / 对应关系表，各一个 db，统一落在 diagnosis/ 目录。
+    ("F09627", "diagnosis"),
+    ("F09628", "diagnosis"),
+    ("F09629", "diagnosis"),
+    ("F09630", "diagnosis"),
+    ("F09631", "diagnosis"),
+    ("F09632", "diagnosis"),
+    ("F09633", "diagnosis"),
+    ("F09635", "diagnosis"),
 )
 
 
@@ -109,7 +118,8 @@ class TaskProfileConfig:
     log_dir: Path
     schema: tuple[tuple[str, str], ...]
     schema_name: str                         # table_schemas.py 里的 key
-    parser: str                              # "flat" | "continuation"
+    primary_key: tuple[str, ...]             # TABLE_PRIMARY_KEYS 注册的主键列（可复合）
+    parser: str                              # "flat" | "continuation" | "dimension"
     sharded: bool                            # 该 db 内是否按 product_no 分表
     num_tables: int                          # 分表数；固定表为 0
     remote_name_tmpl: str
@@ -142,7 +152,7 @@ def load_profiles(runtime_dir=None) -> dict[str, TaskProfileConfig]:
     ``validate_specs()`` 在返回前拦住表结构与声明的漂移。
     """
     from .avl_specs import spec_of, validate_specs
-    from .table_schemas import TABLE_SCHEMAS
+    from .table_schemas import TABLE_PRIMARY_KEYS, TABLE_SCHEMAS
 
     v = _read_env(ENV_PATH)
     root = Path(runtime_dir) if runtime_dir is not None else RUNTIME_DIR
@@ -179,6 +189,7 @@ def load_profiles(runtime_dir=None) -> dict[str, TaskProfileConfig]:
             log_dir=root / "log",
             schema=tuple(TABLE_SCHEMAS[spec.schema]),
             schema_name=spec.schema,
+            primary_key=tuple(TABLE_PRIMARY_KEYS[spec.schema]),
             parser=spec.parser,
             sharded=spec.sharded,
             num_tables=_int(v, f"{key}_NUM_TABLES") if spec.sharded else 0,

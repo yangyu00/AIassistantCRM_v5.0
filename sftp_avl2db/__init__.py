@@ -52,6 +52,7 @@ _LAZY_EXPORTS = {
     "SingleInstanceLock": ("state", "SingleInstanceLock"),
     "build_state": ("state", "build_state"),
     "FlatColumnParser": ("parsers", "FlatColumnParser"),
+    "DimensionFlatParser": ("parsers", "DimensionFlatParser"),
     "ContinuationParser": ("parsers", "ContinuationParser"),
     "build_parser": ("parsers", "build_parser"),
     "TableSchema": ("sink", "TableSchema"),
@@ -83,7 +84,7 @@ __all__ = [
     "RemoteSource", "RecordParser",
     "TableLayout", "RecordSink", "StateStore",
     # 组件（延迟）
-    "FlatColumnParser", "ContinuationParser", "build_parser",
+    "FlatColumnParser", "DimensionFlatParser", "ContinuationParser", "build_parser",
     "TableSchema", "SqliteSink", "build_layout", "build_sink",
     "SftpRemoteSource", "LocalDirRemoteSource", "build_remote_source",
     "FetchedManifest", "SingleInstanceLock", "build_state",

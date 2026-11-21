@@ -30,9 +30,12 @@
 | `标签转换维表.xlsx`                 | `local_excel2db` | `label_name_mapping` 表的格式样例，取名为「标签名称--标签ID」的 sheet                                                    |
 
 AVL 命名遵循 `{业务前缀}{YYYYMMDD}000000.AVL`，制表符分隔、UTF-8、无表头、一行一条记录；
-原四个商机 / 控损样例的日期部分是 `20261110`，新增七个话术诊断样例按
-`话术涉及表结构.xls` 的当天批次取 `20261120`（`F09627`～`F09633`）。字段含义与
-AVL 映射见 [`sftp_avl2db/README.md`](../sftp_avl2db/README.md) 与
+原四个商机 / 控损样例的日期部分是 `20261110`，8 个诊断样例按
+`话术涉及表结构.xls` 的当天批次取 `20261120`（`F09627`～`F09633`，另加
+`F09635` 标签ID-标签名样例；xls 只给出前 7 张表的 DDL）。这 8 个 AVL 已注册进
+`sftp_avl2db` 的 `diagnosis` 项目，可用 `--date 20261120 --local-dir io_samples`
+批量离线复跑；字段含义、表结构 / 主键 / 查询键与 AVL 映射见
+[`sftp_avl2db/README.md`](../sftp_avl2db/README.md) 与
 `sftp_avl2db/avl_specs.py`、`sftp_avl2db/table_schemas.py`。
 
 

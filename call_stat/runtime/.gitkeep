@@ -1,2 +1,0 @@
-# call_stat 运行时产物目录：call_sum.db / export/*.csv / selftest/ 均在此。
-# 由 .gitignore 忽略，仓库只保留本占位文件。

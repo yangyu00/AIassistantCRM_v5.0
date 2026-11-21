@@ -16,6 +16,9 @@
 
 对外只提供一个入口：
     query(avl, telnum)   async，按 AVL 前缀取 op_time 最新一条
+
+第二个参数按 AVL 的 ``where`` 声明绑定：商机回捞 / 控损传手机号，诊断新线的
+维表传各自的业务定位键值。维表多行 / 多条件取数属诊断新线第二步，不在本层。
 """
 import os
 import sqlite3
@@ -53,8 +56,10 @@ def _resolve(avl, telnum):
     table = table_name(avl, shard)
 
     columns = schema_columns(spec.schema)
-    # 查询键恒为 product_no；其它条件属业务侧，不进本层（validate_specs 会拦）。
-    where_values = {"product_no": telnum}
+    # 商机回捞 / 控损的查询键是 product_no；诊断维表按 spec.where 声明的业务
+    # 定位键（scene / business_type / product_id / tag_id 等）查询，第二个参数
+    # 即该键的值。非主键列的业务条件一律留在 main.py（validate_specs 会拦）。
+    where_values = {col: telnum for col in spec.where}
     values = [where_values[col] for col in spec.where]
     where_sql = " AND ".join(f"{col} = ?" for col in spec.where)
     order_sql = f" ORDER BY {spec.order_by}" if spec.order_by else ""

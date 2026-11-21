@@ -104,7 +104,7 @@ class Avl2DbRunner:
         st = self.parser.stats
         self.log.info(
             f"[{prefix}] {filename} 覆盖完成，共 {st.rows} 条，"
-            f"跳过空手机号 {st.skipped} 条")
+            f"跳过空主键 {st.skipped} 条")
 
     # ---- 单轮 ----
     def run_once_for_date(self, date_str: str,
