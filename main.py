@@ -72,7 +72,7 @@ async def lifespan(app: FastAPI):
 # 数据更新（SFTP 拉取 → SQLite 入库）由 sftp_avl2db 每个 AVL 各一个独立进程负责
 # （运行时数据目录为包内 runtime/）；
 # 维表写入由 python -m local_excel2db 独立进程负责（只写，产物在包内 runtime/），
-# 本进程不再读取维表：local_excel2db 的在线读取侧已下线，卖点映射恒为空。
+# 本进程不读取维表，卖点映射固定为空 dict。
 # 本进程只读 sftp_avl2db 业务库，唯一写入是调用量统计
 # （call_stat/runtime/call_sum.db，配置与产物都在 call_stat/ 包内）。
 app = FastAPI(lifespan=lifespan)
@@ -170,8 +170,7 @@ async def marketAssistant(args: Args):
     portrait_cache = {}
 
     # 2. 建立产品对象列表
-    # 维表在线读取侧已下线：卖点映射固定为空 dict（等价于原「无维表」降级），
-    # 仍按原有参数形状传给每个产品对象，不改业务对象接口
+    # 卖点映射固定为空 dict，按业务对象接口传给每个产品对象
     product_selling_point_match_dict = {}
     product_obj_list = []
     for one_product_obj in args.productId:

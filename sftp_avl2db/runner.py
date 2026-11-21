@@ -100,7 +100,7 @@ class Avl2DbRunner:
             return ImportResult(remote_name, ImportStatus.FAILED, detail=f"import: {e}")
 
     def _log_import_done(self, filename: str, prefix: str) -> None:
-        """单文件入库完成计数；一个 AVL 一个任务，日志不再按模式分流。"""
+        """单文件入库完成计数；一个 AVL 一个任务。"""
         st = self.parser.stats
         self.log.info(
             f"[{prefix}] {filename} 覆盖完成，共 {st.rows} 条，"

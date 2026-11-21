@@ -54,7 +54,7 @@ validate_specs(data_query.PROFILES)
 
 DIAG_AVLS = [n for n, s in AVL_SPECS.items() if s.project == "diagnosis"]
 
-PID = "202611200000000001"          # 新增的自洽产品ID
+PID = "202611200000000001"          # 业务键自洽的产品ID
 BT = "套餐焕新融宽直点"              # F09628 样例已有的 BUSINESS_TYPE
 TEL = "15054675009"                 # F09633 样例已有的手机号
 BIZ_NAME = "【五福套餐】流量放心用，月费58元"
@@ -122,7 +122,7 @@ def main():
         p = build_parser(data_query.PROFILES[avl])
         check(f"{avl} 主键下标按注册换算", p.primary_key_indexes == expect,
               f'{p.primary_key_indexes} expect={expect}')
-    # 末列不再被 int() 化：商机 "3" 由 SQLite 亲和性转整数，切入话术保持全文
+    # 末列原样保留文本：商机 "3" 由 SQLite 亲和性转整数，切入话术保持全文
     qr_first = next(build_parser(data_query.PROFILES["F09630"]).parse(
         SAMPLES / "F0963020261120000000.AVL"))
     check("诊断末列原样保留文本（未被转 int）",
@@ -184,12 +184,12 @@ def main():
           asyncio.run(data_query.query_in("F09627", "scene", [])) == [])
     check("非法列名 → []（不抛异常）",
           asyncio.run(data_query.query_many("F09627", where={"bogus": "x"})) == [])
-    # 旧接口回归：用样例里真实存在的手机号
+    # 单条查询回归：用样例里真实存在的手机号
     old_rows = list(build_parser(data_query.PROFILES["F09554"]).parse(
         SAMPLES / "F0955420261110000000.AVL"))
     key = old_rows[0][2] if old_rows else ""
     rec = asyncio.run(data_query.query("F09554", key))
-    check("query() 单条旧接口回归", bool(rec) and rec["product_no"] == key,
+    check("query() 单条查询回归", bool(rec) and rec["product_no"] == key,
           str(rec.get("product_no")))
 
     print("=== 5. 诊断取数（7 张表关联） ===")

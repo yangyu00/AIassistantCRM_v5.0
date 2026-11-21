@@ -4,8 +4,7 @@
 SQLite、按表递增 version、记录指纹与元信息。在线读取侧（查库、重建业务 dict、
 话术拆分）已整体删除：`reader.py` / `transform.py`、`DimensionReader` /
 `load_product_selling_point()`、`mode=ro` 连接、只读契约与 registry 里的
-`lookup` / `cut_in_script` 声明都不再存在。`main.py` 不再从本包取数，卖点映射
-恒为 `{}`（等价于原「无维表」降级）。
+`main.py` 不从本包取数，卖点映射恒为 `{}`。
 
 与 `IOP` / `sftp_avl2db` / `call_stat` 一致：**配置与运行时产出都锚在包内、按
 `__file__` 定位，与启动 CWD 无关**。`import local_excel2db` 零 I/O（不读 registry、
@@ -122,7 +121,6 @@ python -m local_excel2db --once
 
 ## 与在线侧的关系
 
-本包不再对外提供读取函数。在线 API 在 `main.py` 里把卖点映射固定为 `{}`
-传给业务对象，保持原有参数形状不变；维表库只由本进程维护，维表侧故障不会
-让 API 500。未来若诊断新线需要维表数据，应另起读取组件，而不是把读取侧
-重新塞回本包。
+本包只写不读。在线 API 在 `main.py` 里把卖点映射固定为 `{}` 传给业务对象；
+维表库只由本进程维护，维表侧故障不会
+让 API 500。若诊断新线需要维表数据，应另起读取组件，不由本包提供。

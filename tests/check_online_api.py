@@ -38,7 +38,7 @@ BASE_URL = os.environ.get("CRM_SMOKE_BASE_URL", "http://127.0.0.1:8989").rstrip(
 SPEECH_PATH = "/api/speechQryService"   # main.py::MARKET_ASSISTANT_URL
 TIMEOUT = 10                            # 秒；服务没起时别把脚本挂死
 
-# 示例入参：沿用原 test_online.py 的占位值，不是真实客户数据。
+# 示例入参：占位值，不是真实客户数据。
 # 换成真实号码与真实产品 ID 才能拿到业务话术；也可直接由命令行传入。
 DEFAULT_TEL = "18866816199"
 DEFAULT_PRODUCT_IDS = ["202502120000001"]

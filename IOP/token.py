@@ -210,7 +210,7 @@ class TokenManager:
 
     # -- 单次刷新原语 -------------------------------------------------------
     async def refresh_once(self):
-        """单次刷新 token 并写入实例 state（名字里不再有 "global"）。
+        """单次刷新 token 并写入实例 state。
 
         只由 ``ensure_token()`` 在单飞锁内调用；业务侧请勿直接调用，否则绕开
         并发保护。先查状态码，再校验响应结构；所有失败分支统一走
@@ -220,7 +220,7 @@ class TokenManager:
         url, body = endpoints.token_request(self._config)
 
         # 上游仅提供 http 明文 token 端点；client_id / client_secret 以表单串提交。
-        # 下面只发请求、不再构造会话参数（会话由 transport 持有）。
+        # 下面只发请求；会话参数由 transport 持有。
         status_code = None
         try:
             resp: HttpResponse = await self._transport.post(url, data=body)

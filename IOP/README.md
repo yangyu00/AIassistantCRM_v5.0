@@ -32,8 +32,8 @@ async with IOPClient() as client:
 | `labels.py` | 标签响应的逐层校验与 `BUSIINFO` 组装（纯函数） |
 | `client.py` | 业务门面，编排「确保 token → 请求 → 校验 → 降级」 |
 
-`client.py` 与 `token.py` 都直接调用 `endpoints.py` 的纯函数，中间没有「请求构造器」
-对象。打桩 / 换实现只需注入 `Transport` 一种替身，不用同时替换请求形状和会话。
+`client.py` 与 `token.py` 都直接调用 `endpoints.py` 的纯函数。打桩 / 换实现
+只需注入 `Transport` 一种替身，不用同时替换请求形状和会话。
 
 ## 请求链路
 

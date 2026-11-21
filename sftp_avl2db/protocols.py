@@ -94,7 +94,7 @@ class RecordSink(Protocol):
     """记录落地：建表、按布局分批写、过期清理。
 
     ``stats.errors`` 供 ``runner.cleanup_expired()`` 汇总清理失败，因此任何
-    替换实现都要带这个属性（收敛到 ``SinkStats`` 契约）。
+    替换实现都要带这个属性（统一到 ``SinkStats`` 契约）。
     """
 
     stats: SinkStats

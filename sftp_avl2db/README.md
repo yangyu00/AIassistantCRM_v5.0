@@ -2,7 +2,7 @@
 
 每个 AVL 对应一个 db 的写入侧代码包，并内聚了在线读取侧 `data_query.py`，可独立复用。**配置与运行时产出都锚在包内、按 `__file__` 定位，与启动时的 CWD 无关**：`.env` 是唯一配置来源，`runtime/` 是唯一产出目录。
 
-**没有「多库单表 / 单库多表 / 单库单表」模式**：一个 AVL = 一个 `{AVL}.db`，`project`（项目名）只负责把同一业务的本地 AVL 与 db 收进同一对文件夹；表结构按名字放在单独的 `table_schemas.py` 里，多个 AVL 可复用，也可以各不相同。主键同样按 schema 名注册在 `TABLE_PRIMARY_KEYS`，**支持复合主键、不再恒为 `product_no`**（诊断新线的维表按各自业务定位键建主键）。库内表名也不用声明——固定表就叫 `{AVL}`，分表叫 `{AVL}_{分表号}`。
+一个 AVL = 一个 `{AVL}.db`，`project`（项目名）负责把同一业务的本地 AVL 与 db 收进同一对文件夹；表结构按名字放在 `table_schemas.py` 里，多个 AVL 可复用，也可以各不相同。主键按 schema 名注册在 `TABLE_PRIMARY_KEYS`，支持复合主键，各表按自身业务定位键建主键。库内固定表叫 `{AVL}`，分表叫 `{AVL}_{分表号}`。
 
 `import sftp_avl2db` 零 I/O、零第三方依赖；组件按「配置 / 解析 / 写入 / I-O / 编排」五层拆分，每层可单独 import、替换、测试。把包 copy 到别的项目时**排除 `.env` 与 `runtime/`**，从 `.env.example` 起步。
 
@@ -135,7 +135,7 @@ runtime/
 
 - 取数说明 09 把「挽留话术」也记作 `YX_HUASHU`，但 xls 物理 DDL 与 4 列 AVL 样例都明确 F09632 第 4 列是 `WL_HUASHU`，故注册 `wl_huashu`；业务侧按说明文档取别名时另做映射，不改物理列名。
 - F09635 未在 xls 给 DDL：按 `io_samples/README.md` 的 `TAGID_TAGNAME` 与 5 列样例推定 `tag_id / tag_name / table_name / column_name`；上游若有正式 DDL，以正式 DDL 复核。
-- F09629 的 `business_name` 含【】内外文本，是「资费名称 / 资费摘要」的拆分来源。本次已确认：**按 `product_id` 取 `F09629.BUSINESS_NAME` 后直接按【】内外拆分**，不走取数说明 03 里那张「话术维表」。
+- F09629 的 `business_name` 含【】内外文本：按 `product_id` 取该字段后直接拆分，【】内为资费名称、【】外为资费摘要。
 
 **离线复跑**（8 个 AVL 各 10 行样例，日期按文件名取 `20261120`）：
 
@@ -146,7 +146,7 @@ for t in F09627 F09628 F09629 F09630 F09631 F09632 F09633 F09635; do
 done
 ```
 
-表结构与主键见 `table_schemas.py`，静态声明见 `avl_specs.py`，AVL 归属见 `config.py::_AVLS`，`.env` 参数组见 `.env.example` 的 `DIAGNOSIS_*`。**本节只描述注册与入库**；在线侧多行 / 多条件取数、场景交集与话术拼装、`main.py` 路由已实现，见根 [`诊断新线_在线链路实现说明.md`](../诊断新线_在线链路实现说明.md) 与下文「在线读取与话术重组」。
+表结构与主键见 `table_schemas.py`，静态声明见 `avl_specs.py`，AVL 归属见 `config.py::_AVLS`，`.env` 参数组见 `.env.example` 的 `DIAGNOSIS_*`。在线侧多行 / 多条件取数、场景交集与话术拼装、`main.py` 路由见根 [`诊断新线_在线链路实现说明.md`](../诊断新线_在线链路实现说明.md) 与下文「在线读取与话术重组」。
 
 ## 解析与写入行为
 

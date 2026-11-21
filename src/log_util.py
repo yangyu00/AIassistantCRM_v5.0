@@ -1,9 +1,8 @@
 # -*- encoding: utf-8 -*-
 """在线进程日志初始化。
 
-配置值由宿主 ``main.py`` 通过 :func:`configure_logging` 传入，本模块不再读取
-项目根目录的 ``config.py`` / ``config.yaml``。其余模块只取 ``my_log``（loguru
-全局 logger），是否在文件里落盘由宿主决定。
+配置值由宿主 ``main.py`` 通过 :func:`configure_logging` 传入。其余模块只取
+``my_log``（loguru 全局 logger），是否在文件里落盘由宿主决定。
 """
 from loguru import logger
 from pathlib import Path
@@ -15,8 +14,7 @@ my_log = logger
 def configure_logging(log_dir: str = "") -> None:
     """按 log_dir 挂 INFO / ERROR 文件 sink；留空则写到项目根目录的 log/。
 
-    行为与原来 ``config.yaml`` 中 ``log_dir: ""`` 完全一致：留空时用项目根
-    ``log/``，只是配置来源变成 ``main.py`` 顶部的模块级常量。
+    ``log_dir`` 取值来自 ``main.py`` 顶部的模块级常量。
     """
     if log_dir:
         log_dir_path = Path(log_dir)

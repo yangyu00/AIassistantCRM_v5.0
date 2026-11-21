@@ -3,7 +3,7 @@
 
 ``{db_dir}/{avl}.db`` 是该 AVL 唯一的库文件；库内表名**恒以 AVL 名为基准**：
 固定表就叫 ``{avl}``，分表叫 ``{avl}_{分表号}``（分表号口径来自 avl_specs）。
-不再有「多库单表 / 单库多表 / 单库单表」的模式分支，也不再声明表名。
+表名由 ``table_name()`` 统一派生，读写两侧共用。
 """
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ class AvlDbLayout:
 
 
 def build_layout(profile, *, table_name: str | None = None):
-    """按 profile 装配布局；无模式分支，只是「一个 AVL 一个 db」。
+    """按 profile 装配布局：一个 AVL 一个 db。
 
     显式传 ``table_name`` 会覆盖默认的 AVL 名表名（分表时覆盖前缀），便于单测。
     """

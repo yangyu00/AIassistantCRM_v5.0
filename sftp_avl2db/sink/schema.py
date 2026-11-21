@@ -3,7 +3,7 @@
 
 三条 SQL 的拼法约定见 ``README.md``；主键 / 时间列做成字段，方便其他项目替换。
 ``primary_key`` 可为单列名或列名元组（复合主键），由 ``from_profile()`` 从
-``profile.primary_key`` 读取——诊断新线的维表主键不再是 ``product_no``。
+``profile.primary_key`` 读取，按 schema 名注册在 ``table_schemas.py``。
 主键列自动补 ``NOT NULL``，与 ``local_excel2db`` 的建表口径一致。
 """
 from __future__ import annotations

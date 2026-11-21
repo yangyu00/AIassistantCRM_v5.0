@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""AVL 声明：一个 AVL = 一个 db，没有「库表形式模式」。
+"""AVL 声明：一个 AVL = 一个 db。
 
 - ``name``    AVL 文件前缀，同时是 db 文件名（``{name}.db``）、CLI ``--task`` 值、
               在线查询**唯一的定位键**，也是**默认表名**
@@ -11,14 +11,14 @@
               诊断新线的维表没有手机号列，按各自的业务定位键声明（必须是表内列、
               且属于主键列，由 ``validate_specs()`` 拦漂移）
 
-**不声明表名**：固定表就叫 ``name``，分表叫 ``{name}_{分表号}``，由
-``table_name()`` 统一派生，写入侧与读取侧共用这一条规则。
+表名由 ``table_name()`` 统一派生：固定表叫 ``name``，分表叫
+``{name}_{分表号}``，写入侧与读取侧共用这一条规则。
 
-**主键不在这里**：按 schema 名集中注册在 ``table_schemas.TABLE_PRIMARY_KEYS``，
+主键按 schema 名集中注册在 ``table_schemas.TABLE_PRIMARY_KEYS``，
 ``config.load_profiles()`` 写进 profile，建表 DDL 与解析层共用。
 
-**产品 ID（product_id）不在这里，也不在读取侧**：它属于业务路由，由调用方
-（``main.py``）维护 ``product_id → AVL 前缀`` 的映射后，把 AVL 前缀传进来。
+产品 ID 属业务路由：商机 / 控损的 ``product_id → AVL 前缀`` 映射在
+``main.py``，诊断新线按 ``F09629`` 动态命中。调用方把 AVL 前缀传进来即可。
 本模块纯静态、零 I/O；``validate_specs()`` 在启动时拦配置漂移。
 """
 from __future__ import annotations
@@ -171,7 +171,7 @@ def validate_specs(profiles: Mapping[str, object]) -> None:
                 raise ValueError(
                     f"{name}: 查询键 {col} 不是主键列；业务侧条件请在 main.py 处理")
 
-        # 表名恒由 name 派生，profile 里不再有 table_name / table_name_prefix。
+        # 表名恒由 name 派生，读写两侧共用 table_name()。
         num_tables = getattr(conf, "num_tables", 0)
         if spec.sharded and num_tables <= 0:
             raise ValueError(f"{name}: 分表 AVL 需要 NUM_TABLES")

@@ -5,9 +5,9 @@ URL 路径、查询参数名、OAuth2 固定参数与请求头都由上游接口
 定义；``host`` / ``port`` / ``version`` / ``type`` / 凭据从 ``IOPConfig`` 读取，
 不在此处硬编码。
 
-这里只有两个**纯函数**，被 ``client.py`` 与 ``token.py`` 直接调用，中间不再有
-适配层：要打桩请求就注入 ``Transport``，不需要再替换一层「请求构造器」。
-新增 IOP 接口时在本文件加一个 ``*_request(cfg, ...)`` 即可。
+这里只有两个**纯函数**，被 ``client.py`` 与 ``token.py`` 直接调用。
+打桩请求时注入 ``Transport``。新增 IOP 接口时在本文件加一个
+``*_request(cfg, ...)`` 即可。
 
 ``token_request()`` 用 ``urlencode`` 构造表单串，凭据含 ``&`` / ``=`` 等字符
 时也能正确转义；``custinfo_request()`` 每次返回一份新的 headers dict。

@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """表结构定义：按名字注册，供多个 AVL 复用。
 
-一个 AVL 对应一个 db；表结构不再绑定「任务」，而是绑定这里的 ``schema`` 名。
-同一业务的多个 AVL 可以引用同一个名字，未来新增业务里不同表结构的 AVL 只需
-在这里加一份定义，再到 ``avl_specs.AVL_SPECS`` 里指过来。
+一个 AVL 对应一个 db；表结构按这里的 ``schema`` 名注册。同一业务的多个
+AVL 可以引用同一个名字；不同表结构的 AVL 在这里加一份定义，再到
+``avl_specs.AVL_SPECS`` 里指过来。
 
 ``TABLE_PRIMARY_KEYS`` 按同一 ``schema`` 名注册主键（支持复合主键），由
 ``config.load_profiles()`` 写进 profile，建表 DDL 与空主键跳过判定共用：
@@ -43,7 +43,7 @@ TABLE_SCHEMAS: Final[Mapping[str, tuple[tuple[str, str], ...]]] = {
     ),
 
     # ===================== 诊断新线（project = diagnosis） =====================
-    # 列顺序 = AVL 制表符分隔顺序；类型沿用 xls 的长度/类型（date → TEXT，
+    # 列顺序 = AVL 制表符分隔顺序；类型按 xls 的长度/类型（date → TEXT，
     # 便于 delete_expired_sql 按 'YYYY-MM-DD' 字符串比较；bigint → INTEGER）。
     # F09627 / DIM_MARKET_SCENE_RANK_ONCE / 场景优先级
     "scene_rank": (
@@ -78,9 +78,8 @@ TABLE_SCHEMAS: Final[Mapping[str, tuple[tuple[str, str], ...]]] = {
         ("yx_huashu", "TEXT"),              # YX_HUASHU 营销话术
     ),
     # F09632 / DIM_MARKET_PRODUCT_WLHUASHU_ONCE / 产品-挽留话术维表
-    # 口径裁决：取数说明 09 把挽留话术也记作 YX_HUASHU，但 xls 物理 DDL 与
-    # 4 列 AVL 样例都明确第 4 列是 WL_HUASHU，故注册用 wl_huashu；业务侧若按
-    # 说明文档的别名取值，另做字段映射，不改物理列名。
+    # 物理列名按 xls DDL 注册为 WL_HUASHU（取数说明 09 记作 YX_HUASHU，
+    # 业务侧如需别名另做映射，不改物理列名）。
     "product_wlhuashu": (
         ("op_time", "TEXT"),
         ("business_type", "VARCHAR(100)"),  # BUSINESS_TYPE 产品

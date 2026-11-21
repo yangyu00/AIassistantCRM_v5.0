@@ -3,7 +3,7 @@
 
 两个实现都满足 ``protocols.RecordParser``；解析行为见 ``README.md``。
 ``flat`` 覆盖商机回捞与诊断新线全部维表，差异（列数、主键列）全部由
-``profile`` 的注册信息驱动，不再为每类表新增一个解析器类。
+``profile`` 的注册信息驱动。
 """
 from .continuation import (
     DATE_RE,

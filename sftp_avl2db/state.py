@@ -114,7 +114,7 @@ class SingleInstanceLock:
 def build_state(profile):
     """按 ``TaskProfileConfig`` 装配状态层。
 
-    返回 ``(manifest, lock)``：路径全部来自 profile，不再有硬编码目录。
+    返回 ``(manifest, lock)``：路径全部来自 profile。
     """
     return (FetchedManifest(profile.fetched_path),
             SingleInstanceLock(profile.lock_path))

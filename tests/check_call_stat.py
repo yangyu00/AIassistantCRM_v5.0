@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """调用量统计 GET 接口冒烟：用 requests 查单日 / 整月 / 非法参数并打印返回。
 
-新增脚本，风格与 ``check_online_api.py`` 一致——手工跑、直接请求、原样打印，
+手工跑、直接请求、原样打印，
 不是 pytest 单元测试，文件名不带 ``test_`` 前缀，也没有 assert。
 
 打的是 ``call_stat.build_router()`` 注册的 ``GET /api/callStat``，路径来自
