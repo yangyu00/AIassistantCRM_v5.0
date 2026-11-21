@@ -98,7 +98,7 @@ runtime/
 ## 新增业务 / 新增 AVL 的步骤
 
 1. `table_schemas.py`：每种表结构加一份 `TABLE_SCHEMAS["新名字"]`，并在 `TABLE_PRIMARY_KEYS` 里按同名注册主键（单列或复合）；结构相同的 AVL 直接复用已有名字。
-2. `avl_specs.py`：加一条 `AvlSpec`，写明 `project` / `schema` / `parser` / `sharded` / `where` / `order_by`；**不写表名、不写主键、不写产品 ID、不写 PRAGMA**——表名自动就是 AVL 名，主键来自第 1 步。`where` 必须落在主键列上：商机回捞 / 控损为 `product_no`，诊断维表为各自的业务定位键。维表用 `parser="dimension"`（纯文本、不转末列、按注册主键跳过空行）。
+2. `avl_specs.py`：加一条 `AvlSpec`，写明 `project` / `schema` / `parser` / `sharded` / `where` / `order_by`；**不写表名、不写主键、不写产品 ID、不写 PRAGMA**——表名自动就是 AVL 名，主键来自第 1 步。`where` 必须落在主键列上：商机回捞 / 控损为 `product_no`，诊断维表为各自的业务定位键。一行一条的表统一用 `parser="flat"`，列数 / 主键列 / 跳过规则全部由 profile 的注册信息驱动，不需要新增解析器类。
 3. `config.py::_AVLS`：加一行 `(AVL 名, 项目名)`；项目名决定输入输出目录与 `.env` 键前缀。
 4. `.env`：只有**新项目**才需要加一组 `<项目名大写>_*` 参数；已有项目下的新 AVL 直接复用该组参数。
 5. 启动：`python -m sftp_avl2db --task {AVL 名}`；在线侧若需按 `product_id` 路由，在 `main.py` 顶部的路由表加一行 `product_id: AVL`，查库统一调 `data_query.query(avl, telnum)`（单条）或 `data_query.query_many(avl, where={...})`（多行 / 多条件）——读取侧不需要任何产品 ID。
@@ -109,7 +109,7 @@ runtime/
 
 **表名不用声明**：固定表就叫 `{AVL}`，分表就叫 `{AVL}_{分表号}`，由 `avl_specs.table_name()` 统一派生，写入侧 `sink/router.py` 与读取侧 `data_query.py` 共用这一条规则。`AvlSpec` 和 `TaskProfileConfig` 里都没有表名或表前缀字段。
 
-- **回捞商机**（`F09554 / F09555 / F09556`）：一行一条、无续行，逻辑 12 列；`product_no`（`avl_specs.PRODUCT_NO_INDEX`）为 `TEXT NOT NULL` 主键与查询键，为空跳过；列数不足补空串、超出截断；`city_id` 非数字或空 → 0。三个 AVL 各写一个 db、各一张与 AVL 同名的表，共用 `opportunity_recall` 表结构。
+- **回捞商机**（`F09554 / F09555 / F09556`）：一行一条、无续行，逻辑 12 列；`product_no`（`avl_specs.PRODUCT_NO_INDEX`）为 `TEXT NOT NULL` 主键与查询键，为空跳过；列数不足补空串、超出截断，所有列原样保留文本（末列 `city_id` 声明为 INTEGER，由 SQLite 列亲和性转换；业务上不消费该字段）。三个 AVL 各写一个 db、各一张与 AVL 同名的表，共用 `opportunity_recall` 表结构。
 - **控损**（`F09591`）：逻辑 5 列，`strategy_name` 含裸换行需续行拼接；`product_no` 为主键、分表键、查询键。单个 `F09591.db` 内 128 张表 `F09591_0 … 127`，路由为 `zlib.crc32(product_no.encode("utf-8")) % NUM_TABLES`（由 `avl_specs.shard_index()` 统一实现，读写两侧共用）。写入用 `INSERT OR REPLACE`，批量补跑按文件名日期升序。
 
 改列名/列顺序只改 `table_schemas.py`，改 AVL 归属 / 解析器 / 查询条件只改 `avl_specs.py` 与 `config.py::_AVLS`，改主键只改 `TABLE_PRIMARY_KEYS`，改分表数只改 `.env`；读写两侧同时生效。**每个 AVL 只有一个 db 文件**，不存在跨库路由。
@@ -150,7 +150,7 @@ done
 
 ## 解析与写入行为
 
-1. `FlatColumnParser` 固定按 UTF-8 读取（带 `errors="ignore"`）；`line.strip()` 连行首行尾制表符一起剥，尾随空列可能被吃掉，且末列按 `city_id` 口径转 int、第 3 列 `product_no` 为空即跳过。诊断维表换用 `DimensionFlatParser`（`parser="dimension"`）：只去行尾换行、保留首尾制表符与空列，**不做数值转换**，按注册主键列判空跳过。
+1. `FlatColumnParser` 是唯一的 flat 解析器，商机回捞与诊断 8 张维表共用：固定按 UTF-8 读取（带 `errors="ignore"`），只去行尾换行 / BOM、保留首尾制表符与空列，按 `\t` 切分后补齐或截断到 `profile.columns` 声明的列数。**所有列原样保留文本、不做任何数值转换**：列类型交给 SQLite 列亲和性（商机末列 `city_id` 用不上的字段也照此处理）。空主键判定的列下标由 `build_parser()` 按 `profile.primary_key` 换算，与建表 DDL 同源；商机是第 3 列 `product_no`，诊断维表是各自注册的单列 / 复合主键。
 2. 控损续行：以行首 `YYYY-MM-DD` 判定新记录；`strip_eol()` 只去 `\n`、再只剥**一个** ASCII 反斜杠（不能用 `rstrip('\\')`，否则 GBK 尾字节 `0x5C` 的汉字会被削成乱码）；起始行 `>=5` 列取前 5 列丢弃第 6 列起，`==4` 列补空 `strategy_name`，`<4` 列整条跳过；空物理行跳过；文件开头孤立续行丢弃；最后一条单独入库。
 3. `sink/schema.py` 三条 SQL 保持拼法，不做参数化改造、不换占位符风格、保持表级 `PRIMARY KEY (...)` 声明形式；主键列由 `TABLE_PRIMARY_KEYS` 传入，可单列可复合，且自动补 `NOT NULL`（主键列已在列定义里写 `NOT NULL` 的不重复追加）。
 4. 所有 SQLite 连接统一只设 `PRAGMA journal_mode = WAL` 与 `PRAGMA synchronous = NORMAL`；写入按 `BATCH_SIZE` 分桶、逐桶满批提交。

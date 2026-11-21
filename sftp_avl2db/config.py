@@ -119,7 +119,7 @@ class TaskProfileConfig:
     schema: tuple[tuple[str, str], ...]
     schema_name: str                         # table_schemas.py 里的 key
     primary_key: tuple[str, ...]             # TABLE_PRIMARY_KEYS 注册的主键列（可复合）
-    parser: str                              # "flat" | "continuation" | "dimension"
+    parser: str                              # "flat" | "continuation"
     sharded: bool                            # 该 db 内是否按 product_no 分表
     num_tables: int                          # 分表数；固定表为 0
     remote_name_tmpl: str

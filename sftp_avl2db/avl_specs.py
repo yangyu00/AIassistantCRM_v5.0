@@ -55,7 +55,7 @@ class AvlSpec:
     name: str
     project: str
     schema: str                       # table_schemas.py 里的名字
-    parser: str                       # "flat" | "continuation" | "dimension"
+    parser: str                       # "flat" | "continuation"
     sharded: bool = False
     where: tuple[str, ...] = ("product_no",)
     order_by: str | None = "op_time DESC"
@@ -85,35 +85,35 @@ AVL_SPECS: Final[Mapping[str, AvlSpec]] = {
     # 场景交集与话术拼装见 services/diagnosis/。
     "F09627": AvlSpec(                       # DIM_MARKET_SCENE_RANK_ONCE
         name="F09627", project="diagnosis",
-        schema="scene_rank", parser="dimension", where=("scene",),
+        schema="scene_rank", parser="flat", where=("scene",),
     ),
     "F09628": AvlSpec(                       # DIM_MARKET_PRODUCT_SCENE_ONCE
         name="F09628", project="diagnosis",
-        schema="product_scene", parser="dimension", where=("business_type",),
+        schema="product_scene", parser="flat", where=("business_type",),
     ),
     "F09629": AvlSpec(                       # DIM_MARKET_PRODUCT_BUSINESS_ONCE
         name="F09629", project="diagnosis",
-        schema="product_business", parser="dimension", where=("product_id",),
+        schema="product_business", parser="flat", where=("product_id",),
     ),
     "F09630": AvlSpec(                       # DIM_MARKET_SCENE_QRHUASHU_ONCE
         name="F09630", project="diagnosis",
-        schema="scene_qrhuashu", parser="dimension", where=("scene",),
+        schema="scene_qrhuashu", parser="flat", where=("scene",),
     ),
     "F09631": AvlSpec(                       # DIM_MARKET_PRODUCT_YXHUASHU_ONCE
         name="F09631", project="diagnosis",
-        schema="product_yxhuashu", parser="dimension", where=("business_type",),
+        schema="product_yxhuashu", parser="flat", where=("business_type",),
     ),
     "F09632": AvlSpec(                       # DIM_MARKET_PRODUCT_WLHUASHU_ONCE
         name="F09632", project="diagnosis",
-        schema="product_wlhuashu", parser="dimension", where=("business_type",),
+        schema="product_wlhuashu", parser="flat", where=("business_type",),
     ),
     "F09633": AvlSpec(                       # DWD_MARKET_CONF_USER_SCENE_DS
         name="F09633", project="diagnosis",
-        schema="conf_user_scene", parser="dimension", where=("product_no",),
+        schema="conf_user_scene", parser="flat", where=("product_no",),
     ),
     "F09635": AvlSpec(                       # TAGID_TAGNAME（xls 未给 DDL）
         name="F09635", project="diagnosis",
-        schema="tagid_tagname", parser="dimension", where=("tag_id",),
+        schema="tagid_tagname", parser="flat", where=("tag_id",),
     ),
 }
 

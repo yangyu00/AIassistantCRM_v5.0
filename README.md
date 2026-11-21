@@ -212,7 +212,8 @@ python -m call_stat --self-check
 - **诊断新线一键自检**：`python tests/check_diagnosis_offline.py`（零第三方依赖主体，
   不连 SFTP / IOP、不写包内 `runtime/`）。用 8 个样例 AVL 建库 + 补一组业务键
   自洽数据，断言括号拆分、多值按位置配对、场景交集汇总、RN 优先级、多行话术、
-  挽留配对、`query()` 旧接口回归与 `main.py` 三类路由输出，结论应为 `ALL PASS`。
+  挽留配对、**单一 flat 解析器**（商机与诊断共用、末列不转 int、主键下标按注册
+  换算）、`query()` 旧接口回归与 `main.py` 三类路由输出，结论应为 `ALL PASS`。
 
 - **按业务声明 IOP / 画像依赖**：`iop_need()` 对商机 3 个 ID 返回
   `PORTRAIT`、控损返回 `NONE`、其余（含维表里存在的业务 ID）返回

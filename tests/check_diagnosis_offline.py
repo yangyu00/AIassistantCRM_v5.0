@@ -38,7 +38,7 @@ _log_existed = _log_dir.exists()
 from sftp_avl2db import data_query                       # noqa: E402
 from sftp_avl2db.avl_specs import AVL_SPECS, validate_specs   # noqa: E402
 from sftp_avl2db.config import load_profiles            # noqa: E402
-from sftp_avl2db.parsers import build_parser            # noqa: E402
+from sftp_avl2db.parsers import PARSER_KINDS, build_parser   # noqa: E402
 from sftp_avl2db.sink.schema import TableSchema         # noqa: E402
 import services.diagnosis.logic as logic                # noqa: E402
 from services.diagnosis import (                        # noqa: E402
@@ -105,6 +105,32 @@ def main():
         n = build_avl(avl, "20261120")
         check(f"{avl} 样例入库", n == 10, f"{n} 行")
     build_avl("F09554", "20261110")       # 旧业务回归用
+
+    print("=== 1b. 单一 flat 解析器回归（商机与诊断共用） ===")
+    check("解析器只有 flat / continuation",
+          PARSER_KINDS == ("flat", "continuation"), str(PARSER_KINDS))
+    check("12 个 AVL 的 parser 全部合法",
+          all(s.parser in PARSER_KINDS for s in AVL_SPECS.values()))
+    old_p = build_parser(data_query.PROFILES["F09554"])
+    check("商机用 FlatColumnParser / 12 列 / 主键第 3 列",
+          type(old_p).__name__ == "FlatColumnParser" and
+          old_p.column_count == 12 and old_p.primary_key_indexes == (2,),
+          f'{type(old_p).__name__} cols={old_p.column_count} pk={old_p.primary_key_indexes}')
+    for avl, expect in [("F09627", (1,)), ("F09628", (1, 2)),
+                        ("F09629", (2,)), ("F09633", (2, 3)),
+                        ("F09635", (1,))]:
+        p = build_parser(data_query.PROFILES[avl])
+        check(f"{avl} 主键下标按注册换算", p.primary_key_indexes == expect,
+              f'{p.primary_key_indexes} expect={expect}')
+    # 末列不再被 int() 化：商机 "3" 由 SQLite 亲和性转整数，切入话术保持全文
+    qr_first = next(build_parser(data_query.PROFILES["F09630"]).parse(
+        SAMPLES / "F0963020261120000000.AVL"))
+    check("诊断末列原样保留文本（未被转 int）",
+          isinstance(qr_first[-1], str) and len(qr_first[-1]) > 20 and
+          "电视会员" in qr_first[-1], repr(qr_first[-1][:30]))
+    old_first = next(build_parser(data_query.PROFILES["F09554"]).parse(
+        SAMPLES / "F0955420261110000000.AVL"))
+    check("商机末列原样保留文本", old_first[-1] == "3", repr(old_first[-1]))
 
     print("=== 2. 补一组业务键自洽的数据 ===")
     append_rows("F09629", [
