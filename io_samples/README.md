@@ -11,20 +11,29 @@
 
 ## 文件清单
 
-| 文件 | 归属模块 | 用途 |
-|---|---|---|
-| `F0955420261110000000.AVL` | `sftp_avl2db` · 商机回捞 | 号卡业务样例，2 行记录 |
-| `F0955520261110000000.AVL` | `sftp_avl2db` · 商机回捞 | 套餐业务样例，2 行记录 |
-| `F0955620261110000000.AVL` | `sftp_avl2db` · 商机回捞 | 宽带业务样例，2 行记录 |
-| `F0959120261110000000.AVL` | `sftp_avl2db` · 控损 | 控损样例，40 行；含 `<$B>` / `<$I>` / `<$U>` / `<#RRGGBB>` 自定义标签，供 `rewrite_by_spec_f09591` 的 HTML 转换对照 |
+| 文件 | 归属模块 | 用途                                                                                                    |
+|---|---|-------------------------------------------------------------------------------------------------------|
+| `F0955420261110000000.AVL` | `sftp_avl2db` · 商机回捞 | 号卡业务样例，2 行记录                                                                                          |
+| `F0955520261110000000.AVL` | `sftp_avl2db` · 商机回捞 | 套餐业务样例，2 行记录                                                                                          |
+| `F0955620261110000000.AVL` | `sftp_avl2db` · 商机回捞 | 宽带业务样例，2 行记录                                                                                          |
+| `F0959120261110000000.AVL` | `sftp_avl2db` · 控损 | 控损样例，40 行；含 `<$B>` / `<$I>` / `<$U>` / `<#RRGGBB>` 自定义标签，供 `rewrite_by_spec_f09591` 的 HTML 转换对照       |
+| `F0962720261120000000.AVL` | 话术诊断新线 · 场景优先级 | `DIM_MARKET_SCENE_RANK_ONCE` 样例，10 行                                                                  |
+| `F0962820261120000000.AVL` | 话术诊断新线 · 产品-场景 | `DIM_MARKET_PRODUCT_SCENE_ONCE` 样例，10 行                                                               |
+| `F0962920261120000000.AVL` | 话术诊断新线 · 产品策略 | `DIM_MARKET_PRODUCT_BUSINESS_ONCE` 样例，10 行                                                            |
+| `F0963020261120000000.AVL` | 话术诊断新线 · 场景-切入话术 | `DIM_MARKET_SCENE_QRHUASHU_ONCE` 样例，10 行                                                              |
+| `F0963120261120000000.AVL` | 话术诊断新线 · 产品-营销话术 | `DIM_MARKET_PRODUCT_YXHUASHU_ONCE` 样例，10 行                                                            |
+| `F0963220261120000000.AVL` | 话术诊断新线 · 产品-挽留话术 | `DIM_MARKET_PRODUCT_WLHUASHU_ONCE` 样例，9 行，含拒绝原因维度                                                     |
+| `F0963320261120000000.AVL` | 话术诊断新线 · 用户场景 | `DWD_MARKET_CONF_USER_SCENE_DS` 样例，10 行，含痛点诊断文本                                                       |
 | `iop_labels_query_raw_response.json` | `IOP` | 标签查询接口的原始响应样例：`res_code` / `res_desc` / `result.BUSIINFO[]`，每项含 `ITEMCODE` / `ITEMNAME` / `ITEMVALUE` |
-| `卖点维表.xlsx` | `local_excel2db` | `custom_script` 表的格式样例（业务 ID 表头 → 库列 `product_id`、话术、标签 ID、`标签0…标签27` 等） |
-| `标签转换维表.xlsx` | `local_excel2db` | `label_name_mapping` 表的格式样例，取名为「标签名称--标签ID」的 sheet |
+| `卖点维表.xlsx` | `local_excel2db` | `custom_script` 表的格式样例（业务 ID 表头 → 库列 `product_id`、话术、标签 ID、`标签0…标签27` 等）                              |
+| `标签转换维表.xlsx` | `local_excel2db` | `label_name_mapping` 表的格式样例，取名为「标签名称--标签ID」的 sheet                                                    |
 
-AVL 命名遵循 `{业务前缀}{YYYYMMDD}000000.AVL`，制表符分隔、UTF-8；
-四个文件名的日期部分都是 `20261110`。字段含义与 AVL 映射见
-[`sftp_avl2db/README.md`](../sftp_avl2db/README.md) 与 `sftp_avl2db/avl_specs.py`、
-`sftp_avl2db/table_schemas.py`。
+AVL 命名遵循 `{业务前缀}{YYYYMMDD}000000.AVL`，制表符分隔、UTF-8、无表头、一行一条记录；
+原四个商机 / 控损样例的日期部分是 `20261110`，新增七个话术诊断样例按
+`话术涉及表结构.xls` 的当天批次取 `20261120`（`F09627`～`F09633`）。字段含义与
+AVL 映射见 [`sftp_avl2db/README.md`](../sftp_avl2db/README.md) 与
+`sftp_avl2db/avl_specs.py`、`sftp_avl2db/table_schemas.py`。
+
 
 ## 三个子系统分别怎么用这些样例
 
@@ -88,5 +97,6 @@ AVL 样例里含手机号、通话总结、拒绝原因等话术文本，JSON �
 业务内容。往这里补新样例前先确认无真实客户信息；生产数据一律走
 `sftp_avl2db/runtime/`、`local_excel2db/runtime/`、`excels/` 等运行时目录，
 项目 `.gitignore` 已忽略 `*.db`、`*.log`、各包 `runtime/` 等产物。
+
 
 `tests/` 里的手工冒烟脚本打的是运行中的服务，不使用这些样例文件。
