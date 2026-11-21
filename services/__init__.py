@@ -1,0 +1,90 @@
+# -*- coding: utf-8 -*-
+"""``services``：在线话术业务层（读取 + 路由 + 三类业务的话术重组）。
+
+分层（详见包内 ``README.md``）::
+
+    services/
+      product_info_raw.py        公共基类 ProductInfoRaw + 辅助画像拼装
+      reader.py                  业务库在线读取侧（AVL 前缀，单条 / 多行 / IN）
+      dimensions.py              卖点维表在线读取侧（标签 ID / 产品名 / 匹配结果2 / 标签N）
+      routing.py                 业务路由表、IOP 依赖声明、产品对象工厂
+      opportunity_recall/        商机回捞（ProductInfoByOpportunityRecall）
+      loss_control/              控损（ProductInfoByLossControl）
+      diagnosis/                 诊断新线（取数 / 纯逻辑 / 六段话术 / 卖点维表兜底）
+
+    三类业务包一律以**业务名**命名，包内 ``rewrite.py`` 承载业务对象，
+    ``__init__.py`` 显式导出；不保留按 spec 编号的历史目录名与旧类名别名。
+
+``main.py`` 只做 HTTP 编排，业务对象一律通过 ``build_product_object()`` 取得。
+
+**包根零 I/O**：所有业务对象与读取侧都在 ``__getattr__`` 里延迟导出，
+``import services`` 不读 ``.env``、不连库、不加载 fastapi / aiohttp。
+显式访问 ``services.reader`` 或任一业务对象时才会装配读取侧 profiles。
+"""
+from __future__ import annotations
+
+# 延迟导出：(模块名, 属性名)。模块名可含点号（子包内的模块）。
+_LAZY_EXPORTS = {
+    # 公共基类与画像
+    "ProductInfoRaw": ("product_info_raw", "ProductInfoRaw"),
+    "build_auxiliary_portrait": ("product_info_raw", "build_auxiliary_portrait"),
+    # 卖点维表读取侧（显式访问才装配 registry 契约）
+    "SellingPointRow": ("dimensions", "SellingPointRow"),
+    "split_label_ids": ("dimensions", "split_label_ids"),
+    "load_selling_points": ("dimensions", "load_selling_points"),
+    # 三类业务对象（业务包按业务名命名，对外用语义化类名）
+    "ProductInfoByOpportunityRecall": (
+        "opportunity_recall", "ProductInfoByOpportunityRecall"),
+    "ProductInfoByLossControl": (
+        "loss_control", "ProductInfoByLossControl"),
+    "ProductInfoByDiagnosis": ("diagnosis", "ProductInfoByDiagnosis"),
+    "build_diagnosis_record": ("diagnosis", "build_diagnosis_record"),
+    # 路由与 IOP 依赖声明
+    "IopNeed": ("routing", "IopNeed"),
+    "iop_need": ("routing", "iop_need"),
+    "build_product_object": ("routing", "build_product_object"),
+    "BUSINESS_OBJECT_TYPES": ("routing", "BUSINESS_OBJECT_TYPES"),
+    "OPPORTUNITY_RECALL_AVLS": ("routing", "OPPORTUNITY_RECALL_AVLS"),
+    "LOSS_CONTROL_AVLS": ("routing", "LOSS_CONTROL_AVLS"),
+    "OPPORTUNITY_RECALL_PRODUCT_IDS": (
+        "routing", "OPPORTUNITY_RECALL_PRODUCT_IDS"),
+    "LOSS_CONTROL_PRODUCT_IDS": ("routing", "LOSS_CONTROL_PRODUCT_IDS"),
+}
+
+
+_SUBMODULES = ("reader", "dimensions", "routing",
+               "opportunity_recall", "loss_control", "diagnosis")
+
+
+def __getattr__(name):
+    if name in _SUBMODULES:
+        # 子模块：返回模块本身，供 `from services import reader` 使用。
+        import importlib
+        return importlib.import_module("." + name, __name__)
+    if name in _LAZY_EXPORTS:
+        import importlib
+        mod, attr = _LAZY_EXPORTS[name]
+        return getattr(importlib.import_module("." + mod, __name__), attr)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    return sorted(set(globals()) | set(_LAZY_EXPORTS) | set(_SUBMODULES))
+
+
+__all__ = [
+    # 子模块
+    "reader", "dimensions", "routing",
+    "opportunity_recall", "loss_control", "diagnosis",
+    # 公共基类
+    "ProductInfoRaw", "build_auxiliary_portrait",
+    # 卖点维表读取侧
+    "SellingPointRow", "split_label_ids", "load_selling_points",
+    # 三类业务对象
+    "ProductInfoByOpportunityRecall", "ProductInfoByLossControl",
+    "ProductInfoByDiagnosis", "build_diagnosis_record",
+    # 路由与 IOP 依赖
+    "IopNeed", "iop_need", "build_product_object", "BUSINESS_OBJECT_TYPES",
+    "OPPORTUNITY_RECALL_AVLS", "LOSS_CONTROL_AVLS",
+    "OPPORTUNITY_RECALL_PRODUCT_IDS", "LOSS_CONTROL_PRODUCT_IDS",
+]

@@ -11,7 +11,7 @@
 ## 前置条件
 
 1. 起在线服务：`python main.py`（默认 `0.0.0.0:8989`，见 `main.py` 顶部 `FASTAPI_CONFIG`）。
-2. 三个写入侧进程按需起；没起也能跑，只是业务库/维表未就绪时话术走降级分支（`code: "2"`）。
+2. 写入侧进程按需起；没起也能跑：业务库未就绪时诊断走卖点维表兜底（四段话术 `code: "0"`）、维表里也没有该 `product_id` 才落 `code: "2"`；卖点维表未就绪时商机辅助画像为空、诊断无法兜底。`code` 始终按路由对象类型判定，不抛 500（`local_excel2db` 的 `dimensions.db` 由在线侧每请求只读一次）。
 3. `check_iop_direct.py` 还需要 `IOP/.env` 配好凭据、并装好 `IOPClient` 的依赖（aiohttp 等）。
 
 **地址**：默认 `http://127.0.0.1:8989`。服务在别的机器上不用改代码，设环境变量即可：
@@ -32,7 +32,7 @@ export CRM_SMOKE_BASE_URL=http://10.0.0.5:8989
 | `check_param_validation.py` | `POST /api/speechQryService` | 手机号 / 产品 ID 的非法入参，期望 `res_code=1`；附一组正常请求做对照 |
 | `check_call_stat.py` | `GET /api/callStat` | 单日、整月、连续两次查询（计数规则）、4 组非法参数 |
 | `check_iop_direct.py` | IOP 上游（**不经在线服务**） | 单独查标签画像，用来区分「上游挂了」还是「在线编排有问题」 |
-| `check_diagnosis_offline.py` | **不打任何服务**（临时 SQLite + 内存桩） | 诊断新线端到端自检：注册 / 解析 / 入库 → 多行查询 → 7 表关联 → 话术拼装 → `main.py` 路由，结论 `ALL PASS` |
+| `check_diagnosis_offline.py` | **不打任何服务**（临时 SQLite + 内存桩） | 诊断新线端到端自检：注册 / 解析 / 入库 → **`F09633` 分表（128 张、号码不串表、按 telnum 定位）** → **卖点维表 → 商机标签 ID / 辅助画像** → **业务包按业务名命名（1f：无历史别名、商机/控损输出等价）** → **诊断兜底（tagN 解析、匹配结果2 顺序遍历命中即中断、db 查空/交集空/IOP 无场景标签三种触发、四段输出）** → `services.reader` 多行查询 → 7 表关联 → 话术拼装 → `services/routing.py` 路由（含兜底 `code=0`），结论 `ALL PASS` |
 
 ## 运行
 
@@ -71,7 +71,9 @@ python tests/check_diagnosis_offline.py
 - 脚本只打印，不写文件；服务侧日志照常落在项目根 `log/`。
 - **例外**：`check_diagnosis_offline.py` 不打服务，在临时目录建 8 个诊断库跑完即删；
   它会打桩 `IOPClient.get_customer_labels`（不消耗上游 token），并按 `.env.example`
-  临时补一份 `sftp_avl2db/.env` 供配置加载，结束后删除。末尾的在线路由段需要
+  临时补一份 `sftp_avl2db/.env` 供 `services.reader` 装配 profiles（含
+  `F09633_NUM_TABLES` 分表数），结束后删除。
+  末尾的在线路由段需要
   fastapi / pydantic / loguru / aiohttp，缺依赖会自动跳过，不影响主体断言。
 - 这里的示例号码与产品 ID 都是占位值，换成真实数据才能拿到业务话术。
 

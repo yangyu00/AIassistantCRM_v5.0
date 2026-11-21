@@ -1,5 +1,4 @@
 from contextlib import asynccontextmanager
-from enum import Enum
 from typing import List
 
 import uvicorn
@@ -8,11 +7,9 @@ from pydantic import BaseModel, Field, field_validator
 
 from IOP import IOPClient
 from call_stat import startup, flush, count_call_middleware, build_router
-from services.diagnosis import ProductInfoByDiagnosis, build_diagnosis_record
-from services.product_info_raw import ProductInfoRaw as ProductInfoRaw
-from services.rewrite_by_spec_f09554.rewrite import ProductInfoRewrite as ProductInfoBySpec9554
-from services.rewrite_by_spec_f09591.rewrite import ProductInfoRewrite as ProductInfoBySpec9591
-from sftp_avl2db import data_query
+from services import (
+    BUSINESS_OBJECT_TYPES, IopNeed, build_product_object, dimensions, iop_need,
+)
 from src.exceptions import telnumError, productIdError, register_errors_handlers
 from src.log_util import my_log, configure_logging
 
@@ -25,24 +22,9 @@ FASTAPI_CONFIG = {"host": "0.0.0.0", "port": 8989, "reload": False}
 MARKET_ASSISTANT_URL = "/api/speechQryService"
 MARKET_ASSISTANT_USERS = ["CRM"]
 
-# ===== 业务路由：product_id → AVL 前缀（本文件是唯一维护点）=====
-# 数据访问层 sftp_avl2db 只认 AVL 前缀；产品 ID 属业务概念，不进查询层。
-# 商机回捞 / 控损是静态映射：新增产品 ID 只改下面两张表，把 AVL 前缀传给
-# data_query.query(avl, telnum)。
-# 诊断新线不同：F09629（PRODUCT_BUSINESS）本身就是「产品ID → 策略/产品」的
-# 映射表，不需要在 main.py 再维护一张静态表；命中该表即走诊断业务，
-# 由 services/diagnosis 按 AVL 前缀关联其余 6 张维表，读取侧仍只认 AVL 前缀。
-OPPORTUNITY_RECALL_AVLS = {
-    "202608041615335173": "F09554",  # 号卡业务
-    "202608041615335172": "F09555",  # 套餐业务
-    "202608041615335174": "F09556",  # 宽带业务
-}
-LOSS_CONTROL_AVLS = {
-    "202609180955095402": "F09591",  # 控损
-}
-OPPORTUNITY_RECALL_PRODUCT_IDS = frozenset(OPPORTUNITY_RECALL_AVLS)
-LOSS_CONTROL_PRODUCT_IDS = frozenset(LOSS_CONTROL_AVLS)
-# ==========================================================================================
+# 业务路由（product_id → AVL 前缀、IOP 依赖、产品对象工厂）统一在
+# services/routing.py，由 services/__init__.py 导出；本文件只保留在线服务的
+# 运行参数与请求级编排。分层与四类路由见 services/README.md。
 
 configure_logging(LOG_DIR)
 
@@ -71,9 +53,10 @@ async def lifespan(app: FastAPI):
 
 # 数据更新（SFTP 拉取 → SQLite 入库）由 sftp_avl2db 每个 AVL 各一个独立进程负责
 # （运行时数据目录为包内 runtime/）；
-# 维表写入由 python -m local_excel2db 独立进程负责（只写，产物在包内 runtime/），
-# 本进程不读取维表，卖点映射固定为空 dict。
-# 本进程只读 sftp_avl2db 业务库，唯一写入是调用量统计
+# 卖点维表写入由 python -m local_excel2db 独立进程负责（只写，产物在包内 runtime/），
+# 本进程经 services.dimensions 每请求只读一次它的 dimensions.db，取商机标签 ID
+# 子集与诊断兜底所需的产品名称 /「匹配结果2」/「标签N」话术。
+# 本进程经 services.reader 只读 sftp_avl2db 产出的业务库，唯一写入是调用量统计
 # （call_stat/runtime/call_sum.db，配置与产物都在 call_stat/ 包内）。
 app = FastAPI(lifespan=lifespan)
 register_errors_handlers(app)
@@ -114,27 +97,6 @@ class Args(BaseModel):
         return value
 
 
-class IopNeed(Enum):
-    """各业务对 IOP 标签的依赖。"""
-    NONE = "none"              # 完全不取标签
-    PORTRAIT = "portrait"      # 取标签并据此计算用户画像
-    RAW_LABELS = "raw_labels"  # 只取原始标签，不做画像规则转换
-
-
-def iop_need(product_id):
-    """按产品 ID 声明标签依赖，业务归属由本文件的路由表派生。
-
-    控损话术只由数据库字段拼装，不依赖用户标签，声明为 NONE；商机回捞
-    需要标签拼装用户画像；其余产品 ID（诊断新线 / 兜底）只取原始标签、
-    不做画像规则转换。诊断新线当前输出尚未消费标签，属已确认的预留。
-    """
-    if product_id in OPPORTUNITY_RECALL_PRODUCT_IDS:
-        return IopNeed.PORTRAIT
-    if product_id in LOSS_CONTROL_PRODUCT_IDS:
-        return IopNeed.NONE
-    return IopNeed.RAW_LABELS
-
-
 class IopLabelProvider:
     """一次请求内的标签惰性提供者，负责同请求只查一次并隔离不同请求。
 
@@ -170,8 +132,10 @@ async def marketAssistant(args: Args):
     portrait_cache = {}
 
     # 2. 建立产品对象列表
-    # 卖点映射固定为空 dict，按业务对象接口传给每个产品对象
-    product_selling_point_match_dict = {}
+    # 卖点维表按本次请求的全部 product_id 批量查一次（不缓存、不跨请求共享）：
+    # 商机对象的标签 ID 子集来自该行的「标签ID」列，库缺失/未命中降级为空 dict。
+    selling_points = dimensions.load_selling_points(
+        [one.id for one in args.productId])
     product_obj_list = []
     for one_product_obj in args.productId:
         # 逐产品 ID 声明标签依赖；提供者保证整请求最多查一次 IOP。
@@ -181,44 +145,13 @@ async def marketAssistant(args: Args):
                              if need != IopNeed.NONE else {})
         # 只有声明 PORTRAIT 的业务需要画像；其余传 None，连拼装都不发生
         portrait_cache_for_obj = portrait_cache if need == IopNeed.PORTRAIT else None
-
-        # 1. 特殊业务
-        # 号卡业务、套餐业务、宽带业务（product_id → AVL 见本文件顶部路由表）
-        if one_product_obj.id in OPPORTUNITY_RECALL_PRODUCT_IDS:
-            avl = OPPORTUNITY_RECALL_AVLS[one_product_obj.id]
-            record = await data_query.query(avl, args.telnum)
-            product_obj_list.append(ProductInfoBySpec9554(one_product_obj.id, custom_label_info,
-                                                          product_selling_point_match_dict, record,
-                                                          portrait_cache_for_obj))
-            continue
-
-        # 2. 数据库中业务(控损专用)
-        if one_product_obj.id in LOSS_CONTROL_PRODUCT_IDS:
-            avl = LOSS_CONTROL_AVLS[one_product_obj.id]
-            record = await data_query.query(avl, args.telnum)
-            if record:
-                product_obj_list.append(ProductInfoBySpec9591(one_product_obj.id, custom_label_info,
-                                                              product_selling_point_match_dict, record,
-                                                              portrait_cache_for_obj))
-                continue
-
-        # 3. 诊断新线
-        # product_id 命中 F09629 即走诊断：按 BUSINESS_TYPE 关联产品场景 /
-        # 营销 / 挽留话术，按手机号取用户场景做交集，再按场景优先级取切入话术。
-        # 六项输出全为空时 build_diagnosis_record 返回 None，继续落兜底。
-        diagnosis_record = await build_diagnosis_record(one_product_obj.id,
-                                                        args.telnum)
-        if diagnosis_record:
-            product_obj_list.append(ProductInfoByDiagnosis(
-                one_product_obj.id, custom_label_info,
-                product_selling_point_match_dict, diagnosis_record,
-                portrait_cache_for_obj))
-            continue
-
-        # 4. 兜底：不属于商机回捞 / 控损，且产品ID 未命中 F09629
-        product_obj_list.append(ProductInfoRaw(one_product_obj.id, custom_label_info,
-                                               product_selling_point_match_dict,
-                                               portrait_cache_for_obj))
+        # 四类路由（商机 / 控损 / 诊断 / 兜底）、取数与对象构造都在
+        # services/routing.py::build_product_object；本函数只做请求级编排
+        product_obj_list.append(await build_product_object(
+            one_product_obj.id, args.telnum,
+            custom_label_info=custom_label_info,
+            selling_points=selling_points,
+            portrait_cache=portrait_cache_for_obj))
 
     # 3. 输出话术
     # 商机回捞 / 控损 / 诊断新线三类业务对象返回 code=0；其余兜底 code=2。
@@ -227,8 +160,7 @@ async def marketAssistant(args: Args):
     allScripts = []
     for product_obj in product_obj_list:
         my_log.info(product_obj)
-        if isinstance(product_obj, (ProductInfoBySpec9554, ProductInfoBySpec9591,
-                                    ProductInfoByDiagnosis)):
+        if isinstance(product_obj, BUSINESS_OBJECT_TYPES):
             allScripts.append(
                 {"productId": product_obj.product_id, "productName": product_obj.product_name,
                  "script": product_obj.output_script, "code": "0"})

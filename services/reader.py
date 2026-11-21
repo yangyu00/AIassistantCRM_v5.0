@@ -1,16 +1,24 @@
 # -*- coding: utf-8 -*-
-"""在线业务库只读查询（统一入口，``sftp_avl2db`` 包内读取侧）。
+"""在线业务库只读查询（``services`` 读取侧，统一入口）。
 
-一个 AVL 一个 db：``runtime/sqlite_db/{project}/{avl}.db``。``project`` 只在写入侧
-决定输出目录；**在线查询只认 AVL 前缀**，直接定位到 ``{avl}.db``，业务侧的
-``product_id`` 不进本模块。
+写入侧 ``sftp_avl2db`` 只负责「AVL → SQLite」；**在线读取侧归本模块**。两侧
+读写分离：写入侧不 import 本模块，本模块也不参与任何写入，只共用
+``sftp_avl2db`` 的三份静态契约——
+
+- ``avl_specs.AVL_SPECS``：AVL 集合、where / order_by 声明、分表口径
+- ``table_schemas.TABLE_SCHEMAS``：列顺序（写入 DDL 与读取侧 dict 组装同源）
+- ``config.load_profiles()``：由包内 ``.env`` 装配的库路径与分表数
+
+一个 AVL 一个 db：``runtime/sqlite_db/{project}/{avl}.db``。``project`` 只在
+写入侧决定输出目录；**在线查询只认 AVL 前缀**，业务侧的 ``product_id`` 不进
+本模块。
 
 表名恒由 AVL 名派生（``avl_specs.table_name()``），列顺序与查询声明来自
 ``avl_specs`` / ``table_schemas``，运行时路径来自 ``load_profiles()``。
 库/表缺失、AVL 未注册或查询异常一律降级返回空结果，不会让 API 500。
 
-本模块被显式 import 时才读包内 ``.env``；``import sftp_avl2db`` 不触发本模块，
-包根仍保持零 I/O。
+本模块被显式 import / 首次查询时才装配 profiles（读包内 ``.env``）；
+``import services`` 不触发本模块，包根仍保持零 I/O。
 
 对外入口：
 
@@ -23,20 +31,39 @@
 多个键之间 AND；列名一律走 ``schema_columns()`` 白名单，值一律参数绑定，
 不拼业务字符串进 SQL。排序固定取 ``AvlSpec.order_by``（静态声明），需要在
 业务侧重排（如场景按 RN 优先级）时用 Python 排，不开放 ORDER BY 注入口。
+
+分表 AVL 有两个：控损 ``F09591``、诊断用户场景 ``F09633``（千万级行）。
+两者都以 ``product_no`` 为分表键，且在线查询键与之相同，因此 ``query`` /
+``query_many`` 能精确定位到**单张**分表，不需要广播；``where`` 里必须带
+**标量** ``product_no``，否则无法定位分表、直接降级空结果（不广播、不抛异常）。
+``query_in`` 与不带 ``product_no`` 的 ``query_many`` 只对固定表有效。
 """
+from __future__ import annotations
+
 import os
 import sqlite3
 
-from .avl_specs import (
+from sftp_avl2db.avl_specs import (
     AVL_SPECS, shard_index, spec_of, table_name, validate_specs,
 )
-from .config import load_profiles
-from .table_schemas import schema_columns
+from sftp_avl2db.config import load_profiles
+from sftp_avl2db.table_schemas import schema_columns
 
-# 在线侧启动时显式加载一次包内 .env（不传 runtime_dir，与写入侧默认同源），
+# 读取侧启动时装配一次 profiles（不传 runtime_dir，与写入侧默认同源），
 # 并显式跑声明校验；读写两侧不会各算一套路径。
+# 离线自检可直接替换本模块的 PROFILES，把查询隔离到临时目录。
 PROFILES = load_profiles()
 validate_specs(PROFILES)
+
+
+def configure(profiles) -> None:
+    """替换读取侧的 profiles（仅离线自检 / 单测注入用）。
+
+    注入的映射须来自 ``load_profiles()``，否则列顺序与分表口径会与写入侧漂移。
+    """
+    global PROFILES
+    validate_specs(profiles)
+    PROFILES = profiles
 
 
 def _warn(msg):
@@ -86,9 +113,11 @@ def _resolve(avl, key):
     conf = PROFILES[avl]
     spec = spec_of(avl)
     db_path = conf.db_dir / f"{avl}.db"
-    table = table_name(avl, _shard(conf, {"product_no": key}) if conf.sharded else None)
-    columns = schema_columns(spec.schema)
     where_values = {col: key for col in spec.where}
+    # 分表 AVL 靠 where 里的 product_no 定位分表（F09591 / F09633 都是它）；
+    # 固定表的 _shard 直接返回 None。where 声明与分表键由 validate_specs 保证一致。
+    table = table_name(avl, _shard(conf, where_values))
+    columns = schema_columns(spec.schema)
     values = [where_values[col] for col in spec.where]
     where_sql = " AND ".join(f"{col} = ?" for col in spec.where)
     order_sql = f" ORDER BY {spec.order_by}" if spec.order_by else ""
@@ -185,3 +214,6 @@ async def query_many(avl, *, where, limit=None):
 async def query_in(avl, column, values, *, limit=None):
     """单列 IN 的便捷形式，等价于 ``query_many(avl, where={column: values})``。"""
     return await query_many(avl, where={column: list(values)}, limit=limit)
+
+
+__all__ = ["PROFILES", "configure", "query", "query_many", "query_in"]

@@ -7,11 +7,14 @@
 pytest 当成用例收集。
 
 打的是在线服务 ``POST /api/speechQryService``（路径对应 main.py 的
-``MARKET_ASSISTANT_URL``），会经过 IOP 客户端、维表读取、业务库查询，并让
-call_stat 的调用量 +1。所以它同时是「整条主链路通不通」的最快检查。
+``MARKET_ASSISTANT_URL``），会经过 IOP 客户端、``services/dimensions.py`` 对卖点
+维表的一次只读查询、``services/reader.py`` 业务库查询，并让 call_stat 的
+调用量 +1。所以它同时是「整条主链路通不通」的最快检查。
 
 前置：先在另一个终端起服务（``python main.py``，默认 8989 端口）。
-写入侧进程没起也能跑，只是会因为库/维表未就绪返回降级结果（code="2"）。
+写入侧进程没起也能跑：业务库未就绪时诊断走卖点维表兜底（四段话术
+``code="0"``）、维表里也没有该 ``product_id`` 才落 ``code="2"``；卖点维表未就绪
+时商机辅助画像为空、诊断无法兜底。``code`` 始终按路由对象类型判定，不抛 500。
 
 用法（项目根目录下）：
 
@@ -81,7 +84,8 @@ def call(tel: str, product_ids: list[str]) -> int:
     print(json.dumps(body, ensure_ascii=False, indent=2))
 
     # 小结：响应体可能很长，把每条话术的 code 与话术长度摘出来方便一眼扫。
-    # code="0" 表示拼出了业务话术，code="2" 表示诊断兜底的空话术（当前预期行为）。
+    # code="0" 表示拼出了业务话术（含诊断走卖点维表兜底的四段话术）；
+    # code="2" 表示连维表里也没有该 product_id 时的空话术。
     scripts = (body.get("result") or {}).get("allScripts") or []
     print(f"小结：res_code={body.get('res_code')} | 共 {len(scripts)} 条话术")
     for i, one in enumerate(scripts, 1):

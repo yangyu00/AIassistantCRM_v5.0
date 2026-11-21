@@ -8,8 +8,9 @@
 - ``schema``  ``table_schemas.TABLE_SCHEMAS`` 的 key，多个 AVL 可复用同一份
 - ``sharded`` 该 db 内是否按 product_no 分表；无论分不分，都只有一个 db 文件
 - ``where`` / ``order_by`` 在线查询声明。商机回捞 / 控损按 ``product_no``；
-              诊断新线的维表没有手机号列，按各自的业务定位键声明（必须是表内列、
-              且属于主键列，由 ``validate_specs()`` 拦漂移）
+              诊断新线里只有 ``F09633``（用户场景，千万级行）含手机号列，也按
+              ``product_no`` 查并据此分表；其余 7 张维表按各自业务定位键声明
+              （必须是表内列、且属于主键列，由 ``validate_specs()`` 拦漂移）
 
 表名由 ``table_name()`` 统一派生：固定表叫 ``name``，分表叫
 ``{name}_{分表号}``，写入侧与读取侧共用这一条规则。
@@ -27,7 +28,8 @@ import zlib
 from dataclasses import dataclass
 from typing import Final, Mapping
 
-# 商机回捞两种逻辑记录里 product_no 都在第 3 列；旧解析器与分表路由共用。
+# 分表路由用的 product_no 列下标由 build_layout() 从注册的表结构推导；
+# 这里保留固定值，仅作为不分表 AVL / 单测显式构造 layout 时的默认值。
 PRODUCT_NO_INDEX: Final = 2
 
 
@@ -81,7 +83,7 @@ AVL_SPECS: Final[Mapping[str, AvlSpec]] = {
 
     # ============ 诊断新线（project = diagnosis，8 个 AVL 各一个 db） ============
     # where = 该表业务定位键（PDF 取数口径）；全部是主键列的子集，保证查询
-    # 命中唯一键或主键前缀。多行 / 多条件取数走 data_query.query_many()，
+    # 命中唯一键或主键前缀。多行 / 多条件取数走 services.reader.query_many()，
     # 场景交集与话术拼装见 services/diagnosis/。
     "F09627": AvlSpec(                       # DIM_MARKET_SCENE_RANK_ONCE
         name="F09627", project="diagnosis",
@@ -109,7 +111,10 @@ AVL_SPECS: Final[Mapping[str, AvlSpec]] = {
     ),
     "F09633": AvlSpec(                       # DWD_MARKET_CONF_USER_SCENE_DS
         name="F09633", project="diagnosis",
-        schema="conf_user_scene", parser="flat", where=("product_no",),
+        # 千万级用户场景表：按 product_no 分表。分表键与在线查询键（telnum）
+        # 完全一致，读取侧可精确定位单表，不需要广播到全部分表。
+        schema="conf_user_scene", parser="flat", sharded=True,
+        where=("product_no",),
     ),
     "F09635": AvlSpec(                       # TAGID_TAGNAME（xls 未给 DDL）
         name="F09635", project="diagnosis",
@@ -172,6 +177,16 @@ def validate_specs(profiles: Mapping[str, object]) -> None:
                     f"{name}: 查询键 {col} 不是主键列；业务侧条件请在 main.py 处理")
 
         # 表名恒由 name 派生，读写两侧共用 table_name()。
+        # 分表 AVL 必须以 product_no 为分表键，且查询声明里也要带它：
+        # 否则读取侧无法定位分表，会退化成全表广播或直接查不到数据。
+        if spec.sharded:
+            if "product_no" not in cols:
+                raise ValueError(
+                    f"{name}: 分表 AVL 的表结构必须含 product_no 分表键")
+            if "product_no" not in spec.where:
+                raise ValueError(
+                    f"{name}: 分表 AVL 的 where 必须含 product_no，"
+                    "否则读取侧无法定位分表")
         num_tables = getattr(conf, "num_tables", 0)
         if spec.sharded and num_tables <= 0:
             raise ValueError(f"{name}: 分表 AVL 需要 NUM_TABLES")

@@ -95,14 +95,14 @@ TABLE_SCHEMAS: Final[Mapping[str, tuple[tuple[str, str], ...]]] = {
         ("reason", "VARCHAR(1000)"),        # REASON 痛点诊断（与 SCENE 按位置配对）
     ),
     # F09635 / 标签ID-标签名（io_samples/README.md 标为 TAGID_TAGNAME）
-    # xls 未给该表 DDL：列名按 5 列样例含义推定（MD5 标签ID / 标签名 /
-    # 来源物理表 / 来源字段），上游若有正式 DDL 以正式 DDL 为准复核。
+    # xls 未给该表 DDL：末两列含义未确认，按 sftp_avl2db/README.md 的注册口径
+    # 用占位名 unknown1 / unknown2；上游给出正式 DDL 后再复核列名。
     "tagid_tagname": (
         ("op_time", "TEXT"),
         ("tag_id", "VARCHAR(64)"),          # 标签ID（32 位 MD5）
         ("tag_name", "VARCHAR(255)"),       # 标签名称
-        ("table_name", "VARCHAR(100)"),     # 标签来源表
-        ("column_name", "VARCHAR(100)"),    # 标签来源字段
+        ("unknown1", "VARCHAR(100)"),       # 未确认列 1
+        ("unknown2", "VARCHAR(100)"),       # 未确认列 2
     ),
 }
 
@@ -129,7 +129,7 @@ TABLE_PRIMARY_KEYS: Final[Mapping[str, tuple[str, ...]]] = {
     "product_wlhuashu": ("business_type", "reject_reason", "wl_huashu"),
     # 一个号码多个场景需多行；SCENE 与 REASON 按位置一一对应
     "conf_user_scene": ("product_no", "scene"),
-    # 标签ID 唯一映射标签名与来源列
+    # 标签ID 唯一映射标签名与两列未确认字段
     "tagid_tagname": ("tag_id",),
 }
 

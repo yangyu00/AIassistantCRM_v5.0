@@ -51,12 +51,23 @@ class AvlDbLayout:
 def build_layout(profile, *, table_name: str | None = None):
     """按 profile 装配布局：一个 AVL 一个 db。
 
+    分表键恒为 ``product_no``，列下标从注册的表结构推导（不硬编码第 3 列），
+    这样新增分表 AVL 或调整列顺序都不会让写入侧悄悄写错分表。
     显式传 ``table_name`` 会覆盖默认的 AVL 名表名（分表时覆盖前缀），便于单测。
     """
+    columns = [c[0] for c in profile.schema]
+    if getattr(profile, "sharded", False):
+        if "product_no" not in columns:
+            raise ValueError(
+                f"{profile.name}: 分表 AVL 的表结构缺少 product_no 列")
+        product_no_index = columns.index("product_no")
+    else:
+        product_no_index = PRODUCT_NO_INDEX
     return AvlDbLayout(
         profile.db_dir, profile.name,
         num_tables=getattr(profile, "num_tables", 0),
         table_name=table_name,
+        product_no_index=product_no_index,
     )
 
 

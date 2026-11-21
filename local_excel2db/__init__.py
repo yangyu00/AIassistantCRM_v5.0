@@ -3,8 +3,11 @@
 
 只做一件事：定时轮询项目根 ``excels/`` 下的注册 xlsx，内容指纹变化则抽列、
 单事务整表覆盖 ``local_excel2db/runtime/sqlite_db/dimensions.db``、按表递增
-version。不含任何在线读取 / 查库 / 业务 dict 重建 / 话术加工能力，那部分已
-整体删除（``reader.py`` / ``transform.py`` 与对应的契约、配置声明一并移除）。
+version。本包不含任何在线读取 / 查库 / 业务 dict 重建 / 话术加工能力
+（``reader.py`` / ``transform.py`` 与对应的契约、配置声明一并移除）；在线只读侧
+已分离到 ``services.dimensions``，按 ``product_id`` 读本包产出的库：取商机
+标签 ID，并在诊断失败时兜底取产品名称 /「匹配结果2」/「标签N」话术；
+两侧只共用 ``registry.json`` 的列契约，不共用代码。
 
 与 ``IOP`` / ``sftp_avl2db`` / ``call_stat`` 一致：**配置与运行时产出都锚在
 包内、按 ``__file__`` 定位，与启动 CWD 无关**。配置唯一来源是包内

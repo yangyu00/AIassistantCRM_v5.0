@@ -1,6 +1,6 @@
-# ===== 明文凭据：只提交 .env.example =====
+# ===== 明文凭据：IOP/.env 按约定随仓库入库；sftp_avl2db 只提交 .env.example =====
 .env
-IOP/.env
+!IOP/.env
 sftp_avl2db/.env
 !IOP/.env.example
 !sftp_avl2db/.env.example

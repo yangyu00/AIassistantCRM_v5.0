@@ -1,6 +1,9 @@
 # sftp_avl2db · SFTP AVL → SQLite 业务库
 
-每个 AVL 对应一个 db 的写入侧代码包，并内聚了在线读取侧 `data_query.py`，可独立复用。**配置与运行时产出都锚在包内、按 `__file__` 定位，与启动时的 CWD 无关**：`.env` 是唯一配置来源，`runtime/` 是唯一产出目录。
+每个 AVL 对应一个 db 的**纯写入侧**代码包，可独立复用；在线读取侧已分离到
+[`services/reader.py`](../services/README.md)（分层与接口见 `services/README.md`）。
+**配置与运行时产出都锚在包内、按 `__file__` 定位，与启动时的 CWD 无关**：
+`.env` 是唯一配置来源，`runtime/` 是唯一产出目录。
 
 一个 AVL = 一个 `{AVL}.db`，`project`（项目名）负责把同一业务的本地 AVL 与 db 收进同一对文件夹；表结构按名字放在 `table_schemas.py` 里，多个 AVL 可复用，也可以各不相同。主键按 schema 名注册在 `TABLE_PRIMARY_KEYS`，支持复合主键，各表按自身业务定位键建主键。库内固定表叫 `{AVL}`，分表叫 `{AVL}_{分表号}`。
 
@@ -22,7 +25,10 @@ python -m sftp_avl2db --task F09554
            └─ runner.cleanup_expired()      本地文件 + 库表过期数据
 ```
 
-读取侧包内 `data_query.py` 只读查询，不参与写入；它与写入侧共用 `avl_specs.py` 的 AVL 声明、`table_schemas.py` 的列顺序与主键注册、`shard_index()`。
+在线读取侧 `services/reader.py` 只读查询、不参与写入；它与本包共用 `avl_specs.py`
+的 AVL 声明、`table_schemas.py` 的列顺序与主键注册、`shard_index()`，以及
+`config.load_profiles()` 装配的库路径与分表数，因此读写两侧不会各算一套库表。
+写入侧不 import 读取侧，两侧只有「静态契约」这一条依赖。
 
 ## 五层与文件
 
@@ -33,10 +39,8 @@ python -m sftp_avl2db --task F09554
 | 写入 | `sink/` | 仅标准库 `sqlite3` |
 | I/O | `remote.py`、`state.py`、`task_logging.py` | 无（`paramiko` / `loguru` / 锁库延迟导入） |
 | 编排 | `runner.py`、`profiles.py`、`cli.py` | 无 |
-| 读取 | `data_query.py` | 仅标准库 `sqlite3` + 包内 `config` / `avl_specs` / `table_schemas`；**显式 import 时才读 `.env`** |
 
-公共 API **只认包根** `sftp_avl2db`：`__all__` 列出契约与工厂，I/O 类通过模块级 `__getattr__` 延迟导出。
-例外：`data_query` 加载时会读包内 `.env`，因此**不进 `__init__` 顶层导入、也不做隐式延迟导出**；在线侧用 `from sftp_avl2db import data_query` 显式加载，保证 `import sftp_avl2db` 仍零 I/O。`protocols.py` 是唯一契约来源，五个 Protocol 均标了编排器实际用到的方法与属性（含 `RemoteSource.connect()` 与 `RecordSink.stats`），照协议写替身即可替换任一层。
+公共 API **只认包根** `sftp_avl2db`：`__all__` 列出契约与工厂，I/O 类通过模块级 `__getattr__` 延迟导出，保证 `import sftp_avl2db` 零 I/O。`protocols.py` 是唯一契约来源，五个 Protocol 均标了编排器实际用到的方法与属性（含 `RemoteSource.connect()` 与 `RecordSink.stats`），照协议写替身即可替换任一层。
 
 ## AVL 与运行
 
@@ -52,7 +56,7 @@ python -m sftp_avl2db --task F09554
 | `diagnosis` | `F09630` | `DIAGNOSIS_` | `scene_qrhuashu` | `sqlite_db/diagnosis/F09630.db` | `F09630` |
 | `diagnosis` | `F09631` | `DIAGNOSIS_` | `product_yxhuashu` | `sqlite_db/diagnosis/F09631.db` | `F09631` |
 | `diagnosis` | `F09632` | `DIAGNOSIS_` | `product_wlhuashu` | `sqlite_db/diagnosis/F09632.db` | `F09632` |
-| `diagnosis` | `F09633` | `DIAGNOSIS_` | `conf_user_scene` | `sqlite_db/diagnosis/F09633.db` | `F09633` |
+| `diagnosis` | `F09633` | `DIAGNOSIS_` + `F09633_NUM_TABLES` | `conf_user_scene` | `sqlite_db/diagnosis/F09633.db` | `F09633_0 … 127` |
 | `diagnosis` | `F09635` | `DIAGNOSIS_` | `tagid_tagname` | `sqlite_db/diagnosis/F09635.db` | `F09635` |
 
 ```bash
@@ -91,28 +95,32 @@ runtime/
 | `avl_specs.py` | 每个 AVL 的静态声明：项目、schema 名、解析器、是否分表、查询条件与排序；`table_name()` 表名规则、`shard_index()` 分表口径、`validate_specs()` 启动校验。**不声明表名、不含产品 ID、不含 PRAGMA 配置** |
 | `table_schemas.py` | 按名字注册的表结构（`TABLE_SCHEMAS`）与主键（`TABLE_PRIMARY_KEYS`），读写两侧共用列顺序与主键；**单独一个 py 文件，供多个 AVL 复用** |
 
-`.env` 分组：SFTP 公共 5 项（`SFTP_HOST/PORT/USERNAME/PASSWORD/REMOTE_PATH`），每个项目一组 `<项目名大写>_BATCH_SIZE / DATA_EXPIRE_DAYS / LOCAL_FILE_EXPIRE_DAYS / POLL_INTERVAL_SECONDS`，分表项目另有 `<项目名大写>_NUM_TABLES`。`diagnosis` 项目不分表，无 `NUM_TABLES`。`AVL_SPECS` 与 `_AVLS` 的 key 必须一致，schema 名必须在 `TABLE_SCHEMAS` 里，主键必须在 `TABLE_PRIMARY_KEYS` 里，`where` 列必须是主键列，`validate_specs()` 拦住手填漂移。
+`.env` 分组：SFTP 公共 5 项（`SFTP_HOST/PORT/USERNAME/PASSWORD/REMOTE_PATH`），每个项目一组 `<项目名大写>_BATCH_SIZE / DATA_EXPIRE_DAYS / LOCAL_FILE_EXPIRE_DAYS / POLL_INTERVAL_SECONDS`，分表 AVL 另有 `NUM_TABLES`。分表数按 **`<AVL>_NUM_TABLES` 优先、`<项目名大写>_NUM_TABLES` 兜底** 读取（`config._num_tables()`），因此同一项目下可以只让个别大表分表：`F09591` 读 `LOSS_CONTROL_NUM_TABLES`，`F09633` 读 `F09633_NUM_TABLES`，diagnosis 其余 7 张维表仍为固定表。`AVL_SPECS` 与 `_AVLS` 的 key 必须一致，schema 名必须在 `TABLE_SCHEMAS` 里，主键必须在 `TABLE_PRIMARY_KEYS` 里，`where` 列必须是主键列；分表 AVL 还必须含 `product_no` 列且 `where` 带 `product_no`（否则读取侧无法定位分表）。这些漂移都由 `validate_specs()` 在启动时拦住。
 
 `load_profiles()` 不传参 → 产出落在包内 `runtime/`，读写同源靠这一条保证；`load_profiles(runtime_dir=...)` 或 CLI `--runtime-dir` 是唯一隔离入口，只改产出位置、不改配置来源。部署建议 `ln -s /data/crm_runtime sftp_avl2db/runtime` 把数据挂到独立盘 —— **不要 `rm -rf sftp_avl2db/` 整目录覆盖**，包目录现在是代码 + 数据盘。`.env` 含明文密码，仓库只提交 `.env.example`。
 
 ## 新增业务 / 新增 AVL 的步骤
 
 1. `table_schemas.py`：每种表结构加一份 `TABLE_SCHEMAS["新名字"]`，并在 `TABLE_PRIMARY_KEYS` 里按同名注册主键（单列或复合）；结构相同的 AVL 直接复用已有名字。
-2. `avl_specs.py`：加一条 `AvlSpec`，写明 `project` / `schema` / `parser` / `sharded` / `where` / `order_by`；**不写表名、不写主键、不写 PRAGMA**——表名自动就是 AVL 名，主键来自第 1 步。`where` 必须落在主键列上。一行一条的表统一用 `parser="flat"`，列数 / 主键列 / 跳过规则全部由 profile 的注册信息驱动，不需要新增解析器类。
+2. `avl_specs.py`：加一条 `AvlSpec`，写明 `project` / `schema` / `parser` / `sharded` / `where` / `order_by`；**不写表名、不写主键、不写 PRAGMA**——表名自动就是 AVL 名，主键来自第 1 步。`where` 必须落在主键列上；设 `sharded=True` 时表结构还须含 `product_no` 列且 `where` 带 `product_no`（分表键＝查询键，读取侧才能定位单表）。一行一条的表统一用 `parser="flat"`，列数 / 主键列 / 跳过规则全部由 profile 的注册信息驱动，不需要新增解析器类。
 3. `config.py::_AVLS`：加一行 `(AVL 名, 项目名)`；项目名决定输入输出目录与 `.env` 键前缀。
-4. `.env`：只有**新项目**才需要加一组 `<项目名大写>_*` 参数；已有项目下的新 AVL 直接复用该组参数。
-5. 启动：`python -m sftp_avl2db --task {AVL 名}`；查库统一调 `data_query.query(avl, telnum)`（单条）或 `data_query.query_many(avl, where={...})`（多行 / 多条件）。
+4. `.env`：只有**新项目**才需要加一组 `<项目名大写>_*` 参数；已有项目下的新 AVL 直接复用该组参数。分表 AVL 另加 `<AVL>_NUM_TABLES`（优先）或项目级 `<项目名大写>_NUM_TABLES`，见上文配置说明。
+5. 启动：`python -m sftp_avl2db --task {AVL 名}`；在线侧查库统一调
+   `services.reader.query(avl, telnum)`（单条）或
+   `services.reader.query_many(avl, where={...})`（多行 / 多条件），见
+   [`services/README.md`](../services/README.md)。
 
 ## AVL 与库表契约
 
 **业务数据日期 `op_time` 取自 AVL 第 1 列，代码不做日期改写**；文件名 `YYYYMMDD` 是文件生成日（回捞商机 T-2、控损 T-1）。补跑时 `--date` 填文件名日期，不是 `op_time`；过期清理按 `op_time` 列。
 
-**表名不用声明**：固定表就叫 `{AVL}`，分表就叫 `{AVL}_{分表号}`，由 `avl_specs.table_name()` 统一派生，写入侧 `sink/router.py` 与读取侧 `data_query.py` 共用这一条规则。`AvlSpec` 和 `TaskProfileConfig` 里都没有表名或表前缀字段。
+**表名不用声明**：固定表就叫 `{AVL}`，分表就叫 `{AVL}_{分表号}`，由 `avl_specs.table_name()` 统一派生，写入侧 `sink/router.py` 与在线读取侧 `services/reader.py` 共用这一条规则。`AvlSpec` 和 `TaskProfileConfig` 里都没有表名或表前缀字段。
 
 - **回捞商机**（`F09554 / F09555 / F09556`）：一行一条、无续行，逻辑 12 列；`product_no`（`avl_specs.PRODUCT_NO_INDEX`）为 `TEXT NOT NULL` 主键与查询键，为空跳过；列数不足补空串、超出截断，所有列原样保留文本（末列 `city_id` 声明为 INTEGER，由 SQLite 列亲和性转换；业务上不消费该字段）。三个 AVL 各写一个 db、各一张与 AVL 同名的表，共用 `opportunity_recall` 表结构。
 - **控损**（`F09591`）：逻辑 5 列，`strategy_name` 含裸换行需续行拼接；`product_no` 为主键、分表键、查询键。单个 `F09591.db` 内 128 张表 `F09591_0 … 127`，路由为 `zlib.crc32(product_no.encode("utf-8")) % NUM_TABLES`（由 `avl_specs.shard_index()` 统一实现，读写两侧共用）。写入用 `INSERT OR REPLACE`，批量补跑按文件名日期升序。
+- **诊断·用户场景对应关系**（`F09633`）：诊断 8 表里唯一带 `product_no` 的表，千万级行，同样按 `product_no` 分 128 张表 `F09633_0 … 127`。分表键与在线查询键（`telnum`）一致，`services.reader` 一次请求只命中一张表。分表数用 `F09633_NUM_TABLES` 单独配置，不影响同项目其它 7 张固定表。详见下文「F09633 分表」。
 
-改列名/列顺序只改 `table_schemas.py`，改 AVL 归属 / 解析器 / 查询条件只改 `avl_specs.py` 与 `config.py::_AVLS`，改主键只改 `TABLE_PRIMARY_KEYS`，改分表数只改 `.env`；读写两侧同时生效。**每个 AVL 只有一个 db 文件**，不存在跨库路由。
+改列名/列顺序只改 `table_schemas.py`，改 AVL 归属 / 解析器 / 查询条件只改 `avl_specs.py` 与 `config.py::_AVLS`，改主键只改 `TABLE_PRIMARY_KEYS`，改分表数只改 `.env`；读写两侧同时生效。**每个 AVL 只有一个 db 文件**，不存在跨库路由。分表路由用的 `product_no` 列下标由 `build_layout()` 从注册的表结构推导，不硬编码第 3 列。
 
 ## 诊断新线：8 张表注册（project = diagnosis）
 
@@ -124,10 +132,10 @@ runtime/
 | `F09630` |  场景-切入话术 | `scene_qrhuashu` | `op_time, scene, qr_huashu`                        | `scene` | `scene` |
 | `F09631` |  产品-营销话术 | `product_yxhuashu` | `op_time, business_type, yx_huashu`                | `business_type, yx_huashu` | `business_type` |
 | `F09632` |  产品-挽留话术 | `product_wlhuashu` | `op_time, business_type, reject_reason, wl_huashu` | `business_type, reject_reason, wl_huashu` | `business_type` |
-| `F09633` |  用户场景对应关系 | `conf_user_scene` | `op_time, user_id, product_no, scene, reason`      | `product_no, scene` | `product_no` |
+| `F09633` |  用户场景对应关系（**分表**） | `conf_user_scene` | `op_time, user_id, product_no, scene, reason`      | `product_no, scene` | `product_no` |
 | `F09635` |  标签ID-标签名 | `tagid_tagname` | `op_time, tag_id, tag_name, unknown1, unknown2`    | `tag_id` | `tag_id` |
 
-**主键口径**：`op_time` 不进主键，维表每日全量按主键 `INSERT OR REPLACE` 覆盖最新批次（与商机 / 控损一致）；主键列自动补 `NOT NULL`。F09631 / F09632 把话术全文纳入主键，是为了避免样例中的重复行、以及「同一产品 + 同一拒绝原因对应两条不同挽留话术」被 REPLACE 丢行。
+**主键口径**：`op_time` 不进主键，维表每日全量按主键 `INSERT OR REPLACE` 覆盖最新批次（与商机 / 控损一致）；主键列自动补 `NOT NULL`。F09631 / F09632 把话术全文纳入主键，是为了避免样例中的重复行、以及「同一产品 + 同一拒绝原因对应两条不同挽留话术」被 REPLACE 丢行。F09633 主键 `(product_no, scene)` 与分表键共用 `product_no`：同一号码一定落在同一分表，主键在单表内仍然唯一，幂等语义不变。
 
 **口径裁决**：
 - F09629 的 `business_name` 含【】内外文本：按 `product_id` 取该字段后直接拆分，【】内为资费名称、【】外为资费摘要。
@@ -141,7 +149,7 @@ for t in F09627 F09628 F09629 F09630 F09631 F09632 F09633 F09635; do
 done
 ```
 
-表结构与主键见 `table_schemas.py`，静态声明见 `avl_specs.py`，AVL 归属见 `config.py::_AVLS`，`.env` 参数组见 `.env.example` 的 `DIAGNOSIS_*`。在线侧多行 / 多条件取数、场景交集与话术拼装、`main.py` 路由见根 [`诊断新线_在线链路实现说明.md`](../诊断新线_在线链路实现说明.md) 与下文「在线读取与话术重组」。
+表结构与主键见 `table_schemas.py`，静态声明见 `avl_specs.py`，AVL 归属见 `config.py::_AVLS`，`.env` 参数组见 `.env.example` 的 `DIAGNOSIS_*`。在线侧多行 / 多条件取数、场景交集与话术拼装、`services/routing.py` 路由见根 [`诊断新线_在线链路实现说明.md`](../诊断新线_在线链路实现说明.md) 与 [`services/README.md`](../services/README.md)。
 
 ## 解析与写入行为
 
@@ -158,25 +166,21 @@ done
 - 所有任务按 `TABLE_PRIMARY_KEYS` 注册的主键 + `INSERT OR REPLACE` 保证幂等：商机回捞 / 控损为 `product_no`，同一手机号只保留一条；诊断维表为各自业务定位键（可复合），同一键只保留最新批次的一条。
 - `exists()` 三态：`False` → INFO「远程文件尚未生成」；`FileNotFoundError` → 同 `False`；其他异常 → ERROR「stat 远程文件出错」。后两者都跳过、不登记清单。
 
-## 在线读取与话术重组
+## 在线读取侧与话术重组（已分离到 `services/`）
 
-包内 `data_query.py` **只认 AVL 前缀**，`async`、内部同步 `sqlite3`，直接定位
-`sqlite_db/{project}/{avl}.db`，三个入口：
-
-| 入口 | 返回 | 用途 |
-|---|---|---|
-| `query(avl, key)` | `dict` | 单条，`LIMIT 1` 按 `op_time DESC` 取最新一条；`key` 按 `AvlSpec.where` 绑定 |
-| `query_many(avl, *, where, limit=None)` | `list[dict]` | 多行 / 多条件；`where={列名: 标量｜序列}`，标量走 `=`、序列走 `IN`，多键 AND |
-| `query_in(avl, column, values, *, limit=None)` | `list[dict]` | 单列 IN 的便捷形式 |
+本包不提供在线查询入口。读取侧 [`services/reader.py`](../services/README.md)
+**只认 AVL 前缀**，`async`、内部同步 `sqlite3`，直接定位
+`sqlite_db/{project}/{avl}.db`，三个入口 `query` / `query_many` / `query_in`；
+列名走 `schema_columns()` 白名单、值一律参数绑定，排序固定取
+`AvlSpec.order_by` 静态声明，库表缺失 / 异常一律降级为空结果。完整契约、
+多行 / 多条件查询与降级规则见 [`services/README.md`](../services/README.md)
+「读取侧」。
 
 诊断新线靠 `query_many` 一次取回某产品的全部场景、某号码的全部用户场景，
-以及按交集场景列表批量查优先级 / 切入话术。约束：列名走 `schema_columns()`
-白名单、值一律参数绑定；排序固定取 `AvlSpec.order_by` 静态声明，不开放
-`ORDER BY` 注入口（场景按 RN 重排在业务层用 Python 做）；分表 AVL 需标量
-`product_no` 定位分表。空 IN 集合直接返回 `[]`，非法列名 / 库表缺失 / 异常
-一律降级为空结果，不抛给在线接口。
+以及按交集场景列表批量查优先级 / 切入话术；场景按 RN 重排在业务层用
+Python 做，不开放 `ORDER BY` 注入口。
 
-**业务路由的 `product_id` 不进数据访问层**：`main.py` 顶部的
+**业务路由的 `product_id` 不进读取侧**：`services/routing.py` 的
 `OPPORTUNITY_RECALL_AVLS` / `LOSS_CONTROL_AVLS` 维护商机 / 控损的
 `product_id → AVL 前缀`；诊断新线不维护静态映射，直接按 `product_id` 查
 `F09629`（该表本身就是产品ID映射表），命中后再按 `business_type` 用
@@ -184,12 +188,65 @@ done
 AVL 名派生、列顺序来自声明。`validate_specs()` 还会拦住把非主键业务字段
 写进 `where` 的漂移。
 
-**库里保存原始文本**，话术重组在业务侧执行：`rewrite_by_spec_f09554` 拼
-【通话总结】【用户需求】【已推荐政策】【拒绝原因】四段并追加辅助画像；
-`rewrite_by_spec_f09591` 把 `<$B>` / `<$I>` / `<$U>` / `<#RRGGBB>` 等自定义标签
-转成 HTML 并闭合 `</>`；`services/diagnosis/` 关联 7 张表做场景交集与配对，
-拼出【资费名称】【资费摘要】【痛点诊断】【切入话术】【营销话术】【挽留话术】
-六段，见根 [`诊断新线_在线链路实现说明.md`](../诊断新线_在线链路实现说明.md)。
+**库里保存原始文本**，话术重组在 `services/` 业务侧执行：
+`services/opportunity_recall` 拼【通话总结】【用户需求】【已推荐政策】【拒绝原因】
+四段并追加辅助画像；`services/loss_control` 把 `<$B>` / `<$I>` / `<$U>` /
+`<#RRGGBB>` 等自定义标签转成 HTML 并闭合 `</>`；`services/diagnosis/` 关联
+7 张表做场景交集与配对，拼出【资费名称】【资费摘要】【痛点诊断】【切入话术】
+【营销话术】【挽留话术】六段；**7 表关联任一环节失败时改用卖点维表
+（`selling_points`）兜底四段**（无痛点诊断 / 营销话术），见根
+[`诊断新线_在线链路实现说明.md`](../诊断新线_在线链路实现说明.md) 2.1。
+
+## F09633 分表
+
+`F09633`（用户场景对应关系）是诊断 8 表里唯一带 `product_no` 的表，千万级行；
+单表全量扫描与写入都吃不消，因此按 `product_no` 分表。
+
+| 项 | 值 |
+|---|---|
+| 声明 | `avl_specs.AVL_SPECS["F09633"].sharded = True` |
+| 分表键 | `product_no`（`conf_user_scene` 第 3 列） |
+| 分表数 | `.env` 的 `F09633_NUM_TABLES`（默认 128） |
+| 表名 | `F09633_0 … F09633_127` |
+| 路由 | `zlib.crc32(str(product_no)) % NUM_TABLES`，`avl_specs.shard_index()` |
+| 主键 | `(product_no, scene)`，同一号码恒在同一分表，幂等语义不变 |
+
+**为什么可以直接分**：在线侧查这张表只有一条路径——
+`services/diagnosis/query.py` 的 `reader.query_many("F09633",
+where={"product_no": telnum})`，查询键与分表键完全一致，`services/reader.py`
+用同一条 `shard_index()` 精确定位**一张**分表，不需要广播 128 次。
+不带标量 `product_no` 的查询（如 `query_in("F09633", "scene", ...)`）会降级
+`[]`，这是刻意设计：`validate_specs()` 强制分表 AVL 的 `where` 必须含
+`product_no`，避免悄悄退化成全表扫描。
+
+**写入侧自动生效**：`build_layout()` 按 `num_tables` 用
+`all_targets()` 建满 128 张表，用 `target()` 逐行路由；`ensure_schema()`、
+`write()`、`purge_expired()` 都不需要为 F09633 改一行代码。
+
+### 改分表数：重灌全量
+
+分表数来自 `.env` 的 `F09633_NUM_TABLES`，写入侧 `build_layout()` 按它建满分表、
+读取侧按同一口径定位。按当前业务口径**不做历史单表兼容**——不存在「旧固定表
+→ 分表」的迁移路径，改这个值就是重灌：
+
+1. 停掉 F09633 的写入进程；
+2. 改 `.env` 的 `F09633_NUM_TABLES`，重启在线进程使其装配新 profile；
+3. 删旧 `F09633.db`（或换 `--runtime-dir`），重跑全量入库：
+
+   ```bash
+   python -m sftp_avl2db --task F09633 --date YYYYMMDD
+   ```
+
+4. 用 `tests/check_diagnosis_offline.py` 或按真实号码回查确认，再恢复写入进程。
+
+> ⚠ **改 `NUM_TABLES` 等于改「号码 → 分表」映射**：运行中热改会让在线侧查不到
+> 历史号码，且是静默降级——该查询返回空，诊断链路据此走卖点维表兜底，不会报错。
+
+> ⚠ **过期清理成本**：`purge_expired()` 会遍历 128 张表按 `op_time < cutoff`
+> 做 DELETE，而 `op_time` 不在主键里、没有索引。128 张表各扫一遍相当于全库
+> 扫描一轮；千万级数据下请关注 `DIAGNOSIS_POLL_INTERVAL_SECONDS` 与
+> `DIAGNOSIS_DATA_EXPIRE_DAYS` 的组合，必要时给 `op_time` 建局部索引或降低
+> 清理频率（当前代码未擅自加索引，避免影响全量写入速度）。
 
 ## 测试与复跑
 

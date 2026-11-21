@@ -160,11 +160,14 @@ def extract_scripts(rows, column):
 # ---------------------------------------------------------------------------
 # 话术拼装
 # ---------------------------------------------------------------------------
-def build_output_script(record):
+def build_output_script(record, *, omit=()):
     """把 6 个输出字段拼成 HTML 话术（风格与现有 rewrite 模块一致）。
 
     六个段落固定为【资费名称】【资费摘要】【痛点诊断】【切入话术】
     【营销话术】【挽留话术】，空值统一填「无」；多行内容用 ``<br>`` 换行。
+
+    ``omit`` 传段落名元组可**整段不输出**（卖点维表兜底时省略
+    「痛点诊断」「营销话术」），区别于填「无」。
     """
     record = record or {}
 
@@ -186,14 +189,17 @@ def build_output_script(record):
     else:
         retain_text = ""
 
-    return "<br>".join([
-        line("资费名称", record.get("fee_name")),
-        line("资费摘要", record.get("fee_summary")),
-        line("痛点诊断", pain_text),
-        line("切入话术", record.get("entry_script")),
-        line("营销话术", marketing_text),
-        line("挽留话术", retain_text),
-    ])
+    sections = (
+        ("资费名称", record.get("fee_name")),
+        ("资费摘要", record.get("fee_summary")),
+        ("痛点诊断", pain_text),
+        ("切入话术", record.get("entry_script")),
+        ("营销话术", marketing_text),
+        ("挽留话术", retain_text),
+    )
+    omitted = set(omit)
+    return "<br>".join(line(label, value) for label, value in sections
+                       if label not in omitted)
 
 
 __all__ = [

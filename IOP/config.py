@@ -8,7 +8,8 @@
 ``import IOP`` 不读文件；``IOPClient()`` 构造时调用 ``load()``，结果冻结。
 
 ⚠️ ``IOP_TOKEN_ID`` / ``IOP_TOKEN_SECRET`` 是明文凭据，``IOPConfig.__repr__``
-   已屏蔽 ``secret``。公开分发前请把 ``IOP/.env`` 加入 ``.gitignore``。
+   已屏蔽 ``secret``。``IOP/.env`` 按当前约定随仓库入库，对外分发前请评估
+   凭据暴露风险。
 """
 from __future__ import annotations
 

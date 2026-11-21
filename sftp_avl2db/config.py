@@ -21,7 +21,8 @@ RUNTIME_DIR = Path(__file__).with_name("runtime")
 # 项目名同时用于：.env 键前缀（大写）、files/ 与 sqlite_db/ 的目录名。
 # 每个 AVL 的其他静态信息（schema / parser / 是否分表 / 查询声明）都在
 # avl_specs.py；表名自动取 AVL 名，产品 ID 归 main.py，SQLite 连接配置
-# 在 sink/sqlite_sink.py 全局统一，本层都不声明。
+# 在 sink/sqlite_sink.py 全局统一，本层都不声明。分表数读
+# <AVL>_NUM_TABLES（优先）或 <项目>_NUM_TABLES（兜底），见 _num_tables()。
 # 新增 AVL = 这里加一行 + avl_specs.py 加一份声明。
 _AVLS = (
     ("F09554", "opportunity_recall"),
@@ -77,6 +78,19 @@ def _int(v: dict[str, str], key: str) -> int:
     if n <= 0:
         raise ValueError(f"{key} 必须为正整数，当前为 {n}（{ENV_PATH}）")
     return n
+
+
+def _num_tables(v: dict[str, str], name: str, project: str) -> int:
+    """分表数：AVL 级键优先，项目级键兜底。
+
+    同一项目下只有个别大表需要分表时，用 ``<AVL>_NUM_TABLES`` 单配即可，
+    不必给整个项目加 ``<项目>_NUM_TABLES``；项目级键仍是该项目全部分表
+    AVL 的默认值。``LOSS_CONTROL_NUM_TABLES`` 这类既有键因此原样生效。
+    """
+    avl_key = f"{name}_NUM_TABLES"
+    if avl_key in v:
+        return _int(v, avl_key)
+    return _int(v, f"{project.upper()}_NUM_TABLES")
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +206,7 @@ def load_profiles(runtime_dir=None) -> dict[str, TaskProfileConfig]:
             primary_key=tuple(TABLE_PRIMARY_KEYS[spec.schema]),
             parser=spec.parser,
             sharded=spec.sharded,
-            num_tables=_int(v, f"{key}_NUM_TABLES") if spec.sharded else 0,
+            num_tables=_num_tables(v, name, project) if spec.sharded else 0,
             remote_name_tmpl="{prefix}{date}000000.AVL",
         )
 

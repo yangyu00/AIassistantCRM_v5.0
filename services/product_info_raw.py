@@ -1,32 +1,22 @@
-# 商机回捞的标签子集固定。号卡 / 套餐共用 3 个，宽带 4 个；
-# 元组顺序即辅助画像的拼接顺序。其余产品 ID 当前无维表来源，标签子集为空
-# （在线侧传入的卖点映射恒为 {}）。
-_OPP_LABEL_IDS = {
-    "202608041615335173": (
-        "5f21acac078c9604df4b1f8bb9d69628",
-        "72c681b94c461faee3dee5b177a04996",
-        "78cf3d36d08d5b65bab8da44dee1bf6d",
-    ),
-    "202608041615335172": (
-        "5f21acac078c9604df4b1f8bb9d69628",
-        "72c681b94c461faee3dee5b177a04996",
-        "78cf3d36d08d5b65bab8da44dee1bf6d",
-    ),
-    "202608041615335174": (
-        "5f21acac078c9604df4b1f8bb9d69628",
-        "78cf3d36d08d5b65bab8da44dee1bf6d",
-        "9bc591ba3d9bbe619ef167f5ffdde367",
-        "ddd18dc77c4824d6d19bc1607f5bd286",
-    ),
-}
+# -*- coding: utf-8 -*-
+"""产品对象公共基类：名称、标签子集、辅助画像的拼装。
+
+标签子集 **不再硬编码**：由在线侧 ``services.dimensions`` 从卖点维表
+（``local_excel2db`` 的 ``selling_points`` 表「标签ID」列）按 ``product_id``
+查出，在请求开始时一次性传入。基类只消费传入的映射，不读库、不读配置。
+
+``custom_label_info`` 仍是 IOP 返回的 ``{label_id: (标签名, 标签值)}``：
+维表决定「查哪些 ID」，IOP 决定「这些 ID 的名称与值」。
+"""
+from __future__ import annotations
 
 
 def build_auxiliary_portrait(queried_label_nvs):
     """按标签原本的名称与值逐项拼接，不做名称映射或按标签 ID 的值转换。
 
-    queried_label_nvs 由调用方按产品 ID 预先取好；商机回捞的标签子集固定，
-    这 5 个标签的名称直接取上游返回值即可。函数只读入参、不访问对象状态，
-    只在声明需要画像的业务分支调用，结果按 product_id 在一次请求内复用。
+    ``queried_label_nvs`` 由基类按卖点维表给出的标签 ID 顺序与
+    ``custom_label_info`` 对齐后传入；函数只读入参、不访问对象状态，
+    只在声明需要画像的业务分支调用，结果按 ``product_id`` 在一次请求内复用。
     """
     portrait_str = ""
     for label_nv in queried_label_nvs:
@@ -49,8 +39,10 @@ class ProductInfoRaw(object):
     def __init__(self, product_id, custom_label_info, selling_points, portrait_cache=None):
         self.product_id = product_id
         self.custom_label_info = custom_label_info
-        # 卖点维表由调用方在一次请求开始时读入并传入，避免每个产品对象各读一次
-        self.product_selling_point_match_dict = selling_points
+        # 卖点维表映射 {product_id: SellingPointRow}，由调用方在一次请求开始时
+        # 从 dimensions.load_selling_points() 读入并传入，避免每个对象各读一次库。
+        # 维表未命中 / 库缺失时该 dict 为空，标签子集自然为空、画像为空。
+        self.product_selling_point_match_dict = selling_points or {}
         self.product_name = self.__get_product_name()
         self.queried_label_ids = self.__get_queried_label_ids()
         self.queried_label_nvs = self.__get_queried_label_nvs()
@@ -70,19 +62,13 @@ class ProductInfoRaw(object):
         return self._portrait_cache[key]
 
     def __get_product_name(self):
-        if self.product_id not in self.product_selling_point_match_dict:
-            return None
-        return self.product_selling_point_match_dict[self.product_id][0]
+        row = self.product_selling_point_match_dict.get(self.product_id)
+        return getattr(row, "product_name", None) if row is not None else None
 
     def __get_queried_label_ids(self):
-        fixed = _OPP_LABEL_IDS.get(self.product_id)
-        if fixed is not None:
-            return list(fixed)
-
-        if self.product_id not in self.product_selling_point_match_dict:
-            return []
-
-        return self.product_selling_point_match_dict[self.product_id][2].split("\n")
+        """标签 ID 子集来自卖点维表该行的「标签ID」列，顺序已在维表侧定好。"""
+        row = self.product_selling_point_match_dict.get(self.product_id)
+        return list(getattr(row, "label_ids", ())) if row is not None else []
 
     def __get_queried_label_nvs(self):
         queried_label_nvs = []

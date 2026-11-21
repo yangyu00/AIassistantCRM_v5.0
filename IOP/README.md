@@ -85,8 +85,9 @@ python -c "from IOP import IOPConfig; print(IOPConfig.load())"
   低于下界一律回落；`max_attempts` 硬上限 20（不开放配置，防止配错导致长时间
   串行循环），`cooldown=0` 表示不冷却，`IOP_TIMEOUT_*` 填 0 或过小值回落默认，
   避免请求立刻超时。文件不存在时同理，全部回落默认值。
-- **凭据**：`IOPConfig.__repr__` 屏蔽 `secret`；`IOP/.env` 含明文凭据，公开分发
-  本目录前请把它加入 `.gitignore`，仓库里只保留 `.env.example`。
+- **凭据**：`IOPConfig.__repr__` 屏蔽 `secret`；`IOP/.env` 含明文凭据，按当前约定
+  随仓库入库，不进 `.gitignore`（`.env.example` 仍作脱敏模板保留）。部署时按实际
+  环境替换凭据；对外分发本仓库前请评估凭据暴露风险。
 
 ## 并发与可靠性约束
 

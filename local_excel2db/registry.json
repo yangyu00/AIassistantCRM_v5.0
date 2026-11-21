@@ -4,7 +4,7 @@
   "meta_table": "dim_meta",
   "tables": [
     {
-      "table": "custom_script",
+      "table": "selling_points",
       "source": "卖点维表.xlsx",
       "sheet": 0,
       "header_row": 1,

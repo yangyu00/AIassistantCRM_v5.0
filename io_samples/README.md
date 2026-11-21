@@ -7,7 +7,8 @@
 > **`local_excel2db` 唯一输入是项目根 `excels/` 文件夹**（维表投放目录），
 > 日常更新维表改 `excels/` 里的文件；本目录的两张 xlsx 只是格式样例，
 > `io_samples/` 是随仓库提交的格式样例目录。写入侧产物落在 `local_excel2db/runtime/`，
-> 在线侧不读取维表。详见下方「维表 Excel 的实际目录」。
+> 在线侧经 `services/dimensions.py` 每请求只读一次该产物（不直接读 xlsx）。
+> 详见下方「维表 Excel 的实际目录」。
 
 ## 文件清单
 
@@ -16,17 +17,17 @@
 | `F0955420261110000000.AVL`    | `sftp_avl2db` | 号卡业务样例，2 行记录                                                                                          |
 | `F0955520261110000000.AVL`    | `sftp_avl2db` | 套餐业务样例，2 行记录                                                                                          |
 | `F0955620261110000000.AVL`    | `sftp_avl2db` | 宽带业务样例，2 行记录                                                                                          |
-| `F0959120261110000000.AVL`    | `sftp_avl2db` | 控损样例，40 行；含 `<$B>` / `<$I>` / `<$U>` / `<#RRGGBB>` 自定义标签，供 `rewrite_by_spec_f09591` 的 HTML 转换对照       |
+| `F0959120261110000000.AVL`    | `sftp_avl2db` | 控损样例，40 行；含 `<$B>` / `<$I>` / `<$U>` / `<#RRGGBB>` 自定义标签，供 `services/loss_control` 的 HTML 转换对照       |
 | `F0962720261120000000.AVL`    | `sftp_avl2db` | 诊断业务，`SCENE_RANKE` 样例，10 行                                                                            |
 | `F0962820261120000000.AVL`    | `sftp_avl2db` | 诊断业务，`PRODUCT_SCENE` 样例，10 行                                                                          |
 | `F0962920261120000000.AVL`    | `sftp_avl2db` | 诊断业务，`PRODUCT_BUSINESS` 样例，10 行                                                                       |
 | `F0963020261120000000.AVL`    | `sftp_avl2db` | 诊断业务，`SCENE_QRHUASHU` 样例，10 行                                                                         |
 | `F0963120261120000000.AVL`    | `sftp_avl2db` | 诊断业务，`PRODUCT_YXHUASHU` 样例，10 行                                                                       |
 | `F0963220261120000000.AVL`    | `sftp_avl2db` | 诊断业务，`PRODUCT_WLHUASHU` 样例，10 行，含拒绝原因维度                                                               |
-| `F0963320261120000000.AVL`    | `sftp_avl2db` | 诊断业务，`CONF_USER_SCENE` 样例，10 行，含痛点诊断文本                                                                |
+| `F0963320261120000000.AVL`    | `sftp_avl2db` | 诊断业务，`CONF_USER_SCENE` 样例，10 行，含痛点诊断文本；**该 AVL 按 `product_no` 分 128 张表**，样例行会分散到不同 `F09633_{i}` |
 | `F0963520261120000000.AVL`    | `sftp_avl2db` | 诊断业务，`TAGID_TAGNAME` 样例，10 行                                                                          |
 | `iop_labels_query_raw_response.json` | `IOP`            | 标签查询接口的原始响应样例：`res_code` / `res_desc` / `result.BUSIINFO[]`，每项含 `ITEMCODE` / `ITEMNAME` / `ITEMVALUE` |
-| `卖点维表.xlsx`                   | `local_excel2db` | `custom_script` 表的格式样例（业务 ID 表头 → 库列 `product_id`、话术、标签 ID、`标签0…标签27` 等）                              |
+| `卖点维表.xlsx`                   | `local_excel2db` | `selling_points` 表的格式样例（业务 ID 表头 → 库列 `product_id`、话术、标签 ID、`标签0…标签27` 等）                              |
 | `标签转换维表.xlsx`                 | `local_excel2db` | `label_name_mapping` 表的格式样例，取名为「标签名称--标签ID」的 sheet                                                    |
 
 AVL 命名遵循 `{业务前缀}{YYYYMMDD}000000.AVL`，制表符分隔、UTF-8、无表头；
@@ -63,7 +64,9 @@ python -m sftp_avl2db --task F09591 --date 20261110 \
 
 `local_excel2db` 按包内 `registry.json` 的 `source`（纯文件名）从项目根
 `excels/` 轮询 xlsx、抽列写入 `local_excel2db/runtime/sqlite_db/dimensions.db`；
-本包只写不读，在线侧不消费这个库。
+本包只写不读，在线侧经 `services/dimensions.py` 每请求只读一次该库，按
+`product_id` 取 `selling_points.label_id`（Excel「标签ID」）拼商机辅助画像；诊断
+7 表关联失败时还取该行的产品名称 /「匹配结果2」/「标签N」话术拼四段兜底话术。
 
 ## 维表 Excel 的实际目录：`excels/`
 
@@ -71,7 +74,7 @@ python -m sftp_avl2db --task F09591 --date 20261110 \
 |---|---|---|
 | `io_samples/` | 随仓库提交的**格式样例**，用于对照表头 / 列格式 | 无人 |
 | **`excels/`** | **`local_excel2db` 唯一输入目录**，按 `__file__` 定位到项目根 | `python -m local_excel2db` 写入进程 |
-| `local_excel2db/runtime/sqlite_db/` | 写入侧唯一产物 `dimensions.db` | 无人（在线侧不读取） |
+| `local_excel2db/runtime/sqlite_db/` | 写入侧唯一产物 `dimensions.db` | `services/dimensions.py`（在线侧 `mode=ro`，每请求 1 次） |
 
 `registry.json` 里每张表的 `source` **只允许纯文件名**（如 `卖点维表.xlsx`），
 由 `config.py` 强制拼到 `INPUT_DIR = 项目根/excels/`；写 `../`、子目录或绝对路径
@@ -86,7 +89,7 @@ python -m local_excel2db --once
 两个实操提醒：
 
 - 想用本目录的样例做离线验证，把样例复制到 `excels/` 覆盖同名文件再跑
-  `--once`；别把这份样例库当成生产维表库用。改列映射或主键后要删库重建：
+  `--once`；别把这份样例库当成生产维表库用。改表名、列映射或主键后要删库重建：
   `rm local_excel2db/runtime/sqlite_db/dimensions.db`。
 - `excels/` 里是真实维表，通常不随仓库提交；如果确实放在工作区内，记得按需
   加进 `.gitignore`，别把客户/产品数据提交上去。
