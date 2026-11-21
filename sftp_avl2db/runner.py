@@ -34,6 +34,9 @@ class Avl2DbRunner:
         # datetime 便于单测锁定 cleanup cutoff；统一规范成可调用。
         raw_now = now if now is not None else datetime.now
         self._now = raw_now if callable(raw_now) else (lambda: raw_now)
+        # 库表清理「每天一次」的进程内闸门。只记日历序号，不落状态文件：
+        # 进程重启当天最多重复清一次，语义无害且不需要新的持久化契约。
+        self._last_purge_day: int | None = None
 
     # ---- 路径与命名 ----
     def _remote_path(self, remote_name: str) -> str:
@@ -136,11 +139,33 @@ class Avl2DbRunner:
         return imported
 
     # ---- 过期清理 ----
-    def cleanup_expired(self) -> dict:
-        """本地 AVL 清理 + 库表过期数据清理。"""
+    def _purge_plan(self, day_ordinal: int, cycle: int):
+        """算出当天要清的表：``(tables, 总表数, 生效周期)``。
+
+        ``tables=None`` 表示全量（旧行为 / 补跑）。启用轮转后按布局枚举顺序
+        把分表切成互斥的 N 组（``i % N == 日历序号 % N``），N 天恰好轮完，
+        组间不重叠、并集覆盖全部分表；固定表不参与轮转，仍每天全清一次。
+        周期大于表数时收敛到表数，避免出现大量「一张表都不清」的空转天。
+        """
+        all_tables = [t for _, t in self.layout.all_targets()]
+        if cycle <= 0:
+            return None, len(all_tables), 0
+        effective = min(cycle, len(all_tables))
+        if not getattr(self.profile, "sharded", False) or len(all_tables) <= 1:
+            return all_tables, len(all_tables), effective
+        picked = [t for i, t in enumerate(all_tables)
+                  if i % effective == day_ordinal % effective]
+        return picked, len(all_tables), effective
+
+    def cleanup_expired(self, *, force_full: bool = False) -> dict:
+        """本地 AVL 清理（每轮）+ 库表过期数据清理（按轮转周期每天一次）。
+
+        ``force_full=True`` 只用于单次 ``--date`` 补跑：跳过轮转、一次清完
+        全部库表，避免补跑结果只清掉 1/N 的表。
+        """
         removed, errors = [], []
 
-        # 按 mtime 删过期 .AVL，异常记 ERROR 后继续
+        # 按 mtime 删过期 .AVL，异常记 ERROR 后继续；这一步仍每轮执行
         local_dir = self.profile.local_dir
         expire = self._now() - timedelta(
             days=self.profile.retention.local_file_days)
@@ -161,25 +186,50 @@ class Avl2DbRunner:
         # cutoff = (now - DATA_EXPIRE_DAYS)
         cutoff = (self._now() - timedelta(
             days=self.profile.retention.data_days)).strftime("%Y-%m-%d")
-        purged = self.sink.purge_expired(cutoff)
-        for db_path, msg in self.sink.stats.errors:
-            errors.append(f"{db_path}: {msg}")
-            self.log.error(f"清理过期数据失败 {db_path}: {msg}")
-        if purged > 0:
-            self.log.info(f"清理过期数据 {purged} 条 (op_time < {cutoff})")
+        cycle = getattr(self.profile.retention, "purge_cycle_days", 0)
+        day = self._now().date().toordinal()
+        tables, total_tables, effective = self._purge_plan(day, cycle)
+
+        if cycle <= 0 or force_full:
+            # 旧行为 / 补跑：每轮（本次）全量清，不做日历闸门
+            should_purge, tables = True, None
+        elif self._last_purge_day == day:
+            should_purge, tables = False, []
+        else:
+            should_purge = True
+            self._last_purge_day = day
+
+        purged = 0
+        purged_tables = 0
+        if should_purge:
+            purged = self.sink.purge_expired(cutoff, tables)
+            purged_tables = total_tables if tables is None else len(tables)
+            for db_path, msg in self.sink.stats.errors:
+                errors.append(f"{db_path}: {msg}")
+                self.log.error(f"清理过期数据失败 {db_path}: {msg}")
+            if purged > 0:
+                self.log.info(f"清理过期数据 {purged} 条 (op_time < {cutoff})")
+            if force_full:
+                self.log.info("单次补跑：跳过轮转，本次全量清理库表")
+            elif cycle > 0:
+                self.log.info(
+                    f"库表清理轮转 cycle={effective}天 本次 "
+                    f"{purged_tables}/{total_tables} 张表 (op_time < {cutoff})")
 
         return {"removed_local_files": removed, "purged_rows": purged,
-                "cutoff": cutoff, "errors": errors}
+                "cutoff": cutoff, "purged_tables": purged_tables,
+                "purge_skipped": not should_purge, "errors": errors}
 
     # ---- 守护循环 ----
     def serve_forever(self, only_date: str | None = None,
                       force_reload: bool = False,
                       max_rounds: int | None = None,
                       date_strings=None) -> int:
-        """拿锁 → 单次 / 常驻 → 每轮清理 → sleep → 退出释放锁。
+        """拿锁 → 单次 / 常驻 → 每轮本地清理 + 按周期库表清理 → sleep → 退出释放锁。
 
         ``max_rounds`` / ``date_strings`` 仅用于离线测试；生产默认无限轮、
-        每轮按「昨天 + 今天」兜底。
+        每轮按「昨天 + 今天」兜底。单次 ``--date`` 补跑强制全量清库表，
+        不参与日历轮转。
         """
         if not self.lock.acquire():
             self.log.error(
@@ -196,7 +246,7 @@ class Avl2DbRunner:
             if only_date:
                 n = self.run_once_for_date(only_date,
                                            force_reload=force_reload)
-                self.cleanup_expired()
+                self.cleanup_expired(force_full=True)
                 self.log.info(f"单次模式结束，本次新入库 {n} 个文件")
                 return 0
 

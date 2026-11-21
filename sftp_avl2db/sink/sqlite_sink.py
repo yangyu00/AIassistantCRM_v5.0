@@ -137,24 +137,36 @@ class SqliteSink:
             batches.clear()
 
     # ---- 过期清理 ----
-    def purge_expired(self, cutoff: str) -> int:
-        """按 ``op_time < cutoff`` 清理全部库表，返回删除总行数。
+    def purge_expired(self, cutoff: str,
+                      tables: Iterable[str] | None = None) -> int:
+        """按 ``op_time < cutoff`` 清理库表，返回删除总行数。
+
+        ``tables=None`` → 清理布局枚举出的全部库表（旧行为）；传入表名集合
+        → 只清这批表，用于「每天轮转清一部分分表」，避免每轮全库扫描。
 
         库文件不存在则跳过；异常时 rollback、记录到 ``stats.errors`` 并
-        继续下一个库，**不抛给上层**。
+        继续下一个库，**不抛给上层**。清理结果仍写进 ``stats.purged``。
         """
         total = 0
         self.stats.purged = 0
         self.stats.errors = []
 
-        for db_path, tables in self._group_targets_by_db().items():
+        groups = self._group_targets_by_db()
+        if tables is not None:
+            picked = set(tables)
+            groups = {db: [t for t in ts if t in picked]
+                      for db, ts in groups.items()}
+            # 本轮没有命中任何表时连 DB 都不打开
+            groups = {db: ts for db, ts in groups.items() if ts}
+
+        for db_path, targets in groups.items():
             if not db_path.is_file():
                 continue
             conn = None
             try:
                 conn = sqlite3.connect(str(db_path))
                 cur = conn.cursor()
-                for t in tables:
+                for t in targets:
                     cur.execute(self.schema.delete_expired_sql(t), (cutoff,))
                     total += max(cur.rowcount, 0)
                 conn.commit()

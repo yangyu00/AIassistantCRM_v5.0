@@ -95,6 +95,8 @@ class RecordSink(Protocol):
 
     ``stats.errors`` 供 ``runner.cleanup_expired()`` 汇总清理失败，因此任何
     替换实现都要带这个属性（统一到 ``SinkStats`` 契约）。
+    ``purge_expired()`` 的 ``tables`` 传 ``None`` 表示清理全部库表（旧行为），
+    传表名集合表示只清这批表，供编排层做分表轮转；替换实现必须保留该参数。
     """
 
     stats: SinkStats
@@ -104,7 +106,8 @@ class RecordSink(Protocol):
     def write(self, filename: str, rows: Iterable[Row],
               layout: TableLayout | None = None) -> int: ...
 
-    def purge_expired(self, cutoff: str) -> int: ...
+    def purge_expired(self, cutoff: str,
+                      tables: Iterable[str] | None = None) -> int: ...
 
 
 @runtime_checkable

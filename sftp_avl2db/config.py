@@ -4,9 +4,10 @@
 ``ENV_PATH`` / ``RUNTIME_DIR`` 都按 ``__file__`` 定位；不读系统环境变量，
 ``import`` 零 I/O。配置分组与键说明见 ``README.md``。
 
-一个 AVL 一份 profile：``name`` 既是文件前缀、db 文件名，也是 CLI ``--task``
-值；``project`` 决定 ``files/`` 与 ``sqlite_db/`` 下的业务文件夹，同一业务的
-多个 AVL 共用这一对文件夹，靠文件名体现归属。
+一个 AVL 一份 profile：``name`` 既是文件前缀、db 文件名、CLI ``--task`` 值，
+也是 ``.env`` 里全部运行参数的键前缀（``<AVL>_*``）。``project`` **只**决定
+``files/`` 与 ``sqlite_db/`` 下的业务文件夹，同一业务的多个 AVL 共用这一对
+文件夹、靠文件名体现归属；它不参与任何配置键的拼装。
 """
 from __future__ import annotations
 
@@ -18,12 +19,13 @@ ENV_PATH = Path(__file__).with_name(".env")
 RUNTIME_DIR = Path(__file__).with_name("runtime")
 
 # AVL 声明表：(AVL 名 / 文件前缀, 项目名)。
-# 项目名同时用于：.env 键前缀（大写）、files/ 与 sqlite_db/ 的目录名。
+# 项目名**只**用于 files/ 与 sqlite_db/ 的目录分组，不再是 .env 键前缀：
+# 轮询 / 清理 / 批次 / 分表数等运行参数一律按 AVL 粒度声明为 <AVL>_*，
+# 没有项目级键，也没有任何项目级兜底（见 load_profiles()）。
 # 每个 AVL 的其他静态信息（schema / parser / 是否分表）都在 avl_specs.py；
 # 表名自动取 AVL 名，产品 ID 归业务路由，SQLite 连接配置在
-# sink/sqlite_sink.py 全局统一，本层都不声明。分表数读
-# <AVL>_NUM_TABLES（优先）或 <项目>_NUM_TABLES（兜底），见 _num_tables()。
-# 新增 AVL = 这里加一行 + avl_specs.py 加一份声明。
+# sink/sqlite_sink.py 全局统一，本层都不声明。
+# 新增 AVL = 这里加一行 + avl_specs.py 加一份声明 + .env 加一组 <AVL>_* 键。
 _AVLS = (
     ("F09554", "opportunity_recall"),
     ("F09555", "opportunity_recall"),
@@ -68,29 +70,31 @@ def _str(v: dict[str, str], key: str) -> str:
     return value
 
 
-def _int(v: dict[str, str], key: str) -> int:
+def _int(v: dict[str, str], key: str, *, min_value: int = 1) -> int:
+    """读一个整数键；缺键 / 非整数 / 小于 ``min_value`` 一律 fail-fast。
+
+    ``min_value=1`` 是默认（正整数：批次、天数、轮询间隔、分表数）；
+    ``min_value=0`` 供 ``*_PURGE_CYCLE_DAYS`` 使用——``0`` 是合法的
+    「每轮全量清理」，但它仍是**必需键**，不是「缺键时回落的默认值」。
+    """
     raw = _str(v, key)
+    label = "正整数" if min_value > 0 else "非负整数"
     try:
         n = int(raw)
     except ValueError as e:
         raise ValueError(
-            f"{key} 必须是正整数，当前为 {raw!r}（{ENV_PATH}）") from e
-    if n <= 0:
-        raise ValueError(f"{key} 必须为正整数，当前为 {n}（{ENV_PATH}）")
+            f"{key} 必须是{label}，当前为 {raw!r}（{ENV_PATH}）") from e
+    if n < min_value:
+        raise ValueError(f"{key} 必须是{label}，当前为 {n}（{ENV_PATH}）")
     return n
 
 
-def _num_tables(v: dict[str, str], name: str, project: str) -> int:
-    """分表数：AVL 级键优先，项目级键兜底。
+def _num_tables(v: dict[str, str], name: str) -> int:
+    """分表数：只认 ``<AVL>_NUM_TABLES``，没有项目级键、没有兜底。
 
-    同一项目下只有个别大表需要分表时，用 ``<AVL>_NUM_TABLES`` 单配即可，
-    不必给整个项目加 ``<项目>_NUM_TABLES``；项目级键仍是该项目全部分表
-    AVL 的默认值。``LOSS_CONTROL_NUM_TABLES`` 这类既有键因此原样生效。
+    仅分表 AVL 会调用；缺键直接 fail-fast，启动期就暴露配置漂移。
     """
-    avl_key = f"{name}_NUM_TABLES"
-    if avl_key in v:
-        return _int(v, avl_key)
-    return _int(v, f"{project.upper()}_NUM_TABLES")
+    return _int(v, f"{name}_NUM_TABLES")
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +115,10 @@ class RetentionConfig:
     data_days: int
     local_file_days: int
     poll_seconds: int
+    # 库表过期清理的轮转周期（天）：0=每轮全量，1=每天全量一次，
+    # N=每天只清 1/N 分表、N 天轮完。固定表不参与轮转，仍每天全清一次。
+    # 每个 AVL 独立取值，无项目级兜底。
+    purge_cycle_days: int
 
 
 @dataclass(frozen=True)
@@ -121,8 +129,8 @@ class TaskProfileConfig:
     无关；本地 AVL 与 db 输出按 ``project`` 归档到同一业务文件夹。
     """
 
-    name: str                                # AVL 名 / 文件前缀 / {name}.db
-    project: str                             # 项目名：输入输出文件夹
+    name: str                                # AVL 名 / 文件前缀 / {name}.db / .env 键前缀
+    project: str                             # 项目名：仅用于输入输出文件夹分组
     file_prefixes: tuple[str, ...]           # 恒为 (name,)
     sftp: SftpConfig
     retention: RetentionConfig
@@ -158,6 +166,11 @@ class TaskProfileConfig:
 def load_profiles(runtime_dir=None) -> dict[str, TaskProfileConfig]:
     """读包内 ``.env``、按 AVL 装配、跑契约校验，返回冻结的 profile 表。
 
+    运行参数一律按 AVL 粒度读取 ``<AVL>_*``：批次、数据 / 本地文件保留天数、
+    轮询间隔、库表清理轮转周期，以及分表 AVL 的 ``<AVL>_NUM_TABLES``。
+    没有项目级键、没有兜底、没有默认值——``project`` 只决定目录分组。
+    缺任一键都 fail-fast，避免同项目下不同 AVL 悄悄共用一套节奏。
+
     ``runtime_dir=None`` → 包内 ``runtime/``（写入侧默认产出目录）。
     显式传目录 → 产出隔离到该目录；相对路径按 CWD 解析，部署建议用绝对路径
     或把 ``runtime/`` 做成软链。
@@ -185,7 +198,8 @@ def load_profiles(runtime_dir=None) -> dict[str, TaskProfileConfig]:
         if spec.project != project:
             raise ValueError(
                 f"{name}: config 项目名 {project} 与 avl_specs 的 {spec.project} 不一致")
-        key = project.upper()
+        # key 恒为 AVL 名：轮询 / 清理 / 批次 / 分表数都按 db 粒度声明。
+        key = name
         profiles[name] = TaskProfileConfig(
             name=name,
             project=project,
@@ -196,6 +210,9 @@ def load_profiles(runtime_dir=None) -> dict[str, TaskProfileConfig]:
                 data_days=_int(v, f"{key}_DATA_EXPIRE_DAYS"),
                 local_file_days=_int(v, f"{key}_LOCAL_FILE_EXPIRE_DAYS"),
                 poll_seconds=_int(v, f"{key}_POLL_INTERVAL_SECONDS"),
+                # 允许 0（每轮全量），但仍是必需键，不是缺省回落值。
+                purge_cycle_days=_int(v, f"{key}_PURGE_CYCLE_DAYS",
+                                      min_value=0),
             ),
             local_dir=root / "files" / project,
             db_dir=root / "sqlite_db" / project,
@@ -206,7 +223,7 @@ def load_profiles(runtime_dir=None) -> dict[str, TaskProfileConfig]:
             primary_key=tuple(TABLE_PRIMARY_KEYS[spec.schema]),
             parser=spec.parser,
             sharded=spec.sharded,
-            num_tables=_num_tables(v, name, project) if spec.sharded else 0,
+            num_tables=_num_tables(v, name) if spec.sharded else 0,
             remote_name_tmpl="{prefix}{date}000000.AVL",
         )
 

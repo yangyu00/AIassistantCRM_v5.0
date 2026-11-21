@@ -33,6 +33,7 @@ export CRM_SMOKE_BASE_URL=http://10.0.0.5:8989
 | `check_call_stat.py` | `GET /api/callStat` | 单日、整月、连续两次查询（计数规则）、4 组非法参数 |
 | `check_iop_direct.py` | IOP 上游（**不经在线服务**） | 单独查标签画像，用来区分「上游挂了」还是「在线编排有问题」 |
 | `check_diagnosis_offline.py` | **不打任何服务**（临时 SQLite + 内存桩） | 诊断新线端到端自检：注册 / 解析 / 入库 → **`F09633` 分表（128 张、号码不串表、按 telnum 定位）** → **卖点维表 → 商机标签 ID / 辅助画像** → **业务包按业务名命名（1f：无历史别名、商机/控损输出等价）** → **诊断兜底（tagN 解析、匹配结果2 顺序遍历命中即中断、db 查空/交集空/IOP 无场景标签三种触发、四段输出）** → `services.reader` 多行查询 → 7 表关联 → 话术拼装 → `services/routing.py` 路由（含兜底 `code=0`），结论 `ALL PASS` |
+| `check_purge_rotation.py` | **不打任何服务**（临时 SQLite + 桩时钟） | 库表清理轮转自检：AVL 粒度配置（缺键 fail-fast / 无项目级兜底 / 逐 AVL 独立取值）/ 7 组并集覆盖 128 张表且组间互斥 / `cycle=0` 行为不变 / 固定表每日全清 / 每天只触发一次 `purge_expired()` / 跨 7 天过期行全清而新鲜行保留 / 单次补跑一次全量清，结论 `ALL PASS` |
 
 ## 运行
 
@@ -59,6 +60,9 @@ python tests/check_call_stat.py 2026-11-16
 
 # 诊断新线离线自检：不需要起服务、不连 SFTP / IOP，临时库跑完即删
 python tests/check_diagnosis_offline.py
+
+# 库表清理轮转自检：不连 SFTP、不写包内 runtime/，临时库跑完即删
+python tests/check_purge_rotation.py
 ```
 
 ## 副作用与注意
@@ -75,6 +79,10 @@ python tests/check_diagnosis_offline.py
   `F09633_NUM_TABLES` 分表数），结束后删除。
   末尾的在线路由段需要
   fastapi / pydantic / loguru / aiohttp，缺依赖会自动跳过，不影响主体断言。
+- **`check_purge_rotation.py` 同样不打服务**，只用标准库 + 临时 SQLite，
+  跑完即删；它会按 `.env.example` 临时补一份 `sftp_avl2db/.env` 验证
+  `load_profiles()` 装配，结束后删除。若部署机本来就有 `.env`，不覆盖、
+  只做字段存在性断言。
 - 这里的示例号码与产品 ID 都是占位值，换成真实数据才能拿到业务话术。
 
 ## 为什么没有 pytest
