@@ -9,6 +9,8 @@ sftp_avl2db/.env
 
 # ===== 运行时产出（写入进程生成，在线侧只读）=====
 sftp_avl2db/runtime/
+local_excel2db/runtime/*
+!local_excel2db/runtime/.gitkeep
 call_stat/runtime/*
 !call_stat/runtime/.gitkeep
 log/

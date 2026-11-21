@@ -8,7 +8,6 @@ from pydantic import BaseModel, Field, field_validator
 
 from IOP import IOPClient
 from call_stat import startup, flush, count_call_middleware, build_router
-from local_excel2db import load_product_selling_point
 from services.product_info_raw import ProductInfoRaw as ProductInfoRaw
 from services.rewrite_by_spec_f09554.rewrite import ProductInfoRewrite as ProductInfoBySpec9554
 from services.rewrite_by_spec_f09591.rewrite import ProductInfoRewrite as ProductInfoBySpec9591
@@ -68,8 +67,9 @@ async def lifespan(app: FastAPI):
 
 # 数据更新（SFTP 拉取 → SQLite 入库）由 sftp_avl2db 每个 AVL 各一个独立进程负责
 # （运行时数据目录为包内 runtime/）；
-# 维表更新由 python -m local_excel2db 独立进程负责；
-# 本进程对业务库与维表一律只读 SQLite，唯一写入是调用量统计
+# 维表写入由 python -m local_excel2db 独立进程负责（只写，产物在包内 runtime/），
+# 本进程不再读取维表：local_excel2db 的在线读取侧已下线，卖点映射恒为空。
+# 本进程只读 sftp_avl2db 业务库，唯一写入是调用量统计
 # （call_stat/runtime/call_sum.db，配置与产物都在 call_stat/ 包内）。
 app = FastAPI(lifespan=lifespan)
 register_errors_handlers(app)
@@ -166,8 +166,9 @@ async def marketAssistant(args: Args):
     portrait_cache = {}
 
     # 2. 建立产品对象列表
-    # 卖点维表一次请求只读一次，传给每个产品对象复用
-    product_selling_point_match_dict = load_product_selling_point()
+    # 维表在线读取侧已下线：卖点映射固定为空 dict（等价于原「无维表」降级），
+    # 仍按原有参数形状传给每个产品对象，不改业务对象接口
+    product_selling_point_match_dict = {}
     product_obj_list = []
     for one_product_obj in args.productId:
         # 逐产品 ID 声明标签依赖；提供者保证整请求最多查一次 IOP。

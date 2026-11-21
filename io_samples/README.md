@@ -4,8 +4,10 @@
 不是生产数据目录，在线进程不会主动读它。
 
 > **一句话先说清楚**：两张 `*.xlsx` 只是格式样例。
-> **`local_excel2db` 实际要处理的是 `excels/` 文件夹**（部署环境里的维表投放目录），
-> 日常更新维表改 `excels/` 里的文件，不要改本目录里的样例。详见下方「维表 Excel 的实际目录」。
+> **`local_excel2db` 唯一输入是项目根 `excels/` 文件夹**（维表投放目录），
+> 日常更新维表改 `excels/` 里的文件；本目录的两张 xlsx 只是格式样例，
+> 默认 `registry.json` 不再指向这里。写入侧产物落在 `local_excel2db/runtime/`，
+> 在线侧已不再读取维表。详见下方「维表 Excel 的实际目录」。
 
 ## 文件清单
 
@@ -47,44 +49,44 @@ python -m sftp_avl2db --task F09591 --date 20261110 \
 
 **3. 维表 Excel**（只吃两个 `.xlsx`，且见下节）
 
-`local_excel2db` 按 `registry.json` 中每张表的 `source` 轮询 xlsx、抽列写入
-`local_excel2db/sqlite_db/dimensions.db`，在线侧只读这个库。
+`local_excel2db` 按包内 `registry.json` 的 `source`（纯文件名）从项目根
+`excels/` 轮询 xlsx、抽列写入 `local_excel2db/runtime/sqlite_db/dimensions.db`；
+本包只写不读，在线侧不再消费这个库。
 
 ## 维表 Excel 的实际目录：`excels/`
 
 | 目录 | 角色 | 谁读它 |
 |---|---|---|
-| `io_samples/` | 随仓库提交的**格式样例**，用于开箱即跑和对照 | 默认 `registry.json` 的两处 `source`（当前指向这里） |
-| **`excels/`** | **`local_excel2db` 实际要处理的维表投放目录** | 生产写入进程按 `registry.json` 的 `source` 轮询 |
-| `local_excel2db/sqlite_db/` | 导入产物 `dimensions.db` | 在线侧 `mode=ro` 只读 |
+| `io_samples/` | 随仓库提交的**格式样例**，用于对照表头 / 列格式 | 无人；默认 `registry.json` 不再引用 |
+| **`excels/`** | **`local_excel2db` 唯一输入目录**，按 `__file__` 定位到项目根 | `python -m local_excel2db` 写入进程 |
+| `local_excel2db/runtime/sqlite_db/` | 写入侧唯一产物 `dimensions.db` | 无人（在线读取侧已下线） |
 
-**为什么容易搞混**：仓库自带的 `local_excel2db/registry.json` 为了让 clone 下来
-就能跑 `--once`，把两张表的 `source` 写成了 `../io_samples/卖点维表.xlsx` 和
-`../io_samples/标签转换维表.xlsx`。这是**样例口径**；实际部署时维表统一投放到
-`excels/`，把两处 `source` 改成 `../excels/卖点维表.xlsx` /
-`../excels/标签转换维表.xlsx` 即可，或者用 `--config` 指一份自己的 registry：
+`registry.json` 里每张表的 `source` **只允许纯文件名**（如 `卖点维表.xlsx`），
+由 `config.py` 强制拼到 `INPUT_DIR = 项目根/excels/`；写 `../`、子目录或绝对路径
+会在加载配置时直接报 `ValueError`。库、锁、日志的路径是代码常量，全部落在
+`local_excel2db/runtime/` 下；配置与产物都锚在包内、按 `__file__` 定位，与启动
+CWD 无关，registry 与 CLI 都不提供路径覆盖入口，也不读环境变量：
 
 ```bash
-python -m local_excel2db --config /path/to/registry.json --once
+python -m local_excel2db --once
 ```
-
-路径基准是 **registry.json 所在目录**（`config.py::_resolve`），与启动时的 CWD
-无关，所以也支持写绝对路径。配置说明见 [`local_excel2db/README.md`](../local_excel2db/README.md)。
 
 两个实操提醒：
 
-- 用仓库默认配置跑 `python -m local_excel2db --once` 会把**本目录的样例**导入
-  `dimensions.db`。本地调试没问题，但别把这份样例库当成生产维表库用；改列映射
-  或主键后要删库重建。
+- 想用本目录的样例做离线验证，把样例复制到 `excels/` 覆盖同名文件再跑
+  `--once`；别把这份样例库当成生产维表库用。改列映射或主键后要删库重建：
+  `rm local_excel2db/runtime/sqlite_db/dimensions.db`。
 - `excels/` 里是真实维表，通常不随仓库提交；如果确实放在工作区内，记得按需
   加进 `.gitignore`，别把客户/产品数据提交上去。
+
+配置说明见 [`local_excel2db/README.md`](../local_excel2db/README.md)。
 
 ## 数据与脱敏
 
 AVL 样例里含手机号、通话总结、拒绝原因等话术文本，JSON 样例里含
 `ITEMVALUE`，两张 xlsx 含产品名与话术——都是**脱敏后的样例数据**，不代表真实
 业务内容。往这里补新样例前先确认无真实客户信息；生产数据一律走
-`sftp_avl2db/runtime/`、`excels/` 等运行时目录，项目 `.gitignore` 已忽略
-`*.db`、`*.log`、`runtime/` 等产物。
+`sftp_avl2db/runtime/`、`local_excel2db/runtime/`、`excels/` 等运行时目录，
+项目 `.gitignore` 已忽略 `*.db`、`*.log`、各包 `runtime/` 等产物。
 
 `tests/` 里的手工冒烟脚本打的是运行中的服务，不使用这些样例文件。

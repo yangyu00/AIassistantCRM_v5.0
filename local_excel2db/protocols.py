@@ -1,27 +1,24 @@
 # -*- coding: utf-8 -*-
 """组件契约与结果对象（纯 typing，零 I/O、零第三方依赖）。
 
-只约束方法形状，不约束实现技术；各层通过构造器注入，可换成测试替身或宿主
-项目自己的实现：
+只约束方法形状，不约束实现技术；各层通过构造器注入，可换成测试替身：
 
-    ExcelSource            注册 xlsx 的指纹与抽列
-    ReadableRepository     只读查询（读取侧替身只需实现 query / close）
-    WritableRepository     建表 / 指纹 / 整表覆盖（写入侧替身不需实现 query）
-    DimensionRepository    读写合一（默认 Sqlite 实现）
+    ExcelSource            注册 xlsx 的指纹与抽列（写入侧的输入解析）
+    WritableRepository     建表 / 指纹 / 整表覆盖（只写，不提供查询）
     InstanceLock           单机单实例锁
     LogSink                日志出口
     Sleeper                轮询休眠（可替换成立即返回）
+
+本包不含任何只读查库 / 业务 dict 重建契约，在线读取侧已整体删除。
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Protocol, Sequence, runtime_checkable
+from typing import TYPE_CHECKING, Callable, Protocol, runtime_checkable
 
 if TYPE_CHECKING:  # 避免运行时循环导入；models 不依赖本模块
     from .models import TableSpec
-
-Row = tuple
 
 
 @dataclass(frozen=True)
@@ -37,7 +34,7 @@ class FileFingerprint:
 class ParsedRows:
     """一次抽列结果：已按主键去重、按 columns 顺序 cast 好的行值。"""
 
-    rows: tuple[Row, ...]
+    rows: tuple[tuple, ...]
     skipped_empty: int = 0
     duplicated: int = 0
     header: tuple[str, ...] = ()
@@ -67,7 +64,7 @@ class SchemaMismatch(RuntimeError):
 
 @runtime_checkable
 class ExcelSource(Protocol):
-    """注册 xlsx 的读取侧：指纹 + 抽列。"""
+    """注册 xlsx 的源文件侧：指纹 + 抽列。"""
 
     def fingerprint(self, path: Path) -> FileFingerprint: ...
 
@@ -75,18 +72,8 @@ class ExcelSource(Protocol):
 
 
 @runtime_checkable
-class ReadableRepository(Protocol):
-    """只读查询契约：``DimensionReader`` 只需要这两个方法。"""
-
-    def query(self, table: str, columns: Sequence[str],
-              *, order_by_rowid: bool = False) -> list[Row]: ...
-
-    def close(self) -> None: ...
-
-
-@runtime_checkable
 class WritableRepository(Protocol):
-    """写入契约：``TableImporter`` 只需要这四个方法 + close。"""
+    """写入契约：``TableImporter`` 只需要这五个方法。"""
 
     def ensure_meta(self) -> None: ...
 
@@ -98,11 +85,6 @@ class WritableRepository(Protocol):
                     fingerprint: FileFingerprint, source_path: Path) -> None: ...
 
     def close(self) -> None: ...
-
-
-@runtime_checkable
-class DimensionRepository(ReadableRepository, WritableRepository, Protocol):
-    """读写合一契约；默认的 ``SqliteDimensionRepository`` 实现全部方法。"""
 
 
 @runtime_checkable
@@ -131,8 +113,7 @@ Sleeper = Callable[[float], None]
 
 
 __all__ = [
-    "Row", "FileFingerprint", "ParsedRows", "ImportResult",
+    "FileFingerprint", "ParsedRows", "ImportResult",
     "MissingColumn", "SchemaMismatch",
-    "ExcelSource", "ReadableRepository", "WritableRepository",
-    "DimensionRepository", "InstanceLock", "LogSink", "Sleeper",
+    "ExcelSource", "WritableRepository", "InstanceLock", "LogSink", "Sleeper",
 ]

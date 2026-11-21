@@ -1,31 +1,19 @@
 {
-  "database": "sqlite_db/dimensions.db",
   "poll_interval_seconds": 600,
   "version_column": "version",
   "meta_table": "dim_meta",
   "tables": [
     {
       "table": "product_selling_point_match",
-      "source": "../excels/卖点维表.xlsx",
+      "source": "卖点维表.xlsx",
       "sheet": 0,
       "header_row": 1,
       "primary_key": ["business_id"],
-      "lookup": {
-        "key": "business_id",
-        "values": ["product_name", "selling_point", "label_id"]
-      },
       "dynamic_columns": {
         "source_prefix": "标签",
         "column_prefix": "tag_",
         "start": 0,
         "count": 28
-      },
-      "cut_in_script": {
-        "key": "business_id",
-        "fallback": "fallback_script",
-        "groups": "match_result",
-        "tags": "dynamic_columns",
-        "fallback_key": "兜底话术"
       },
       "columns": [
         {"source": "业务ID", "column": "business_id", "type": "TEXT"},
@@ -40,11 +28,10 @@
     },
     {
       "table": "label_name_mapping",
-      "source": "../excels/标签转换维表.xlsx",
+      "source": "标签转换维表.xlsx",
       "sheet": "标签名称--标签ID",
       "header_row": 1,
       "primary_key": ["label_id"],
-      "lookup": {"key": "label_id", "value": "display_name"},
       "columns": [
         {"source": "标签ID", "column": "label_id", "type": "TEXT"},
         {"source": "营销助手显示名字", "column": "display_name", "type": "TEXT"},

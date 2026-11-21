@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
-"""注册 xlsx 的读取侧：内容指纹 + 按 registry 抽列去重。
+"""注册 xlsx 的源文件侧：内容指纹 + 按 registry 抽列去重。
 
+这是**写入侧的输入解析**（读 Excel 文件），不是在线读取侧；本包不提供任何
+查库、重建业务 dict 或话术加工的能力，那部分已整体删除。
 ``openpyxl`` 延迟到方法内导入，import 本模块不会拉起第三方依赖。
+
 抽列 / 去重 / 类型转换规则平移自旧 ``dim_importer``，行为逐字保持：
 ``column_index`` 优先于表头名、``optional`` 缺列填 ``default``、主键为空跳过、
-重复主键后写覆盖；库里只存原始单元格文本，加工留给读取侧。
+重复主键后写覆盖；库里只存原始单元格文本，不做 HTML 包装或话术拆分。
 """
 from __future__ import annotations
 

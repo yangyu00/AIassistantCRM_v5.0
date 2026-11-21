@@ -3,15 +3,15 @@
 > **文档地图**：本文件是全局入口（在线业务 / 架构 / 降级总表 / 在线侧集成逻辑）。
 > 四个可独立复用组件各有一份说明文件（用法、配置、流程、不变量与降级）：
 > - [`IOP/README.md`](IOP/README.md)（运行参数改同目录的 `IOP/.env`）
-> - [`local_excel2db/README.md`](local_excel2db/README.md)
+> - [`local_excel2db/README.md`](local_excel2db/README.md)（写入侧：配置与产物都在包内，运行时产物落在 `local_excel2db/runtime/`）
 > - [`sftp_avl2db/README.md`](sftp_avl2db/README.md)（运行参数改 `sftp_avl2db/.env`，产出落在包内 `runtime/`）
 > - [`call_stat/Readme.md`](call_stat/Readme.md)（运行参数改 `call_stat/.env`，库与 CSV 落在包内 `runtime/`，可 `python -m call_stat` 独立调用）
 > - [`tests/README.md`](tests/README.md)（手工冒烟脚本：requests 打在线接口 + IOP 直连，**不是 pytest 单元测试**）
-> - [`io_samples/README.md`](io_samples/README.md)（AVL / IOP 响应 / 维表 xlsx 样例；**维表实际投放目录是 `excels/`**，不是 `io_samples/`）
+> - [`io_samples/README.md`](io_samples/README.md)（AVL / IOP 响应 / 维表 xlsx 样例；**`local_excel2db` 唯一输入是项目根 `excels/`**，样例只作格式对照）
 
 > 各包的说明进各自目录，在线业务与全局视角留在本文件。
 
-> 在线 API 的运行参数（端口、路由、日志目录）内联在 `main.py` 顶部常量区；四个组件的配置在各自包内的 `.env` / `registry.json`。
+> 在线 API 的运行参数（端口、路由、日志目录）内联在 `main.py` 顶部常量区；四个组件的配置与运行时产物都锚在各自包内（`.env` / `registry.json` / `runtime/`），按 `__file__` 定位、与启动 CWD 无关。
 
 > 第四个可独立复用组件 `call_stat/` 提供在线调用量统计，配置与产物均内聚在包目录内，见下文「调用量统计接入」。
 
@@ -19,29 +19,32 @@
 > `main.py` 如何调用与编排组件——IOP 客户端的进程级共享、按业务决定是否查询、
 > 标签进入产品对象的路径——统一记在本文件「请求处理与路由」，不留在模块文档里。
 
-本仓库由 **6 个进程**组成：4 个 `sftp_avl2db` 拉取任务（每个 AVL 一个 db、一个进程）、1 个 `local_excel2db` 维表写入、1 个 `main.py` 在线 API；在线侧对业务库与维表一律只读 SQLite（唯一写入是调用量统计 `call_stat/runtime/call_sum.db`）。`call_stat/` 是在线进程内的自包含模块：配置、代码、产物、说明都在包目录内，按 `__file__` 定位，与启动 CWD 无关；`sftp_avl2db/runtime/` 同理是写入侧产出的运行时数据目录。库未就绪时 API 按「无业务记录 / 无维表」降级，不会 500。
+本仓库由 **6 个进程**组成：4 个 `sftp_avl2db` 拉取任务（每个 AVL 一个 db、一个进程）、1 个 `local_excel2db` 维表写入、1 个 `main.py` 在线 API；在线侧只读 `sftp_avl2db` 业务库，**维表在线读取侧已下线**（卖点映射恒为空），唯一写入是调用量统计 `call_stat/runtime/call_sum.db`。`call_stat/` 是在线进程内的自包含模块：配置、代码、产物、说明都在包目录内，按 `__file__` 定位，与启动 CWD 无关；`sftp_avl2db/runtime/` 与 `local_excel2db/runtime/` 同理是写入侧产出的运行时数据目录。业务库未就绪时 API 按「无业务记录」降级，不会 500；维表不再参与在线链路，维表侧故障不影响 API。
 
 ## 架构与数据流向
 
 ```
-sftp_avl2db/runtime/sqlite_db/{项目名}/{AVL}.db ──→ sftp_avl2db/data_query.py ─┐
-                                    ↑ 只收 AVL 前缀（product_id 留在 main.py） ├─→ main.py（路由）→ services/（重组）→ output_script
-dimensions.db ──→ reader.DimensionReader ──→ transform ────────────────────┘
+sftp_avl2db/runtime/sqlite_db/{项目名}/{AVL}.db ──→ sftp_avl2db/data_query.py ──→ main.py（路由）→ services/（重组）→ output_script
+                                    ↑ 只收 AVL 前缀（product_id 留在 main.py）
+
+local_excel2db：项目根 excels/*.xlsx ──→ 写入进程 ──→ local_excel2db/runtime/sqlite_db/dimensions.db
+                                                    （只写，不参与在线请求链路）
 ```
 
-> `sftp_avl2db/runtime/` 是**运行时数据目录**（写入侧产出：`log/` `state/`
-> `files/` `sqlite_db/`），同目录还有唯一的 `.env`；在线侧只读这些库。
-> 库内表名恒等于 AVL 名（分表为 `{AVL}_{分表号}`）。
-> 部署时不要整目录覆盖 `sftp_avl2db/`，可把 `runtime/` 做成指向数据盘的软链。
+> `sftp_avl2db/runtime/` 与 `local_excel2db/runtime/` 都是**运行时数据目录**
+> （写入侧产出：`sqlite_db/` `state/` `log/`，前者另有 `files/`），配置在各自包内
+> （`.env` / `registry.json`），全部按 `__file__` 定位、与 CWD 无关。
+> 在线侧只读 `sftp_avl2db` 业务库；库内表名恒等于 AVL 名（分表为 `{AVL}_{分表号}`）。
+> `local_excel2db` 的输入固定为项目根 `excels/`（`source` 只允许纯文件名），
+> 产物固定落在包内 `runtime/`，registry 与 CLI 都不提供路径覆盖。
+> 部署时不要整目录覆盖这两个包，可把各自的 `runtime/` 做成指向数据盘的软链。
 
 | 进程 | 数量 | 职责 |
 |---|---|---|
 | 写入侧进程 | 5 | 4 个 SFTP 拉取（每个 AVL 一个）+ 1 个 `python -m local_excel2db`，见各包说明 |
-| 在线 API | 1 | 只读业务库与维表、按路由选业务对象并拼装话术；另由 `call_stat` 模块在内存累计调用量并按阈值写入 `call_stat/runtime/call_sum.db` |
+| 在线 API | 1 | 只读业务库、按路由选业务对象并拼装话术；维表读取侧已下线，卖点映射恒为空；另由 `call_stat` 模块在内存累计调用量并按阈值写入 `call_stat/runtime/call_sum.db` |
 
-**部署时 6 个进程都要起**。库未就绪时 API 按「无业务记录 / 无维表」降级，不会 500。
-维表更新后无需重启在线进程，下一次请求即读到新值。`sftp_avl2db/.env` 中
-`SFTP_PASSWORD` 为占位值，部署前须填真实密码；`IOP/.env` 含明文凭据，不应入库。
+**部署时 6 个进程都要起**（`local_excel2db` 仍负责维护维表库，只是在线侧不再读它）。业务库未就绪时 API 按「无业务记录」降级，不会 500；维表侧故障不再影响在线进程。`sftp_avl2db/.env` 中 `SFTP_PASSWORD` 为占位值，部署前须填真实密码；`IOP/.env` 含明文凭据，不应入库。
 
 ## 降级与容错（跨模块总表）
 
@@ -49,13 +52,13 @@ dimensions.db ──→ reader.DimensionReader ──→ transform ────�
 
 | 侧 | 触发 | 行为 | 细目 |
 |---|---|---|---|
-| 维表 `local_excel2db` | 库/表/列未就绪、配置异常、查询失败、注册 xlsx 缺失 | 读取侧返回 `{}`、写入侧跳过并保留上次版本，API 不 500 | [`local_excel2db/README.md`](local_excel2db/README.md)「读取侧与降级」 |
+| 维表写入 `local_excel2db` | 注册 xlsx 缺失、缺必需表头列、表结构漂移 | 写入侧告警跳过本表、保留上次成功版本，下轮重试；在线侧不再读取维表，API 不受影响 | [`local_excel2db/README.md`](local_excel2db/README.md)「容错与日志」 |
 | 业务库 `sftp_avl2db` | 库不存在、AVL 未注册、查询异常 | `sftp_avl2db/data_query.py` 返回 `{}`，spec 子类走空记录分支 | [`sftp_avl2db/README.md`](sftp_avl2db/README.md)「拉取不变量」 |
 | IOP | token / 标签超时、连接失败、响应异常、失败冷却期 | 重试退避冷却后降级 `{}`，不阻塞其它并发请求 | [`IOP/README.md`](IOP/README.md)「并发与可靠性约束」 |
 | 调用量库 | `call_stat/runtime/call_sum.db` 写入 / 启动读取失败 | 保留 `_PENDING` 下轮重试，或基数按 0 恢复、服务照常启动 | [`call_stat/Readme.md`](call_stat/Readme.md)「降级与容错」 |
 | 在线 API | 任何上述依赖不可用 | 最终 `code: "2"` 空话术，不抛 500 | 见「请求处理与路由」 |
 
-维表侧出任何问题都不会让 API 500；**不做进程级缓存**，每次调用读一次全表，天然读到写入侧的最新值，改库后下一次请求即生效、无需重启。
+维表读取侧已下线，在线侧不再打开维表库、也不再做进程级缓存；`dimensions.db` 只由 `python -m local_excel2db` 独立进程维护，维表侧出任何问题都不会让 API 500。
 
 ## 请求处理与路由（`main.py::marketAssistant`）
 
@@ -81,7 +84,7 @@ dimensions.db ──→ reader.DimensionReader ──→ transform ────�
 
 1. 在请求处理函数内创建 `IopLabelProvider`（标签惰性提供者）与空的
    `portrait_cache`；二者都是函数局部变量，不跨请求共享。
-2. 卖点维表在循环外读入 1 次，作为同一份 dict 显式传给每个产品对象。
+2. 卖点映射固定为空 dict（维表读取侧已下线），仍在循环外建一次并显式传给每个产品对象，保持业务对象参数形状不变。
 3. 按 `productId` 列表逐个建对象：先由 `iop_need(product_id)` 声明该 ID 对
    IOP 标签的依赖，非 `NONE` 时经提供者取标签（整请求最多 1 次），
    再按路由命中即 `continue`（顺序不可调换）：
@@ -98,8 +101,8 @@ dimensions.db ──→ reader.DimensionReader ──→ transform ────�
 `data_query.query(avl, telnum)` 即可，读取侧只按 `{AVL}.db` 定位。
 
 第 3 类是唯一的兜底：不属于商机回捞 / 控损的产品 ID 全部落到这里，当前统一
-输出 `code: "2"` 空话术，等客户诊断新线实现后再切换。维表业务路由已下线，
-卖点表读取不再参与路由判断，只用于产品名与非商机 ID 的标签子集。
+输出 `code: "2"` 空话术，等客户诊断新线实现后再切换。维表业务路由与在线读取
+均已下线，卖点映射恒为空 dict，不再参与路由判断、产品名或标签子集。
 
 **按业务声明 IOP / 画像依赖**（`main.py::iop_need()`，由本文件的路由集合
 派生；判定按全部 `productId` 取并集，不短路到第一个）：
@@ -112,12 +115,14 @@ dimensions.db ──→ reader.DimensionReader ──→ transform ────�
 
 一次请求内的次数（不含 token 刷新，刷新次数另见 [`IOP/README.md`](IOP/README.md) 的「并发与可靠性约束 → token 单飞」）：
 
-| 待查 `productId` 列表 | IOP 标签查询 | 画像拼装 | 卖点表读取 |
-|---|---|---|---|
-| 纯控损 | **0** | **0** | 1 |
-| 纯商机 / 纯兜底 / 控损+商机 / 控损+兜底 / 三混合 | 1 | 商机不同 ID 数 | 1 |
-| 3 个不同商机 | 1 | 3 | 1 |
-| 同一商机 ID 重复 3 次 | 1 | 1 | 1 |
+| 待查 `productId` 列表 | IOP 标签查询 | 画像拼装 |
+|---|---|---|
+| 纯控损 | **0** | **0** |
+| 纯商机 / 纯兜底 / 控损+商机 / 控损+兜底 / 三混合 | 1 | 商机不同 ID 数 |
+| 3 个不同商机 | 1 | 3 |
+| 同一商机 ID 重复 3 次 | 1 | 1 |
+
+卖点映射恒为 `{}`，不再有维表读库次数，也不计入上表。
 
 `custom_label_info` 与 `portrait_cache` 都只在 `marketAssistant` 函数体内创建：
 标签属于单个手机号，放模块级或 `app.state` 缓存会把上一个用户的标签带给
@@ -134,8 +139,7 @@ dimensions.db ──→ reader.DimensionReader ──→ transform ────�
 
 - `queried_label_ids`：商机回捞的 3 个 ID 取代码内固定集（号卡 / 套餐共用
   3 个标签、宽带 4 个，两组重叠 2 个、合计 5 个；元组顺序即画像拼接顺序）；
-  其余 ID 从卖点维表元组的 `[2]` 经 `.split("\n")` 得到（读取侧不提前拆、
-  不过滤空串、不额外 strip 每项）。
+  其余 ID 当前无维表来源（卖点映射恒为 `{}`），标签子集为空。
 - `queried_label_nvs`：按 `queried_label_ids` 顺序与 `custom_label_info` 对齐，缺失填 `None`。
 
 `auxiliary_portrait` 是 **property，懒执行**：模块级纯函数
@@ -152,7 +156,7 @@ property 直接返回 `""`，**连 `build_auxiliary_portrait()` 都不进**。`_
 
 ## 调用量统计接入（`call_stat/`）
 
-调用量统计由独立模块 `call_stat/` 提供：配置唯一来源是 `call_stat/.env`，库与 CSV 恒落在 `call_stat/runtime/`。组件自身的入口、配置、链路、不变量、降级、部署与自检全部记在 [`call_stat/Readme.md`](call_stat/Readme.md)；在线侧运行参数（端口、路由、日志目录）已内联在 `main.py` 顶部，仓库根目录不再有 `config.py` / `config.yaml`。
+调用量统计由独立模块 `call_stat/` 提供：配置唯一来源是 `call_stat/.env`，库与 CSV 恒落在 `call_stat/runtime/`。组件自身的入口、配置、链路、不变量、降级、部署与自检全部记在 [`call_stat/Readme.md`](call_stat/Readme.md)；在线侧运行参数（端口、路由、日志目录）已内联在 `main.py` 顶部，仓库根目录不再有 `config.py` / `config.yaml`。维表写入侧同理：配置锚在 `local_excel2db/registry.json`、产物锚在 `local_excel2db/runtime/`，输入固定为项目根 `excels/`。
 
 集成层只做三件事（都在 `main.py`）：
 
@@ -183,16 +187,16 @@ python -m call_stat --self-check
 - `import main` 正常，`app.router.on_startup` 为空（无定时任务）。
 - 路由只有三类：商机 3 个 ID 走 `ProductInfoBySpec9554`、控损 ID 有记录时走
   `ProductInfoBySpec9591`、其余全部落 `ProductInfoRaw` 并返回 `code: "2"`
-  空话术（产品名与话术均为空）。把维表里存在的业务 ID 传进去也应是 `code: "2"`，
-  不能因为 `product_name` 非空而返回 `code: "0"` + 空话术。
+  空话术（产品名与话术均为空）。维表读取侧已下线，卖点映射恒为 `{}`，
+  所有非商机 ID 的 `product_name` 都为空，不会误判为 `code: "0"`。
 
 - **按业务声明 IOP / 画像依赖**：`iop_need()` 对商机 3 个 ID 返回
   `PORTRAIT`、控损返回 `NONE`、其余（含维表里存在的业务 ID）返回
   `RAW_LABELS`；判定按全部 `productId` 取并集，把控损 ID 排在商机之前也不能
   漏查。
 
-- **画像次数**：打桩 `build_auxiliary_portrait()`，控损 / 兜底 / 维表 ID 落兜底
-  应为 **0** 次；纯商机 **1** 次；3 个不同商机 **3** 次；同一商机 ID 重复 3 次
+- **画像次数**：打桩 `build_auxiliary_portrait()`，控损 / 兜底 / 维表曾收录的 ID
+  落兜底应为 **0** 次；纯商机 **1** 次；3 个不同商机 **3** 次；同一商机 ID 重复 3 次
   仍 **1** 次；混合请求等于该请求里不同的商机 `product_id` 数。
 - **请求内隔离**：`IopLabelProvider` 与 `portrait_cache` 都在 `marketAssistant`
   函数体内创建，模块级 / `app.state` 不应有标签或画像缓存；连续两个不同手机号
@@ -217,8 +221,9 @@ python -m call_stat --self-check
 - **客户诊断新线（暂不实现）**：`output_script` 计划由多张维表结合 IOP 用户画像
   拼装。这些表的结构与获取形式尚未确定，暂不在项目中实现，也不建代码占位或
   空模块。不属于商机回捞 / 控损的产品 ID 全部作为诊断兜底，当前统一输出
-  `code: "2"` 空话术，等新线实现后再切换；维表库、`registry.json`、
-  `reader.py` / `transform.py` 的加工能力保留供复用。诊断兜底声明
+  `code: "2"` 空话术，等新线实现后再切换；维表写入链路（`registry.json`、
+  `python -m local_excel2db`、包内 `runtime/` 产物）保留供复用，在线读取侧
+  `reader.py` / `transform.py` 已删除。诊断兜底声明
   `RAW_LABELS`、一定触发 IOP；当前输出尚未消费标签，属已确认的预留。
 - 按业务声明 IOP / 画像依赖：三态声明、请求级惰性标签提供者、画像按
   `product_id` 懒执行缓存、卖点表每请求 1 次，见「请求处理与路由」
