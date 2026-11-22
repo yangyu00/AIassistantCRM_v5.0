@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""``python -m local_excel2db`` 的进程退出点；逻辑与退出码在 ``cli.main``。"""
+"""``python -m local_excel2db`` 的进程退出点。"""
 import sys
 
 from .cli import main

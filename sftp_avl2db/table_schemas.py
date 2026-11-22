@@ -1,20 +1,5 @@
 # -*- coding: utf-8 -*-
-"""表结构定义：按名字注册，供多个 AVL 复用。
-
-一个 AVL 对应一个 db；表结构按这里的 ``schema`` 名注册。同一业务的多个
-AVL 可以引用同一个名字；不同表结构的 AVL 在这里加一份定义，再到
-``avl_specs.AVL_SPECS`` 里指过来。
-
-``TABLE_PRIMARY_KEYS`` 按同一 ``schema`` 名注册主键（支持复合主键），由
-``config.load_profiles()`` 写进 profile，建表 DDL 与空主键跳过判定共用：
-主键列自动补 ``NOT NULL``，``INSERT OR REPLACE`` 按主键幂等。
-
-纯静态、零 I/O；列顺序供写入侧建表 DDL 与解析器列数校验使用。
-
-诊断新线 8 张表按「话术涉及表结构.xls」的物理 DDL 与 io_samples 的 AVL 列顺序
-注册；业务口径见「营销话术字段取数逻辑说明」。两处口径不一致时以 xls 物理 DDL
-为准（见 ``product_wlhuashu`` 注释），避免与上游文件列数、列名错位。
-"""
+"""表结构定义：按名字注册，供多个 AVL 复用。"""
 from __future__ import annotations
 
 from typing import Final, Mapping
@@ -42,7 +27,6 @@ TABLE_SCHEMAS: Final[Mapping[str, tuple[tuple[str, str], ...]]] = {
         ("strategy_name", "TEXT"),
     ),
 
-    # ===================== 诊断新线（project = diagnosis） =====================
     # 列顺序 = AVL 制表符分隔顺序；类型按 xls 的长度/类型（date → TEXT，
     # 便于 delete_expired_sql 按 'YYYY-MM-DD' 字符串比较；bigint → INTEGER）。
     # F09627 / DIM_MARKET_SCENE_RANK_ONCE / 场景优先级
@@ -77,9 +61,6 @@ TABLE_SCHEMAS: Final[Mapping[str, tuple[tuple[str, str], ...]]] = {
         ("business_type", "VARCHAR(100)"),  # BUSINESS_TYPE 产品
         ("yx_huashu", "TEXT"),              # YX_HUASHU 营销话术
     ),
-    # F09632 / DIM_MARKET_PRODUCT_WLHUASHU_ONCE / 产品-挽留话术维表
-    # 物理列名按 xls DDL 注册为 WL_HUASHU（取数说明 09 记作 YX_HUASHU，
-    # 业务侧如需别名另做映射，不改物理列名）。
     "product_wlhuashu": (
         ("op_time", "TEXT"),
         ("business_type", "VARCHAR(100)"),  # BUSINESS_TYPE 产品
@@ -135,7 +116,7 @@ TABLE_PRIMARY_KEYS: Final[Mapping[str, tuple[str, ...]]] = {
 
 
 def schema_of(name: str) -> tuple[tuple[str, str], ...]:
-    """按名字取整份列定义；未注册直接报错，不静默回落。"""
+    """按名字取整份列定义。"""
     try:
         return TABLE_SCHEMAS[name]
     except KeyError as e:
@@ -143,12 +124,12 @@ def schema_of(name: str) -> tuple[tuple[str, str], ...]:
 
 
 def schema_columns(name: str) -> list[str]:
-    """列名顺序（不含类型）；写入侧建表 DDL 与解析器列数校验用。"""
+    """列名顺序（不含类型）"""
     return [c[0] for c in schema_of(name)]
 
 
 def schema_primary_key(name: str) -> tuple[str, ...]:
-    """按名字取主键列（复合主键为多列）；未注册直接报错。"""
+    """按名字取主键列（复合主键为多列）"""
     try:
         return TABLE_PRIMARY_KEYS[name]
     except KeyError as e:

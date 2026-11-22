@@ -1,24 +1,5 @@
 # -*- coding: utf-8 -*-
-"""``call_stat``：调用量统计独立模块（包内配置 + 包内产物 + 可独立调用）。
-
-在线接入（详见 ``Readme.md``「集成」）::
-
-    from call_stat import startup, flush, count_call_middleware, build_router
-
-    app = FastAPI(lifespan=lifespan)          # lifespan 里 startup() / flush()
-    app.middleware("http")(count_call_middleware)
-    app.include_router(build_router())        # 路径取自 call_stat/.env
-
-独立调用::
-
-    python -m call_stat --date 2026-11-16
-    python -m call_stat --month 2026-11 --export
-    python -m call_stat --self-check
-
-``import call_stat`` 零 I/O、零第三方依赖：不读 .env、不建目录、不连库、
-不加载 fastapi；配置在首次调用 ``startup()`` / ``record_call()`` 等入口时
-加载一次并冻结。所有产物恒在包内 ``runtime/``，与启动 CWD 无关。
-"""
+"""``call_stat``：调用量统计独立模块（包内配置 + 包内产物 + 可独立调用）。"""
 from .config import CallStatConfig, ENV_PATH, RUNTIME_DIR, load_config, warn
 
 # 延迟导出：(模块名, 属性名)。import 本包不加载任何含 I/O 或第三方依赖的模块。

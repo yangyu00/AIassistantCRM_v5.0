@@ -1,10 +1,5 @@
 # -*- coding: utf-8 -*-
-"""单表导入编排：文件存在性 → 指纹比对 → 抽列 → 单事务整表覆盖 + version 递增。
-
-本身不读 xlsx、不拼 SQL：源与仓储都由构造器注入，可单独替换成测试替身。
-流程顺序与旧 ``import_file`` 一致（建表/校验结构 → 指纹 → 抽列 → 覆盖），
-保证「缺列 / 读失败时指纹不更新、下轮自动重试」的语义不变。
-"""
+"""单表导入编排：文件存在性 → 指纹比对 → 抽列 → 单事务整表覆盖 + version 递增。"""
 from __future__ import annotations
 
 from .models import Registry, TableSpec

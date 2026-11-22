@@ -1,25 +1,5 @@
 # -*- coding: utf-8 -*-
-"""AVL 声明：一个 AVL = 一个 db（**纯写入侧**）。
-
-- ``name``    AVL 文件前缀，同时是 db 文件名（``{name}.db``）、CLI ``--task`` 值，
-              也是库内固定表名
-- ``project`` 项目 / 业务名，**只决定本地文件与 db 的输出目录**；同一业务的 AVL
-              落在同一对文件夹里，靠文件名体现归属
-- ``schema``  ``table_schemas.TABLE_SCHEMAS`` 的 key，多个 AVL 可复用同一份
-- ``parser``  ``"flat"`` | ``"continuation"``
-- ``sharded`` 该 db 内是否按 product_no 分表；无论分不分，都只有一个 db 文件
-
-本包只负责「AVL → SQLite」的写入，**不声明任何在线查询条件 / 排序 / 读取入口**。
-
-表名由 ``table_name()`` 统一派生：固定表叫 ``name``，分表叫
-``{name}_{分表号}``，供写入侧 ``sink/router.py`` 建表与逐行路由使用。
-
-主键按 schema 名集中注册在 ``table_schemas.TABLE_PRIMARY_KEYS``，
-``config.load_profiles()`` 写进 profile，建表 DDL 与空主键跳过判定共用。
-
-产品 ID 属业务路由，不进本包。本模块纯静态、零 I/O；
-``validate_specs()`` 在启动时拦住写入侧的配置漂移。
-"""
+"""AVL 声明：一个 AVL = 一个 db（**纯写入侧**）。"""
 from __future__ import annotations
 
 import zlib
@@ -32,25 +12,19 @@ PRODUCT_NO_INDEX: Final = 2
 
 
 def shard_index(product_no, num_tables: int) -> int:
-    """分表号：写入侧落库口径（``zlib.crc32(...) % NUM_TABLES``）。
-
-    空主键取字符串 ``"NULL"``；解析器已跳过空主键，属不可达分支但口径保留。
-    """
+    """分表号：写入侧落库口径（``zlib.crc32(...) % NUM_TABLES``）。"""
     p_no = product_no if product_no else "NULL"
     return zlib.crc32(str(p_no).encode("utf-8")) % num_tables
 
 
 def table_name(base: str, shard: int | None = None) -> str:
-    """库内表名口径：固定表 = AVL 名；分表 = ``{AVL 名}_{分表号}``。
-
-    ``base`` 默认传 AVL 名；显式传别的值仅用于单测覆盖表名。
-    """
+    """库内表名：固定表 = AVL 名，分表 = ``{AVL 名}_{分表号}``。"""
     return base if shard is None else f"{base}_{shard}"
 
 
 @dataclass(frozen=True)
 class AvlSpec:
-    """一个 AVL 的写入侧静态声明；不含产品 ID、表名，也不含查询声明。"""
+    """一个 AVL 的写入侧静态声明。"""
 
     name: str
     project: str
@@ -77,7 +51,6 @@ AVL_SPECS: Final[Mapping[str, AvlSpec]] = {
         schema="loss_control", parser="continuation", sharded=True,
     ),
 
-    # ============ 诊断新线（project = diagnosis，8 个 AVL 各一个 db） ============
     "F09627": AvlSpec(                       # DIM_MARKET_SCENE_RANK_ONCE
         name="F09627", project="diagnosis",
         schema="scene_rank", parser="flat",
@@ -116,7 +89,7 @@ AVL_SPECS: Final[Mapping[str, AvlSpec]] = {
 
 
 def spec_of(name: str) -> AvlSpec:
-    """按 AVL 名取声明；未注册直接报错。"""
+    """按 AVL 名取声明。"""
     try:
         return AVL_SPECS[name]
     except KeyError as e:

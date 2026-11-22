@@ -1,13 +1,5 @@
 # -*- coding: utf-8 -*-
-"""内存计数核心：两个全局字典 + RLock，热路径不读库（除非恰好触发 flush）。
-
-``_DAY_TOTAL`` 记当天完整累计，``_PENDING`` 记尚未落库的增量；累计到阈值
-才写一次库，写失败保留增量重试，跨天残留顺带补齐。``startup()`` 从库恢复
-当天基数，lifespan 关闭与 ``atexit`` 两处 ``flush()`` 均为幂等。
-
-阈值与库路径来自包内 ``.env``，首次调用时懒加载并冻结；``flush()`` 在无
-pending 时提前返回，保证「仅 import」不产生任何 I/O。
-"""
+"""内存计数核心：两个全局字典 + RLock，热路径不读库（除非恰好触发 flush）。"""
 from __future__ import annotations
 
 import atexit
@@ -47,11 +39,7 @@ def _threshold() -> int:
 
 
 def configure(flush_threshold: int = None, *, db_path=None) -> int:
-    """覆盖落库阈值（启动时或自检时调用），返回生效值。
-
-    ``db_path`` 仅用于自检把库隔离到 ``runtime/selftest/``；仍强制位于
-    ``RUNTIME_DIR`` 内，不允许把产物写到模块目录之外。
-    """
+    """覆盖落库阈值（启动时或自检时调用），返回生效值。"""
     global _CFG, _THRESHOLD_OVERRIDE
     cfg = _cfg()
     if flush_threshold is not None:
@@ -74,11 +62,7 @@ def _today() -> str:
 
 
 def _ensure_day(date_str: str) -> int:
-    """确保 _DAY_TOTAL 有该日期的基数；首次从库恢复，实现重启继续计数。
-
-    lifespan 未执行时（例如 TestClient 不进上下文、直接 import 后手工调用）
-    也会由首次 record_call() 触发，行为一致。
-    """
+    """确保 _DAY_TOTAL 有该日期的基数。"""
     if date_str not in _DAY_TOTAL:
         _DAY_TOTAL[date_str] = (store.read_day(_cfg().db_path, date_str)
                                 + _PENDING.get(date_str, 0))
@@ -86,11 +70,7 @@ def _ensure_day(date_str: str) -> int:
 
 
 def startup() -> int:
-    """lifespan 启动阶段调用：确保表存在并从库恢复当天累计基数。
-
-    返回启动时当天已累计的调用量，供日志确认「继续计数」而非重新计数。
-    建表或读库失败只告警，不阻断服务启动。
-    """
+    """lifespan 启动阶段调用：确保表存在并从库恢复当天累计基数。"""
     with _LOCK:
         try:
             conn = store.connect(_cfg().db_path)
@@ -101,10 +81,7 @@ def startup() -> int:
 
 
 def _flush_date(date_str: str) -> bool:
-    """把 date_str 的未落库增量写入 SQLite；成功才从 _PENDING 移除。
-
-    _DAY_TOTAL 不受影响：它记的是完整累计，落库与否都不改变总数。
-    """
+    """把 date_str 的未落库增量写入 SQLite。"""
     delta = _PENDING.get(date_str, 0)
     if not delta:
         return True
@@ -115,7 +92,7 @@ def _flush_date(date_str: str) -> bool:
 
 
 def flush() -> dict:
-    """把所有未落库增量写入 SQLite，返回仍待重试的增量（正常应为空）。幂等。"""
+    """把所有未落库增量写入 SQLite，返回仍待重试的增量（正常应为空）。"""
     with _LOCK:
         if not _PENDING:
             # 零 I/O：仅 import 未计数时，atexit 兜底不建库、不读配置
@@ -126,10 +103,7 @@ def flush() -> dict:
 
 
 def record_call() -> int:
-    """一次请求计数：内存 +1，达到阈值才写一次库，返回当天累计调用量。
-
-    热路径完全不读库（除非恰好触发 flush），返回值直接来自 _DAY_TOTAL。
-    """
+    """一次请求计数：内存 +1，达到阈值才写一次库，返回当天累计调用量。"""
     today = _today()
     with _LOCK:
         _ensure_day(today)
@@ -152,7 +126,7 @@ def get_call_count(date_str: str) -> int:
 
 
 def get_month_counts(month: str):
-    """整月每天的调用量，无记录补 0；返回 [(YYYY-MM-DD, count), ...]。"""
+    """整月每天的调用量，无记录补 0。"""
     year, mon = int(month[:4]), int(month[5:7])
     days = calendar.monthrange(year, mon)[1]
     with _LOCK:
@@ -172,7 +146,7 @@ def get_month_counts(month: str):
 
 
 def _reset_state_for_test():
-    """仅自检用：清空进程内状态，模拟一次冷启动。生产代码不要调用。"""
+    """仅自检用：清空进程内状态，模拟一次冷启动。"""
     global _CFG, _THRESHOLD_OVERRIDE
     with _LOCK:
         _DAY_TOTAL.clear()

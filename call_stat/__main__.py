@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""``python -m call_stat`` 的进程退出点；参数与退出码在 ``cli.main``。"""
+"""``python -m call_stat`` 的进程退出点。"""
 import sys
 
 from .cli import main

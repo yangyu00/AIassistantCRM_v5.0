@@ -1,9 +1,5 @@
 # -*- coding: utf-8 -*-
-"""任务日志：为每个任务挂 INFO / ERROR 两个文件 sink，且不动宿主 logger。
-
-``loguru`` 延迟导入；没装时可注入 ``InMemoryLogger`` 或宿主 logger。
-模块不叫 ``logging``，避免遮蔽标准库同名模块；详见 ``README.md``。
-"""
+"""任务日志：为每个任务挂 INFO / ERROR 两个文件 sink，且不动宿主 logger。"""
 from __future__ import annotations
 
 import time
@@ -30,12 +26,7 @@ class _BoundLogger:
 
 
 class InMemoryLogger:
-    """零依赖的日志替身（满足 ``TaskLogger`` 的注入接口）。
-
-    记录 ``records``（level / message / extra）、``sinks``（id → add 参数）
-    与 ``remove_calls``，便于断言文件名、filter 行为，尤其是
-    **初始化期间有没有调用 ``remove()``**。其他项目不装 loguru 也能直接注入。
-    """
+    """零依赖的日志替身（满足 ``TaskLogger`` 的注入接口）。"""
 
     def __init__(self):
         self.records = []
@@ -73,13 +64,7 @@ class InMemoryLogger:
 
 
 class TaskLogger:
-    """单个任务一套 INFO / ERROR 文件日志。
-
-    :param task_name: 任务名，用于文件名与 ``extra.task`` filter
-    :param log_dir: 日志目录（``profile.log_dir``），不存在会自动建
-    :param logger: 注入的宿主 logger；``None`` 表示延迟导入 loguru 全局 logger
-    :param day: 可注入日期字符串，便于单测锁定文件名（默认取当天）
-    """
+    """单个任务一套 INFO / ERROR 文件日志。"""
 
     def __init__(self, task_name, log_dir, *, logger=None, day=None):
         self.task_name = str(task_name)

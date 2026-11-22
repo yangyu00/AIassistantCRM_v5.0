@@ -1,8 +1,5 @@
 # -*- coding: utf-8 -*-
-"""SQLite 写入层：建表 / 流式分批写 / 过期清理。
-
-所有连接统一只设两条 PRAGMA：``journal_mode = WAL``、``synchronous = NORMAL``。
-"""
+"""SQLite 写入层：建表 / 流式分批写 / 过期清理。"""
 from __future__ import annotations
 
 import sqlite3
@@ -14,7 +11,7 @@ from .schema import TableSchema
 
 
 def _configure(conn: sqlite3.Connection) -> sqlite3.Cursor:
-    """建表、写入共用的连接配置；返回游标，避免两处各拼一遍 PRAGMA。"""
+    """建表、写入共用的连接配置。"""
     cur = conn.cursor()
     cur.execute("PRAGMA journal_mode = WAL")
     cur.execute("PRAGMA synchronous = NORMAL")
@@ -50,15 +47,14 @@ class SqliteSink:
         self.stats = WriteStats()
 
     def _group_targets_by_db(self) -> dict[Path, list[str]]:
-        """把布局枚举出的 ``(库, 表)`` 按库文件分组；建表与过期清理共用。"""
+        """把布局枚举出的 ``(库, 表)`` 按库文件分组。"""
         groups: dict[Path, list[str]] = {}
         for db_path, table in self.layout.all_targets():
             groups.setdefault(Path(db_path), []).append(table)
         return groups
 
-    # ---- 建表（幂等） ----
     def ensure_schema(self) -> None:
-        """按布局枚举全部库表并建表；同一库文件只连一次、一次 commit。"""
+        """按布局枚举全部库表并建表。"""
         for db_path, tables in self._group_targets_by_db().items():
             db_path.parent.mkdir(parents=True, exist_ok=True)
             conn = sqlite3.connect(str(db_path))
@@ -70,7 +66,6 @@ class SqliteSink:
             finally:
                 conn.close()
 
-    # ---- 流式分批写 ----
     def _connect(self, db_path: Path) -> sqlite3.Connection:
         conn = sqlite3.connect(str(db_path))
         self.stats.connections += 1
@@ -86,11 +81,7 @@ class SqliteSink:
         self.stats.commits += 1
 
     def write(self, filename: str, rows: Iterable[tuple], layout=None) -> int:
-        """把解析器产出的记录按布局分桶、逐桶满批提交；返回写入记录数。
-
-        ``layout`` 默认用构造时传入的布局（同一份库表定义）；
-        显式传入可实现更细的替换，例如单测里注入假布局。
-        """
+        """把解析器产出的记录按布局分桶、逐桶满批提交。"""
         layout = self.layout if layout is None else layout
         self.stats = WriteStats()
 
@@ -136,17 +127,9 @@ class SqliteSink:
             conns.clear()
             batches.clear()
 
-    # ---- 过期清理 ----
     def purge_expired(self, cutoff: str,
                       tables: Iterable[str] | None = None) -> int:
-        """按 ``op_time < cutoff`` 清理库表，返回删除总行数。
-
-        ``tables=None`` → 清理布局枚举出的全部库表（旧行为）；传入表名集合
-        → 只清这批表，用于「每天轮转清一部分分表」，避免每轮全库扫描。
-
-        库文件不存在则跳过；异常时 rollback、记录到 ``stats.errors`` 并
-        继续下一个库，**不抛给上层**。清理结果仍写进 ``stats.purged``。
-        """
+        """按 ``op_time < cutoff`` 清理库表，返回删除总行数。"""
         total = 0
         self.stats.purged = 0
         self.stats.errors = []
@@ -187,7 +170,7 @@ class SqliteSink:
 
 def build_sink(profile, *, layout=None, table_schema: TableSchema | None = None,
                batch_size: int | None = None) -> SqliteSink:
-    """装配写入层；与 ``build_layout()`` 共用同一个 layout 对象。"""
+    """装配写入层。"""
     if layout is None:
         from .router import build_layout
         layout = build_layout(profile)

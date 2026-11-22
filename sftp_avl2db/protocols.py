@@ -1,9 +1,5 @@
 # -*- coding: utf-8 -*-
-"""组件契约（纯 typing，零 I/O）：各层组件的 Protocol 与结果数据类。
-
-共 6 个 Protocol（含 ``SinkStats`` 这一附属契约），任何一层都能换成测试
-替身；契约清单见 ``README.md``。
-"""
+"""组件契约（纯 typing，零 I/O）：各层组件的 Protocol 与结果数据类。"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -24,12 +20,7 @@ class ImportStatus:
 
 @dataclass
 class ParseStats:
-    """单文件解析的统计信号。
-
-    解析层不写日志，把计数留在这里，编排器按需记录：``rows`` 是产出的逻辑记录数
-    （日志文本「共 N 条」），``skipped`` 是空主键跳过数（「跳过空主键 N 条」）。
-    其余字段是各解析器特有的诊断信号，便于离线断言，不影响产出记录。
-    """
+    """单文件解析的统计信号。"""
 
     rows: int = 0
     skipped: int = 0
@@ -47,10 +38,7 @@ class ParseStats:
 
 @runtime_checkable
 class RemoteSource(Protocol):
-    """远程（或伪远程）文件源。
-
-    ``connect()`` 由编排器每轮显式调用；离线源实现为 no-op。
-    """
+    """远程（或伪远程）文件源。"""
 
     def connect(self) -> None: ...
 
@@ -63,11 +51,7 @@ class RemoteSource(Protocol):
 
 @runtime_checkable
 class RecordParser(Protocol):
-    """把本地 AVL 解析成逻辑记录元组。
-
-    ``parse()`` 必须是**生成器**：控损单文件约 7000 万逻辑记录，
-    不能一次性装进 list。迭代过程中更新 ``stats``。
-    """
+    """把本地 AVL 解析成逻辑记录元组。"""
 
     stats: ParseStats
 
@@ -85,20 +69,14 @@ class TableLayout(Protocol):
 
 @runtime_checkable
 class SinkStats(Protocol):
-    """清理结果的可观测信号；编排器只依赖 ``errors``。"""
+    """清理结果的可观测信号。"""
 
     errors: list[tuple[str, str]]
 
 
 @runtime_checkable
 class RecordSink(Protocol):
-    """记录落地：建表、按布局分批写、过期清理。
-
-    ``stats.errors`` 供 ``runner.cleanup_expired()`` 汇总清理失败，因此任何
-    替换实现都要带这个属性（统一到 ``SinkStats`` 契约）。
-    ``purge_expired()`` 的 ``tables`` 传 ``None`` 表示清理全部库表（旧行为），
-    传表名集合表示只清这批表，供编排层做分表轮转；替换实现必须保留该参数。
-    """
+    """记录落地：建表、按布局分批写、过期清理。"""
 
     stats: SinkStats
 

@@ -1,20 +1,5 @@
 # -*- coding: utf-8 -*-
-"""入参校验冒烟：用 requests 连打几组非法请求，打印每次的实际返回。
-
-和 ``check_online_api.py`` 一样是手工脚本，不是 pytest 单元测试：只发请求、
-只打印，不用 assert，文件名也不带 ``test_`` 前缀。
-
-覆盖 ``main.py`` 的 pydantic 校验器与 ``src/exceptions.py`` 的三个异常处理：
-手机号错误 / 产品 ID 错误 → ``res_code=1``，缺字段等结构问题 →
-``res_code=1`` + 「参数校验错误」。项目约定所有错误都返回 HTTP 200，
-所以这里打印 status_code 只是顺便确认，真正看的是 res_code。
-
-前置：服务已起（``python main.py``）。每组请求同样会让调用量 +1。
-
-用法：
-
-    python tests/check_param_validation.py
-"""
+"""入参校验冒烟：用 requests 连打几组非法请求，打印每次的实际返回。"""
 from __future__ import annotations
 
 import json
@@ -33,7 +18,7 @@ PRODUCT_ID = "202502120000001"
 
 
 def _payload(telnum, product_ids):
-    """组装请求体；product_ids 传 None 表示干脆不带这个键。"""
+    """组装请求体。"""
     body = {"sceneId": "12345", "telnum": telnum}
     if product_ids is not None:
         body["productId"] = product_ids

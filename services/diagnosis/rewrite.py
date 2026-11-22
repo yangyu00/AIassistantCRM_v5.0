@@ -1,14 +1,5 @@
 # -*- coding: utf-8 -*-
-"""诊断新线业务对象：把结构化 record 拼成 ``output_script``。
-
-卖点维表行在取数 / 兜底阶段（``query.py`` / ``fallback.py``）已经消费完毕，
-诊断链路不查 IOP；对象本身只依赖 ``build_diagnosis_record()`` 产出的结构化
-``record``，因此只继承极简的 ``ProductInfoBase``，不再为了「对象形状一致」
-继承画像基类。
-
-``record.is_fallback`` 为真（卖点维表兜底）时省略「痛点诊断」「营销话术」两段，
-其余四段照常拼装；两类 record 都由 ``build_output_script()`` 输出，样式一致。
-"""
+"""诊断业务对象：把结构化 record 拼成 ``output_script``。"""
 from __future__ import annotations
 
 from services.product_info_raw import ProductInfoBase
@@ -18,13 +9,7 @@ from .logic import build_output_script
 
 
 class ProductInfoByDiagnosis(ProductInfoBase):
-    """诊断新线产品对象：命中 F09629（或卖点维表兜底）后由工厂创建。
-
-    响应 ``productName`` 只取 ``record['business_name']`` 原文（正常链路为
-    ``F09629.BUSINESS_NAME``、卖点维表兜底为「产品名称」），不再按【】拆分，
-    也不再回退到资费摘要；``output_script`` 里的资费名称 / 摘要仍由
-    ``logic.split_fee_name()`` 拆出的 ``fee_name`` / ``fee_summary`` 提供。
-    """
+    """诊断产品对象：命中 F09629（或卖点维表兜底）后由工厂创建。"""
 
     def __init__(self, product_id, record=None):
         super().__init__(product_id, product_name="")

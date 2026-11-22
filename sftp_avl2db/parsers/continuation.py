@@ -1,8 +1,5 @@
 # -*- coding: utf-8 -*-
-"""控损 AVL 解析（逻辑 5 列，``strategy_name`` 含裸换行、需续行重组）。
-
-解析行为见 ``README.md``「解析与写入行为」；实现注释说明「为什么」。
-"""
+"""控损 AVL 解析（逻辑 5 列，``strategy_name`` 含裸换行、需续行重组）。"""
 from __future__ import annotations
 
 import re
@@ -26,7 +23,7 @@ def strip_eol(line: str) -> str:
 
 
 def split_head(content: str) -> list[str] | None:
-    """把日期起始行切成 5 列；第 5 列允许为空。不可用时返回 None。"""
+    """把日期起始行切成 5 列。"""
     parts = content.split("\t")
     if len(parts) >= 5:
         return [parts[0], parts[1], parts[2], parts[3], parts[4]]

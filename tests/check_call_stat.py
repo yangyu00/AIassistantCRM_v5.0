@@ -1,26 +1,5 @@
 # -*- coding: utf-8 -*-
-"""调用量统计 GET 接口冒烟：用 requests 查单日 / 整月 / 非法参数并打印返回。
-
-手工跑、直接请求、原样打印，
-不是 pytest 单元测试，文件名不带 ``test_`` 前缀，也没有 assert。
-
-打的是 ``call_stat.build_router()`` 注册的 ``GET /api/callStat``，路径来自
-``call_stat/.env`` 的 ``CALL_STAT_QUERY_PATH``（默认就是这个值）。
-``date`` / ``month`` 必须且只能提供一个；校验失败仍返回 HTTP 200 +
-``res_code=1``，和项目其它接口的错误约定一致。
-
-一个容易踩的点：这个 GET 自身也会被 ``count_call_middleware`` 计数，但计数
-发生在 ``finally``，所以**本次返回的 callCount 不含本次请求**；连续查两次时
-第二次会把第一次算进去，通常正好 +1。下面专门有一组用例演示。
-
-前置：服务已起（``python main.py``）。不需要额外起 call_stat 进程，它是在线
-进程内的模块；CLI（``python -m call_stat ...``）是另一套独立进程，这里不走它。
-
-用法：
-
-    python tests/check_call_stat.py                  # 查今天 + 本月 + 非法参数
-    python tests/check_call_stat.py 2026-11-16      # 指定日期，月份取同月
-"""
+"""调用量统计 GET 接口冒烟：用 requests 查单日 / 整月 / 非法参数并打印返回。"""
 from __future__ import annotations
 
 import datetime as dt
@@ -39,7 +18,7 @@ TIMEOUT = 10
 
 
 def get(params: dict, label: str, expect: str) -> int:
-    """发一次 GET，打印 URL、耗时、完整响应；返回 0/1 只表示脚本自身是否跑通。"""
+    """发一次 GET，打印 URL、耗时、完整响应。"""
     url = BASE_URL + CALL_STAT_PATH
     query = urlencode(params)
     print(f"\n--- {label} ---")

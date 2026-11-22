@@ -1,34 +1,5 @@
 # -*- coding: utf-8 -*-
-"""诊断新线取数：按「产品ID + 手机号」关联 7 张维表，产出结构化 record。
-
-唯一入口 ``build_diagnosis_record(product_id, telnum, *, selling_points)``，
-async，全部走 ``services.reader`` 的多行 / 多条件查询；库缺失、表为空、异常
-一律降级成空列表，本层不会把异常抛给在线接口。
-
-关联路径（取数说明 02～08）：
-
-    product_id ──F09629──> BUSINESS_NAME ──拆分──> 资费名称 / 资费摘要
-                        └> BUSINESS_TYPE ─┬─F09628─> 产品场景列表
-                                          ├─F09631─> 营销话术
-                                          └─F09632─> 拒绝原因 / 挽留话术
-    telnum ─────F09633──> 用户场景 + 痛点诊断（多值按位置配对）
-    交集场景 ───F09627──> 最高优先级场景 ───F09630─> 切入话术
-
-F09635（标签ID-标签名）在取数说明里没有位置，不进本链路，仅保留注册。
-诊断链路不查 IOP：正常取数与卖点维表兜底都只由数据库字段与维表原文拼装。
-
-**卖点维表兜底**（见 ``fallback.py``）：以下任一情况不再返回 ``None`` 或
-「一屏无」，而是改用卖点维表该 ``product_id`` 行组装四段话术：
-
-1. 上述 7 个查询**任一返回空**（或提取出的有效值为空）；
-2. **场景交集为空**；
-3. 六项输出全空。
-
-兜底来源：``product_name`` 按【】拆资费名称 / 摘要；「兜底话术」列原文
-（为空时取「标签N」列第一个非空原文）解析出切入 / 拒绝原因 / 挽留话术；
-痛点诊断与营销话术无来源，输出时整段省略。维表里没有该 ``product_id``
-时无法兜底，仍返回 ``None`` → 上层 ``code: "2"``。
-"""
+"""诊断取数：按「产品ID + 手机号」关联 7 张维表，产出结构化 record。"""
 from __future__ import annotations
 
 from services import reader
@@ -60,16 +31,11 @@ from .logic import (
 
 
 async def build_diagnosis_record(product_id, telnum, *, selling_points=None):
-    """组装诊断话术所需的全部字段；无法产出时走卖点维表兜底。
-
-    返回 dict 交给 ``ProductInfoByDiagnosis`` 拼装 ``output_script``；正常 record
-    带交集场景、优先级选择来源等中间量，兜底 record 带 ``is_fallback`` /
-    ``fallback_reason``，便于日志排查与离线自检。
-    """
+    """组装诊断话术所需的全部字段。"""
     sp = selling_points or {}
 
     def fallback(reason):
-        """统一的兜底出口；维表无该行时返回 None，维持原有 code=2 降级。"""
+        """统一的兜底出口。"""
         return build_fallback_record(
             product_id, telnum, selling_points=sp, reason=reason)
 
@@ -86,8 +52,6 @@ async def build_diagnosis_record(product_id, telnum, *, selling_points=None):
     business_name = str(business.get("business_name") or "").strip()
     business_type = str(business.get("business_type") or "").strip()
 
-    # 资费名称 / 资费摘要：按用户口径直接拆 PRODUCT_BUSINESS 的 name，
-    # 不走取数说明 03 里那张「话术维表」。
     fee_name, fee_summary = split_fee_name(business_name)
 
     # ② 产品场景（F09628，多行）

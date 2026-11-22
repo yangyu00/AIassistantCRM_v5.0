@@ -1,15 +1,5 @@
 # -*- coding: utf-8 -*-
-"""``sftp_avl2db``：SFTP AVL → SQLite 入库包。
-
-配置锚在包内 ``.env``，产出锚在包内 ``runtime/``（都按 ``__file__`` 定位，
-与 CWD 无关）；``import sftp_avl2db`` 零 I/O、零第三方依赖。
-
-分层、公共 API 与调用链见包内 ``README.md``。
-
-本包是纯写入侧：只负责 SFTP AVL → SQLite 入库，不提供任何在线查询入口，
-也不声明库路径、表字段或查询条件等读取侧配置。
-``import sftp_avl2db`` 仍是零 I/O。
-"""
+"""``sftp_avl2db``：SFTP AVL → SQLite 入库包。"""
 from . import avl_specs, table_schemas   # noqa: E402  (纯静态契约)
 from .config import (
     ENV_PATH,

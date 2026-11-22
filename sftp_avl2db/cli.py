@@ -1,9 +1,5 @@
 # -*- coding: utf-8 -*-
-"""命令行入口 ``python -m sftp_avl2db --task <任务名> [选项]``。
-
-参数与退出码见 ``build_arg_parser()`` / ``main()`` 的 docstring；整体用法见
-``README.md``。``main()`` 返回 int 而不调用 ``sys.exit``，便于单测断言。
-"""
+"""命令行入口 ``python -m sftp_avl2db --task <任务名> [选项]``。"""
 from __future__ import annotations
 
 import argparse
@@ -33,7 +29,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None, *, profiles=None, logger=None, sleeper=None, now=None) -> int:
-    """解析参数、装配任务、跑守护循环；返回进程退出码。"""
+    """解析参数、装配任务、跑守护循环。"""
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 

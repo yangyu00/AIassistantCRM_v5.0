@@ -1,14 +1,5 @@
 # -*- coding: utf-8 -*-
-"""SQLite 落库层：只负责 I/O，不持有任何全局计数状态。
-
-表结构是一天一条的累计量，落库用 ``+delta`` 累加；读失败一律降级为
-0 / {}，写失败返回 False 由上层保留增量重试。
-
-少数容器 / 网络挂载不支持 SQLite 的 journal 文件同步，首次建库或事务提交会
-瞬时抛 ``disk I/O error``；重试时把 journal 放到内存（**仅该连接生效**）即可
-继续。正常文件系统第一次就成功，永远不会走这条降级路径。无论哪种路径，
-**只有 commit 成功才返回 True**，重试绝不会把同一段增量累加两次。
-"""
+"""SQLite 落库层：只负责 I/O，不持有任何全局计数状态。"""
 from __future__ import annotations
 
 import sqlite3
@@ -56,10 +47,7 @@ def _open(db_path, memory_journal: bool = False):
 
 
 def connect(db_path, *, force_memory_journal: bool = False):
-    """建表（若不存在）并返回连接；目录不存在时自动建。
-
-    正常路径用 SQLite 默认 journal；瞬时 I/O 失败后的重试改用内存 journal。
-    """
+    """建表（若不存在）并返回连接。"""
     last_error = None
     for attempt in range(_RETRIES):
         try:
@@ -72,7 +60,7 @@ def connect(db_path, *, force_memory_journal: bool = False):
 
 
 def read_day(db_path, date_str) -> int:
-    """读单日已落库量；库不可读时降级为 0，不让异常冒泡到请求或 lifespan。"""
+    """读单日已落库量。"""
     conn = None
     try:
         conn = connect(db_path)
@@ -87,7 +75,7 @@ def read_day(db_path, date_str) -> int:
 
 
 def add_delta(db_path, date_str, delta) -> bool:
-    """把增量累加进 SQLite；只有 commit 成功才返回 True，失败由上层保留待重试。"""
+    """把增量累加进 SQLite。"""
     if not delta:
         return True
     last_error = None
@@ -122,7 +110,7 @@ def add_delta(db_path, date_str, delta) -> bool:
 
 
 def read_month(db_path, month) -> dict:
-    """整月已落库量；库不可读时降级为空 dict，月查询按 0 补齐。"""
+    """整月已落库量。"""
     conn = None
     try:
         conn = connect(db_path)

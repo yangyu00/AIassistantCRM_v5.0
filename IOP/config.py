@@ -1,17 +1,5 @@
 # -*- coding: utf-8 -*-
-"""IOP 配置：唯一来源就是同目录的 ``.env``。
-
-改地址、凭据或策略只改 ``IOP/.env``，重启进程生效。没有系统环境变量优先级，
-也没有 ``from_mapping()`` / ``from_module_defaults()`` 等多套入口：
-``IOPConfig.load()`` 读一次文件，缺键或数值非法就回落下面的默认值。
-
-``import IOP`` 不读文件；``IOPClient()`` 构造时调用 ``load()``，结果冻结。
-``.env.example`` 与 ``.env`` 同值，只提供键注释、不替代 ``.env``；文件缺失、
-缺键、空值或显式占位符时，回落到下面代码里的内置实际值。
-
-``IOP_TOKEN_ID`` / ``IOP_TOKEN_SECRET`` 的内置实际值写在 ``_SPECS``，
-``IOPConfig.__repr__`` 屏蔽 ``secret``；``IOP/.env`` 按当前约定随仓库入库。
-"""
+"""IOP 配置：唯一来源就是同目录的 ``.env``。"""
 from __future__ import annotations
 
 import math
@@ -93,9 +81,7 @@ def _resolve(values: dict[str, str]) -> dict[str, object]:
     return out
 
 
-# ---------------------------------------------------------------------------
 # 冻结配置对象（字段无默认值：配置一律由 load() 产生）
-# ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class TokenEndpointCfg:
     host: str
@@ -143,7 +129,7 @@ class TokenLifetime:
 
 @dataclass(frozen=True)
 class IOPConfig:
-    """IOP 全部运行配置的不可变聚合；``repr`` 不含 ``secret``。"""
+    """IOP 全部运行配置的不可变聚合。"""
 
     token: TokenEndpointCfg
     cust_info: CustInfoEndpointCfg
@@ -153,7 +139,7 @@ class IOPConfig:
 
     @classmethod
     def load(cls, env_path=ENV_PATH) -> "IOPConfig":
-        """读 ``.env`` 并冻结成配置对象；文件缺失时全部回落默认值。"""
+        """读 ``.env`` 并冻结成配置对象。"""
         v = _resolve(_read_env(env_path))
         return cls(
             token=TokenEndpointCfg(v["IOP_TOKEN_HOST"], v["IOP_TOKEN_PORT"],

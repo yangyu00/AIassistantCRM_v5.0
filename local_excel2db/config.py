@@ -1,19 +1,5 @@
 # -*- coding: utf-8 -*-
-"""配置：唯一来源 ``local_excel2db/registry.json``，唯一入口 ``load_registry()``。
-
-与 ``IOP`` / ``sftp_avl2db`` / ``call_stat`` 一致：**配置与运行时产出都锚在包内、
-按 ``__file__`` 定位，与启动 CWD 无关**。不读系统环境变量，不开放
-``--config`` / ``from_mapping()`` / 外部路径覆盖，也没有第二套解析入口。
-
-- 输入：项目根 ``excels/``（``INPUT_DIR``）。registry 的 ``source`` 只允许纯
-  文件名，代码强制拼到 ``INPUT_DIR``；写 ``../``、子目录或绝对路径一律拒绝。
-- 产出：包内 ``runtime/``（``RUNTIME_DIR``）下的 ``sqlite_db`` / ``state`` /
-  ``log``，路径是代码常量，registry.json 与 CLI 都改不了。
-- ``import`` 零 I/O：只有显式调用 ``load_registry()`` 才读文件。
-
-校验规则平移自旧 ``dim_config.load_registry``，不合法直接抛 ``ValueError``，
-不会按错误配置连库或写错列。
-"""
+"""配置：唯一来源 ``local_excel2db/registry.json``，唯一入口 ``load_registry()``。"""
 from __future__ import annotations
 
 import json
@@ -24,7 +10,6 @@ from typing import Any
 
 from .models import ColumnSpec, Registry, TableSpec
 
-# ---- 路径边界：全部按 __file__ 定位，与 CWD 无关 --------------------------
 MODULE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = MODULE_DIR.parent
 INPUT_DIR = PROJECT_ROOT / "excels"                 # 唯一输入目录（项目根）
@@ -49,11 +34,7 @@ def _name(value: Any) -> bool:
 
 
 def _source_path(value: Any, table: str) -> Path:
-    """把 registry 的 ``source`` 解析到 ``INPUT_DIR``；只接受纯文件名。
-
-    产物 / 输入目录由代码强制，不靠约定：带路径分隔符或绝对路径会直接报错，
-    保证写入进程永远只扫项目根 ``excels/``，不会因配置笔误读到别处。
-    """
+    """把 registry 的 ``source`` 解析到 ``INPUT_DIR``。"""
     _need(isinstance(value, str) and bool(value), f"{table}: source 不能为空")
     _need(not Path(value).is_absolute() and "/" not in value and "\\" not in value
           and value not in (".", ".."),
@@ -63,11 +44,7 @@ def _source_path(value: Any, table: str) -> Path:
 
 
 def load_registry() -> Registry:
-    """读包内 ``registry.json`` 并冻结成 ``Registry``；唯一的装配入口。
-
-    每次调用重新读一次文件（不做进程级缓存），改完 registry 重启写入进程生效。
-    路径字段一律取本模块的常量，配置里不携带可改的目录。
-    """
+    """读包内 ``registry.json`` 并冻结成 ``Registry``。"""
     data = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
     return _build(data)
 

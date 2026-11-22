@@ -1,8 +1,5 @@
 # -*- coding: utf-8 -*-
-"""装配工厂：把各层组件拼成可直接运行的任务。
-
-``build_task(profile)`` 是唯一装配入口；分层与调用链见 ``README.md``。
-"""
+"""装配工厂：把各层组件拼成可直接运行的任务。"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -20,11 +17,7 @@ from .task_logging import TaskLogger, build_logger
 
 @dataclass
 class AssembledTask:
-    """一个装配完成、可立即运行的任务。
-
-    字段全部公开且带契约类型，便于宿主项目替换任一组件后重新组装，也便于
-    单测直接断言（例如读 ``task.state`` 看清单、读 ``task.sink.stats`` 看批次）。
-    """
+    """一个装配完成、可立即运行的任务。"""
 
     profile: TaskProfileConfig
     log: TaskLogger
@@ -37,11 +30,7 @@ class AssembledTask:
     runner: Avl2DbRunner
 
     def close(self) -> None:
-        """只关闭本任务注册的文件日志 sink，不动宿主 logger。
-
-        ``source`` / ``lock`` 由 ``Avl2DbRunner`` 的轮次与进程生命周期管理，
-        这里不重复关闭。
-        """
+        """只关闭本任务注册的文件日志 sink，不动宿主 logger。"""
         closer = getattr(self.log, "close", None)
         if callable(closer):
             closer()
@@ -50,16 +39,7 @@ class AssembledTask:
 def build_task(profile: TaskProfileConfig, *, logger=None, local_dir=None,
                day=None, sleeper=None, now=None, batch_size=None,
                table_schema: TableSchema | None = None) -> AssembledTask:
-    """按 ``profile`` 装配；所有可选参数都是显式注入点，缺省即生产默认。
-
-    :param logger: 注入宿主 logger / ``InMemoryLogger``；``None`` 时
-        ``TaskLogger`` 延迟导入 loguru 全局 logger
-    :param local_dir: 给了就走 ``LocalDirRemoteSource``（离线，不连 SFTP、
-        不需要 paramiko），否则走 ``SftpRemoteSource``
-    :param day: 固定日志文件名里的日期，便于单测
-    :param sleeper / now: 注入守护循环的 sleep 与时钟
-    :param batch_size / table_schema: 透传给 ``SqliteSink``
-    """
+    """按 ``profile`` 装配。"""
     log = build_logger(profile, logger=logger, day=day)
     state, lock = build_state(profile)
     source = build_remote_source(profile, local_dir=local_dir)
@@ -76,11 +56,7 @@ def build_task(profile: TaskProfileConfig, *, logger=None, local_dir=None,
 
 
 def build_all(runtime_dir=None, **kwargs) -> dict[str, AssembledTask]:
-    """加载包内 ``.env`` 声明的全部 AVL 并逐个装配（CLI 用）。
-
-    ``runtime_dir`` 只改产出位置，不改配置来源；不传即包内 ``runtime/``。
-    其余关键字参数透传给 ``build_task()`` 的注入点。
-    """
+    """加载包内 ``.env`` 声明的全部 AVL 并逐个装配（CLI 用）。"""
     profiles = load_profiles(runtime_dir=runtime_dir)
     return {name: build_task(profile, **kwargs)
             for name, profile in profiles.items()}

@@ -1,9 +1,5 @@
 # -*- coding: utf-8 -*-
-"""命令行入口 ``python -m call_stat``：脱离在线 API 也能查 / 导出 / 落库 / 自检。
-
-所有产物（库、CSV、自检临时库）都落在包内 ``runtime/`` 下；自检用完即清理。
-``main()`` 返回 int 而不调用 ``sys.exit``，便于单测直接断言退出码。
-"""
+"""命令行入口 ``python -m call_stat``：脱离在线 API 也能查 / 导出 / 落库 / 自检。"""
 from __future__ import annotations
 
 import argparse
@@ -59,10 +55,7 @@ def _export_csv(month: str, result: dict) -> Path:
 
 
 def _self_check() -> int:
-    """自检：阈值落库 / 重启恢复 / 月补齐 / 参数校验 / 产物边界。
-
-    临时库固定在 ``runtime/selftest/call_sum.db``（仍在模块目录内），结束即删除。
-    """
+    """自检：阈值落库 / 重启恢复 / 月补齐 / 参数校验 / 产物边界。"""
     probe = RUNTIME_DIR / "selftest"
     if probe.exists():
         shutil.rmtree(probe)
@@ -110,11 +103,7 @@ def _self_check() -> int:
 
 
 def main(argv=None) -> int:
-    """解析参数、执行动作、返回进程退出码。
-
-    0 正常；1 日期 / 月份格式非法；2 缺参、--date/--month 互斥冲突或运行异常
-    （缺参与互斥冲突沿用 argparse 的 CLI 惯例退出码 2）。
-    """
+    """解析参数、执行动作、返回进程退出码。"""
     parser = build_arg_parser()
     args = parser.parse_args(argv)
     try:

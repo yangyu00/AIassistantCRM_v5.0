@@ -1,9 +1,5 @@
 # -*- encoding: utf-8 -*-
-"""在线进程日志初始化。
-
-配置值由宿主 ``main.py`` 通过 :func:`configure_logging` 传入。其余模块只取
-``my_log``（loguru 全局 logger），是否在文件里落盘由宿主决定。
-"""
+"""在线进程日志初始化。"""
 from loguru import logger
 from pathlib import Path
 import time
@@ -12,10 +8,7 @@ my_log = logger
 
 
 def configure_logging(log_dir: str = "") -> None:
-    """按 log_dir 挂 INFO / ERROR 文件 sink；留空则写到项目根目录的 log/。
-
-    ``log_dir`` 取值来自 ``main.py`` 顶部的模块级常量。
-    """
+    """按 log_dir 挂 INFO / ERROR 文件 sink。"""
     if log_dir:
         log_dir_path = Path(log_dir)
     else:

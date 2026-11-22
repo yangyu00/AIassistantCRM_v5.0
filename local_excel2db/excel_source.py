@@ -1,14 +1,5 @@
 # -*- coding: utf-8 -*-
-"""注册 xlsx 的源文件侧：内容指纹 + 按 registry 抽列去重。
-
-这是**写入侧的输入解析**（读 Excel 文件）；本包不提供任何查库、重建业务
-dict 或话术加工的能力，也没有在线查询入口。
-``openpyxl`` 延迟到方法内导入，import 本模块不会拉起第三方依赖。
-
-抽列 / 去重 / 类型转换规则平移自旧 ``dim_importer``，行为逐字保持：
-``column_index`` 优先于表头名、``optional`` 缺列填 ``default``、主键为空跳过、
-重复主键后写覆盖；库里只存原始单元格文本，不做 HTML 包装或话术拆分。
-"""
+"""注册 xlsx 的源文件侧：内容指纹 + 按 registry 抽列去重。"""
 from __future__ import annotations
 
 import hashlib
@@ -19,7 +10,7 @@ from .protocols import FileFingerprint, MissingColumn, ParsedRows
 
 
 def _cast(value, typ):
-    """TEXT 原样；INTEGER / REAL 转换失败时兜底为 0 / 0.0。"""
+    """TEXT 原样。"""
     if typ == "TEXT":
         return value
     try:
@@ -29,7 +20,7 @@ def _cast(value, typ):
 
 
 class OpenpyxlExcelSource:
-    """用 openpyxl 只读打开 xlsx；不写文件、不建目录、不留连接。"""
+    """用 openpyxl 只读打开 xlsx。"""
 
     def fingerprint(self, path: Path) -> FileFingerprint:
         h = hashlib.sha256()

@@ -1,13 +1,5 @@
 # -*- coding: utf-8 -*-
-"""调用量统计配置：唯一来源 ``call_stat/.env``，唯一入口 ``load_config()``。
-
-``ENV_PATH`` / ``RUNTIME_DIR`` 按 ``__file__`` 定位，与启动 CWD 无关；
-产物路径一律由 ``RUNTIME_DIR`` + 纯文件名派生，配置里写 ``../`` 或绝对路径
-会被拒绝并回落默认值，从代码上保证「输出产物不越出模块目录」。
-
-``import call_stat`` 零 I/O、零第三方依赖；只有 ``load_config()`` 被调用时才读
-``.env``，语法与 IOP / sftp_avl2db 一致（整行 ``#`` 注释 + ``KEY=VALUE``）。
-"""
+"""调用量统计配置：唯一来源 ``call_stat/.env``，唯一入口 ``load_config()``。"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -54,7 +46,7 @@ def _positive_int(raw, default: int) -> int:
 
 
 def _safe_component(raw, default: str, key: str) -> str:
-    """产物只允许纯文件名；任何越界写法一律回落默认并告警。"""
+    """产物只允许纯文件名。"""
     v = str(raw or "").strip()
     p = Path(v)
     if (not v or v in (".", "..") or "/" in v or "\\" in v
@@ -74,7 +66,7 @@ def _query_path(raw, default: str) -> str:
 
 @dataclass(frozen=True)
 class CallStatConfig:
-    """不可变的运行配置；``db_path`` / ``export_dir`` 恒在 ``RUNTIME_DIR`` 内。"""
+    """不可变的运行配置。"""
 
     flush_threshold: int
     query_path: str
@@ -83,11 +75,7 @@ class CallStatConfig:
 
 
 def load_config(*, env_path=None, runtime_dir=None) -> CallStatConfig:
-    """读一次 ``.env`` 并冻结；缺文件 / 缺键 / 非法值一律回落默认值并告警。
-
-    ``runtime_dir`` 仅供自检把产物隔离到 ``runtime/`` 的子目录，仍不允许越出
-    ``RUNTIME_DIR``；生产不传参，配置来源与产物位置都锚在包目录内。
-    """
+    """读一次 ``.env`` 并冻结。"""
     v = _read_env(Path(env_path) if env_path is not None else ENV_PATH)
     root = Path(runtime_dir).resolve() if runtime_dir is not None else RUNTIME_DIR.resolve()
     base = RUNTIME_DIR.resolve()

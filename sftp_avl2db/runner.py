@@ -1,9 +1,5 @@
 # -*- coding: utf-8 -*-
-"""``Avl2DbRunner``：把五个可注入组件编成一轮「SFTP AVL → SQLite」。
-
-流程与日志信号见 ``serve_forever()`` / ``import_one()`` 的 docstring；
-调用链见 ``README.md``。
-"""
+"""``Avl2DbRunner``：把五个可注入组件编成一轮「SFTP AVL → SQLite」。"""
 from __future__ import annotations
 
 import os
@@ -17,7 +13,7 @@ from .protocols import ImportResult, ImportStatus
 
 
 class Avl2DbRunner:
-    """单任务编排器；全部依赖由构造器注入，任何一层都能换成测试替身。"""
+    """单任务编排器。"""
 
     def __init__(self, profile, *, source, parser, sink, layout,
                  state, lock, log, sleeper=None, now=None):
@@ -38,7 +34,6 @@ class Avl2DbRunner:
         # 进程重启当天最多重复清一次，语义无害且不需要新的持久化契约。
         self._last_purge_day: int | None = None
 
-    # ---- 路径与命名 ----
     def _remote_path(self, remote_name: str) -> str:
         root = self.profile.sftp.remote_path.rstrip("/")
         return f"{root}/{remote_name}"
@@ -46,17 +41,9 @@ class Avl2DbRunner:
     def _local_path(self, remote_name: str) -> Path:
         return self.profile.local_dir / remote_name
 
-    # ---- 单个远程文件 ----
     def import_one(self, date_str: str, prefix: str,
                    force: bool = False) -> ImportResult:
-        """处理一个前缀在这一天的文件，返回结构化结果。
-
-        顺序：拼名 → 清单命中且非 force 则 SKIP → stat → get → parse+write →
-        **成功后才** ``state.add()`` → imported += 1。
-
-        生产上由 ``run_once_for_date()`` 调用，后者已先 ``sink.ensure_schema()``；
-        单独调用本方法（例如离线单测）需自行确保表已建好。
-        """
+        """处理一个前缀在这一天的文件，返回结构化结果。"""
         remote_name = remote_name_for(self.profile, prefix, date_str)
         remote_path = self._remote_path(remote_name)
         local_path = self._local_path(remote_name)
@@ -103,13 +90,12 @@ class Avl2DbRunner:
             return ImportResult(remote_name, ImportStatus.FAILED, detail=f"import: {e}")
 
     def _log_import_done(self, filename: str, prefix: str) -> None:
-        """单文件入库完成计数；一个 AVL 一个任务。"""
+        """单文件入库完成计数。"""
         st = self.parser.stats
         self.log.info(
             f"[{prefix}] {filename} 覆盖完成，共 {st.rows} 条，"
             f"跳过空主键 {st.skipped} 条")
 
-    # ---- 单轮 ----
     def run_once_for_date(self, date_str: str,
                           force_reload: bool = False) -> int:
         """返回本轮真正新入库的文件数。"""
@@ -138,15 +124,8 @@ class Avl2DbRunner:
                 pass
         return imported
 
-    # ---- 过期清理 ----
     def _purge_plan(self, day_ordinal: int, cycle: int):
-        """算出当天要清的表：``(tables, 总表数, 生效周期)``。
-
-        ``tables=None`` 表示全量（旧行为 / 补跑）。启用轮转后按布局枚举顺序
-        把分表切成互斥的 N 组（``i % N == 日历序号 % N``），N 天恰好轮完，
-        组间不重叠、并集覆盖全部分表；固定表不参与轮转，仍每天全清一次。
-        周期大于表数时收敛到表数，避免出现大量「一张表都不清」的空转天。
-        """
+        """算出当天要清的表：``(tables, 总表数, 生效周期)``。"""
         all_tables = [t for _, t in self.layout.all_targets()]
         if cycle <= 0:
             return None, len(all_tables), 0
@@ -158,11 +137,7 @@ class Avl2DbRunner:
         return picked, len(all_tables), effective
 
     def cleanup_expired(self, *, force_full: bool = False) -> dict:
-        """本地 AVL 清理（每轮）+ 库表过期数据清理（按轮转周期每天一次）。
-
-        ``force_full=True`` 只用于单次 ``--date`` 补跑：跳过轮转、一次清完
-        全部库表，避免补跑结果只清掉 1/N 的表。
-        """
+        """本地 AVL 清理（每轮）+ 库表过期数据清理（按轮转周期每天一次）。"""
         removed, errors = [], []
 
         # 按 mtime 删过期 .AVL，异常记 ERROR 后继续；这一步仍每轮执行
@@ -191,7 +166,6 @@ class Avl2DbRunner:
         tables, total_tables, effective = self._purge_plan(day, cycle)
 
         if cycle <= 0 or force_full:
-            # 旧行为 / 补跑：每轮（本次）全量清，不做日历闸门
             should_purge, tables = True, None
         elif self._last_purge_day == day:
             should_purge, tables = False, []
@@ -220,17 +194,11 @@ class Avl2DbRunner:
                 "cutoff": cutoff, "purged_tables": purged_tables,
                 "purge_skipped": not should_purge, "errors": errors}
 
-    # ---- 守护循环 ----
     def serve_forever(self, only_date: str | None = None,
                       force_reload: bool = False,
                       max_rounds: int | None = None,
                       date_strings=None) -> int:
-        """拿锁 → 单次 / 常驻 → 每轮本地清理 + 按周期库表清理 → sleep → 退出释放锁。
-
-        ``max_rounds`` / ``date_strings`` 仅用于离线测试；生产默认无限轮、
-        每轮按「昨天 + 今天」兜底。单次 ``--date`` 补跑强制全量清库表，
-        不参与日历轮转。
-        """
+        """拿锁 → 单次 / 常驻 → 每轮本地清理 + 按周期库表清理 → sleep → 退出释放锁。"""
         if not self.lock.acquire():
             self.log.error(
                 f"获取任务锁失败，已有 {self.profile.name} 实例在运行，退出。")

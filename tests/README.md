@@ -1,44 +1,36 @@
 # tests/ · 手工冒烟脚本
 
-这里放的是**部署后 / 联调时手动跑的冒烟脚本**，不是 pytest 单元测试：没有
-`test_` 开头的函数、没有 fixture，文件名也**故意不叫 `test_*.py`**，避免被 pytest
-收集。按是否联网分两类：
+部署后 / 联调时手动跑的冒烟脚本，不是 pytest 单元测试：没有 `test_` 开头的函数、没有 fixture，文件名也故意不叫 `test_*.py`，避免被 pytest 收集。按是否联网分两类：
 
-- **在线冒烟**：`check_online_api.py` / `check_param_validation.py` /
-  `check_call_stat.py` / `check_iop_direct.py` —— 跑一次、发真实请求、打印响应，
-  不打桩、不 mock，会真实访问在线服务或 IOP 上游，结论靠人看；
-- **离线自检**：`check_diagnosis_offline.py` / `check_purge_rotation.py` —— 不打
-  任何服务，用临时 SQLite + 内存桩 / 桩时钟跑断言，打印 `ALL PASS`，
-  临时产物跑完即删。
+- **在线冒烟**：`check_online_api.py` / `check_param_validation.py` / `check_call_stat.py` / `check_iop_direct.py` —— 跑一次、发真实请求、打印响应，不打桩、不 mock，会真实访问在线服务或 IOP 上游，结论靠人看；
+- **离线自检**：`check_diagnosis_offline.py` / `check_purge_rotation.py` —— 不打任何服务，用临时 SQLite + 内存桩 / 桩时钟跑断言，打印 `ALL PASS`，临时产物跑完即删。
 
-## 前置条件
+## 1. 前置条件
 
 1. 起在线服务：`python main.py`（默认 `0.0.0.0:8989`，见 `main.py` 顶部 `FASTAPI_CONFIG`）。
-2. 写入侧进程按需起；没起也能跑：业务库未就绪时商机 / 控损按空记录出话术（均 `code: "0"`）、诊断走卖点维表兜底（四段话术 `code: "0"`），维表里也没有该 `product_id` 才落 `code: "2"`；卖点维表未就绪时商机辅助画像为空、诊断无法兜底。`code` 始终按路由对象类型判定，不抛 500（`local_excel2db` 的 `dimensions.db` 由在线侧每请求只读一次）。
+2. 写入侧进程按需起；没起也能跑：业务库未就绪时商机 / 控损按空记录出话术（均 `code: "0"`）、诊断走卖点维表兜底（四段话术 `code: "0"`），维表里也没有该 `product_id` 才落 `code: "2"`；卖点维表未就绪时商机辅助画像为空、诊断无法兜底。`code` 始终按路由对象类型判定，不抛 500。
 3. `check_iop_direct.py` 还需要 `IOP/.env` 配好凭据、并装好 `IOPClient` 的依赖（aiohttp 等）。
 
-**地址**：默认 `http://127.0.0.1:8989`。服务在别的机器上不用改代码，设环境变量即可：
+地址默认 `http://127.0.0.1:8989`。服务在别的机器上不用改代码，设环境变量即可：
 
 ```bash
 export CRM_SMOKE_BASE_URL=http://10.0.0.5:8989
 ```
 
-业务路由 `/api/speechQryService` 与统计路由 `/api/callStat` 分别对应 `main.py` 的
-`MARKET_ASSISTANT_URL`、`call_stat/.env` 的 `CALL_STAT_QUERY_PATH`；改了这两处，脚本顶部的
-`SPEECH_PATH` / `CALL_STAT_PATH` 常量要跟着改。
+业务路由 `/api/speechQryService` 与统计路由 `/api/callStat` 分别对应 `main.py` 的 `MARKET_ASSISTANT_URL`、`call_stat/.env` 的 `CALL_STAT_QUERY_PATH`；改了这两处，脚本顶部的 `SPEECH_PATH` / `CALL_STAT_PATH` 常量要跟着改。
 
-## 脚本清单
+## 2. 脚本清单
 
 | 脚本 | 打谁 | 看什么 |
 |---|---|---|
 | `check_online_api.py` | `POST /api/speechQryService` | 主链路：耗时、完整响应、逐条话术的 `code` 与长度。可传号码和多个产品 ID |
 | `check_param_validation.py` | `POST /api/speechQryService` | 手机号 / 产品 ID 的非法入参，期望 `res_code=1`；附一组正常请求做对照 |
 | `check_call_stat.py` | `GET /api/callStat` | 单日、整月、连续两次查询（计数规则）、4 组非法参数 |
-| `check_iop_direct.py` | IOP 上游（**不经在线服务**） | 单独查标签画像，用来区分「上游挂了」还是「在线编排有问题」 |
-| `check_diagnosis_offline.py` | **不打任何服务**（临时 SQLite + 内存桩） | 诊断新线端到端自检：注册 / 解析 / 入库 → **`F09633` 分表（128 张、号码不串表、按 telnum 定位）** → **卖点维表 → 商机标签 ID / 辅助画像** → **业务包按业务名命名（1f：无历史别名、商机/控损输出等价）** → **业务库未就绪时商机 / 控损按空记录出话术（1h）** → **诊断兜底（话术原文解析、「兜底话术」优先、db 查空/交集空/话术原文全空三种触发、四段输出；只有商机回捞触发 IOP 查询）** → `services.reader` 多行查询 → 7 表关联 → 话术拼装 → `services/routing.py` 路由（含兜底 `code=0`），结论 `ALL PASS` |
-| `check_purge_rotation.py` | **不打任何服务**（临时 SQLite + 桩时钟） | 库表清理轮转自检：AVL 粒度配置（缺键 fail-fast / 无项目级兜底 / 逐 AVL 独立取值）/ 7 组并集覆盖 128 张表且组间互斥 / `cycle=0` 行为不变 / 固定表每日全清 / 每天只触发一次 `purge_expired()` / 跨 7 天过期行全清而新鲜行保留 / 单次补跑一次全量清，结论 `ALL PASS` |
+| `check_iop_direct.py` | IOP 上游（不经在线服务） | 单独查标签画像，用来区分「上游挂了」还是「在线编排有问题」 |
+| `check_diagnosis_offline.py` | 不打任何服务（临时 SQLite + 内存桩） | 诊断端到端自检：注册 / 解析 / 入库 → `F09633` 分表（128 张、号码不串表、按 telnum 定位）→ 卖点维表 → 商机标签 ID / 辅助画像 → 业务包命名与商机 / 控损话术输出 → 业务库未就绪时按空记录出话术 → 诊断兜底（话术原文解析、「兜底话术」优先、db 查空 / 交集空 / 话术原文全空三种触发、四段输出；只有商机回捞触发 IOP 查询）→ `services.reader` 多行查询 → 7 表关联 → 话术拼装 → 路由（含兜底 `code=0`），结论 `ALL PASS` |
+| `check_purge_rotation.py` | 不打任何服务（临时 SQLite + 桩时钟） | 库表清理轮转自检：AVL 粒度配置（缺键 fail-fast / 逐 AVL 独立取值）/ 7 组并集覆盖 128 张表且组间互斥 / `cycle=0` 行为 / 固定表每日全清 / 每天只触发一次 `purge_expired()` / 跨 7 天过期行全清而新鲜行保留 / 单次补跑一次全量清，结论 `ALL PASS` |
 
-## 运行
+## 3. 运行
 
 ```bash
 # 主链路：默认示例值，或自己给号码和多个产品 ID
@@ -61,35 +53,23 @@ python tests/check_call_stat.py 2026-11-16
 python tests/check_online_api.py
 python tests/check_call_stat.py 2026-11-16
 
-# 诊断新线离线自检：不需要起服务、不连 SFTP / IOP，临时库跑完即删
+# 诊断离线自检：不连 SFTP / IOP，临时库跑完即删
 python tests/check_diagnosis_offline.py
 
-# 库表清理轮转自检：不连 SFTP、不写包内 runtime/，临时库跑完即删
+# 库表清理轮转自检：不写包内 runtime/，临时库跑完即删
 python tests/check_purge_rotation.py
 ```
 
-## 副作用与注意
+## 4. 副作用与注意
 
-- **会改调用量**：凡是经过在线服务的请求（包括 `GET /api/callStat` 自己）都会被
-  `count_call_middleware` 计数，跑完当天 `callCount` 会涨。这是正常行为，不是测试污染。
-- **GET 查询不含本次**：计数在 `finally` 阶段，所以某次查询返回的 `callCount` 不含它自己；
-  连续两次查询时，第二次会把第一次算进去。
-- `check_iop_direct.py` 会真实刷新 token、消耗上游调用，**不经过在线服务也不计调用量**。
-- 在线冒烟脚本只打印，不写文件；服务侧日志照常落在项目根 `log/`。离线自检脚本会在临时目录建库、跑完即删。
-- `check_diagnosis_offline.py` 会在临时目录建 8 个诊断库跑完即删，并打桩
-  `IOPClient.get_customer_labels`（不消耗上游 token）。写入侧 `load_profiles()`
-  读包内 `sftp_avl2db/.env`；本仓库已随附该文件，若干净检出里缺失，脚本会临时
-  从 `.env.example` 复制一份（含 `F09633_NUM_TABLES` 分表数）并在结束后删除。
-  末尾的在线路由段需要
-  fastapi / pydantic / loguru / aiohttp / uvicorn，缺任一依赖会自动跳过，不影响主体断言。
-- **`check_purge_rotation.py` 同样不打服务**，只用标准库 + 临时 SQLite，
-  跑完即删；它用 `sftp_avl2db/.env` 验证 `load_profiles()` 装配。干净检出里
-  若缺 `.env`，会临时从 `.env.example` 复制、结束后删除；本仓库已随附 `.env`，
-  此时不覆盖，只做字段存在性断言。
-- 这里的示例号码与产品 ID 都是占位值，换成真实数据才能拿到业务话术。
+- 凡是经过在线服务的请求（包括 `GET /api/callStat` 自己）都会被 `count_call_middleware` 计数，跑完当天 `callCount` 会涨。
+- GET 查询计数在 `finally` 阶段，某次查询返回的 `callCount` 不含它自己；连续两次查询时第二次会把第一次算进去。
+- `check_iop_direct.py` 会真实刷新 token、消耗上游调用，不经过在线服务也不计调用量。
+- 在线冒烟脚本只打印，不写文件；服务侧日志照常落在项目根 `log/`。
+- `check_diagnosis_offline.py` 会在临时目录建 8 个诊断库跑完即删，并打桩 `IOPClient.get_customer_labels`（不消耗上游 token）。写入侧 `load_profiles()` 读包内 `sftp_avl2db/.env`；干净检出里缺失时，脚本会从 `.env.example` 临时复制一份（含 `F09633_NUM_TABLES` 分表数）并在结束后删除。末尾的在线路由段需要 fastapi / pydantic / loguru / aiohttp / uvicorn，缺任一依赖会自动跳过，不影响主体断言。
+- `check_purge_rotation.py` 只用标准库 + 临时 SQLite，跑完即删；它用 `sftp_avl2db/.env` 验证 `load_profiles()` 装配，干净检出里缺失时会从 `.env.example` 临时复制、结束后删除。
+- 示例号码与产品 ID 都是占位值，换成真实数据才能拿到业务话术。
 
-## 为什么没有 pytest
+## 5. 为什么没有 pytest
 
-这些脚本依赖一个已经起来的服务、真实上游和真实库，属于「部署后自检 / 联调」，
-放进 CI 当单元测试会互相干扰（计数、token、上游额度）。需要可重复的纯逻辑断言时，
-用 `python -m call_stat --self-check`（组件自带、临时库用完即删），两者定位不同。
+这些脚本依赖一个已经起来的服务、真实上游和真实库，属于「部署后自检 / 联调」，放进 CI 当单元测试会互相干扰（计数、token、上游额度）。需要可重复的纯逻辑断言时，用 `python -m call_stat --self-check`（组件自带、临时库用完即删），两者定位不同。

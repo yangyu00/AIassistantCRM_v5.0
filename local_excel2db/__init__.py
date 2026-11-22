@@ -1,30 +1,5 @@
 # -*- coding: utf-8 -*-
-"""``local_excel2db``：本地 Excel 维表 → SQLite 的**写入侧**独立进程。
-
-只做一件事：定时轮询项目根 ``excels/`` 下的注册 xlsx，内容指纹变化则抽列、
-单事务整表覆盖 ``local_excel2db/runtime/sqlite_db/dimensions.db``、按表递增
-version。本包不含任何在线读取 / 查库 / 业务 dict 重建 / 话术加工能力
-（``reader.py`` / ``transform.py`` 与对应的契约、配置声明一并移除）；本包
-不提供任何在线查询入口，也不声明库路径与列映射等读取侧配置；只与在线侧
-共享磁盘上的 db 文件。
-
-与 ``IOP`` / ``sftp_avl2db`` / ``call_stat`` 一致：**配置与运行时产出都锚在
-包内、按 ``__file__`` 定位，与启动 CWD 无关**。配置唯一来源是包内
-``registry.json``（唯一入口 ``load_registry()``），输入恒为项目根 ``excels/``，
-产物恒为包内 ``runtime/``；不读系统环境变量，也没有 ``--config`` / 外部路径覆盖。
-
-``import local_excel2db`` 零 I/O：不读 registry、不连库、不建目录、不改全局
-logger、不拉起 openpyxl / sqlite3。只有显式调用 ``load_registry()`` 或运行
-``python -m local_excel2db`` 才产生 I/O。
-
-    python -m local_excel2db                 # 常驻轮询，间隔由包内 registry 控制
-    python -m local_excel2db --once         # 只检测一轮后退出
-    python -m local_excel2db --once --force # 忽略指纹强制重导并递增 version
-
-分层：``config`` / ``models``（静态）→ ``excel_source``（源文件解析）/
-``repository``（SQLite 写入）→ ``importer``（导入编排）→ ``watcher`` / ``cli``
-（守护与命令行）。契约见 ``protocols.py``，各层可单独替换。
-"""
+"""``local_excel2db``：本地 Excel 维表 → SQLite 的**写入侧**独立进程。"""
 from .config import (
     MODULE_DIR, PROJECT_ROOT, INPUT_DIR, REGISTRY_PATH, RUNTIME_DIR,
     DB_PATH, STATE_DIR, LOCK_PATH, LOG_DIR, load_registry,

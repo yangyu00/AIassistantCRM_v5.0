@@ -1,14 +1,5 @@
 # -*- coding: utf-8 -*-
-"""诊断话术的业务逻辑：纯函数、零 I/O、零第三方依赖，便于离线单测。
-
-严格按《营销话术字段取数逻辑说明》02～08 实现，库里保存原始文本、重组在业务侧：
-
-- 资费名称 / 资费摘要：PRODUCT_BUSINESS 的 BUSINESS_NAME 按【】内外拆分
-- 痛点诊断：用户场景 ∩ 产品场景，合并**全部**交集场景的 REASON
-- 切入话术：交集场景按 RN 选**一个**最高优先级场景，再取该场景的 QR_HUASHU
-- 营销话术：按 BUSINESS_TYPE 取 YX_HUASHU（可多行）
-- 挽留话术：REJECT_REASON / WL_HUASHU 各自拆分后按位置一一配对
-"""
+"""诊断话术的业务逻辑：纯函数、零 I/O、零第三方依赖，便于离线单测。"""
 from __future__ import annotations
 
 from itertools import zip_longest
@@ -22,16 +13,9 @@ from .constants import (
 )
 
 
-# ---------------------------------------------------------------------------
 # 拆分与配对
-# ---------------------------------------------------------------------------
 def split_fee_name(business_name):
-    """按括号拆资费名称 / 资费摘要，返回 ``(fee_name, fee_summary)``。
-
-    【】内 → 名称，【】外 → 摘要；无括号时名称为空、摘要为全文。
-    兼容中英对照表里写的 ASCII ``[]``。多个括号块时名称取第一块，
-    摘要为移除全部括号块后的剩余文本（与「[]以外的内容」一致）。
-    """
+    """按括号拆资费名称 / 资费摘要，返回 ``(fee_name, fee_summary)``。"""
     text = str(business_name or "").strip()
     if not text:
         return "", ""
@@ -54,11 +38,7 @@ def split_multi(value):
 
 
 def pairs_by_position(left_cell, right_cell):
-    """两个多值单元格按相同下标一一配对；长度不等时短的一侧补空串。
-
-    返回 ``[(left, right), ...]``。取数说明说两数组长度应一致，实际数据可能
-    缺失，这里不抛错、把多余项配对成空串，由调用方决定是否丢弃。
-    """
+    """两个多值单元格按相同下标一一配对。"""
     left, right = split_multi(left_cell), split_multi(right_cell)
     return [(l or "", r or "") for l, r in zip_longest(left, right, fillvalue="")]
 
@@ -74,9 +54,7 @@ def dedup(values):
     return out
 
 
-# ---------------------------------------------------------------------------
 # 场景交集
-# ---------------------------------------------------------------------------
 def expand_user_scenes(rows):
     """F09633 的多行 → ``[(scene, reason), ...]``，行内多值按位置展开。"""
     pairs = []
@@ -88,12 +66,7 @@ def expand_user_scenes(rows):
 
 
 def intersect_scenes(user_pairs, product_scenes):
-    """用户场景 ∩ 产品场景，返回 ``(matched_scenes, pain_points)``。
-
-    ``matched_scenes`` 按用户场景出现顺序、去重（PDF 05：痛点诊断保留全部
-    交集场景；切入话术只按最高优先级场景取一条）。
-    ``pain_points`` 为全部交集场景对应的非空 REASON，不强行去重。
-    """
+    """用户场景 ∩ 产品场景，返回 ``(matched_scenes, pain_points)``。"""
     product_set = set(product_scenes)
     matched, pain = [], []
     for scene, reason in user_pairs:
@@ -107,12 +80,7 @@ def intersect_scenes(user_pairs, product_scenes):
 
 
 def order_scenes_by_priority(scenes, rank_rows, *, allow_fallback=None):
-    """把交集场景按 F09627 的 RN 排成候选顺序，返回 ``(ordered, ranked_set)``。
-
-    有 RN 的场景排前面（默认 RN 小者优先），无 RN 的场景按原顺序排后面；
-    ``allow_fallback=False`` 时直接丢弃无 RN 的场景（严格口径）。
-    返回的 ``ranked_set`` 供调用方标注「最高优先级场景」是怎么选出来的。
-    """
+    """把交集场景按 F09627 的 RN 排成候选顺序，返回 ``(ordered, ranked_set)``。"""
     if allow_fallback is None:
         allow_fallback = ALLOW_ENTRY_SCRIPT_FALLBACK
 
@@ -157,18 +125,9 @@ def extract_scripts(rows, column):
     return dedup([str(row.get(column) or "").strip() for row in rows])
 
 
-# ---------------------------------------------------------------------------
 # 话术拼装
-# ---------------------------------------------------------------------------
 def build_output_script(record, *, omit=()):
-    """把 6 个输出字段拼成 HTML 话术（风格与现有 rewrite 模块一致）。
-
-    六个段落固定为【资费名称】【资费摘要】【痛点诊断】【切入话术】
-    【营销话术】【挽留话术】，空值统一填「无」；多行内容用 ``<br>`` 换行。
-
-    ``omit`` 传段落名元组可**整段不输出**（卖点维表兜底时省略
-    「痛点诊断」「营销话术」），区别于填「无」。
-    """
+    """把 6 个输出字段拼成 HTML 话术（风格与现有 rewrite 模块一致）。"""
     record = record or {}
 
     def line(label, value):

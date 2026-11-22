@@ -1,8 +1,5 @@
 # -*- coding: utf-8 -*-
-"""状态层：断点续传清单与单实例锁。
-
-``portalocker`` / ``fcntl`` 可选导入，缺库时明确报错；路径全部由 profile 注入。
-"""
+"""状态层：断点续传清单与单实例锁。"""
 from __future__ import annotations
 
 import json
@@ -23,11 +20,7 @@ except ImportError:                            # pragma: no cover - Windows
 
 
 class FetchedManifest:
-    """已成功入库的远程文件名清单（断点续传 / 不重复拉取）。
-
-    以「追加写 + 行级 flush + fsync」落盘，进程被 kill 也不会丢失已完成记录；
-    每行一个文件名，构造时读入内存 set。
-    """
+    """已成功入库的远程文件名清单（断点续传 / 不重复拉取）。"""
 
     def __init__(self, manifest_path):
         self.manifest_path = Path(manifest_path)
@@ -64,7 +57,7 @@ class FetchedManifest:
 
 
 class SingleInstanceLock:
-    """单机单实例文件锁。拿不到锁立即失败（非阻塞），避免两个拉取者并发出库。"""
+    """单机单实例文件锁。"""
 
     def __init__(self, lock_path):
         self.lock_path = Path(lock_path)
@@ -112,10 +105,7 @@ class SingleInstanceLock:
 
 
 def build_state(profile):
-    """按 ``TaskProfileConfig`` 装配状态层。
-
-    返回 ``(manifest, lock)``：路径全部来自 profile。
-    """
+    """按 ``TaskProfileConfig`` 装配状态层。"""
     return (FetchedManifest(profile.fetched_path),
             SingleInstanceLock(profile.lock_path))
 

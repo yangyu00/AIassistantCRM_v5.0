@@ -1,14 +1,5 @@
 # -*- coding: utf-8 -*-
-"""配置：唯一来源 ``sftp_avl2db/.env``，唯一入口 ``load_profiles()``。
-
-``ENV_PATH`` / ``RUNTIME_DIR`` 都按 ``__file__`` 定位；不读系统环境变量，
-``import`` 零 I/O。配置分组与键说明见 ``README.md``。
-
-一个 AVL 一份 profile：``name`` 既是文件前缀、db 文件名、CLI ``--task`` 值，
-也是 ``.env`` 里全部运行参数的键前缀（``<AVL>_*``）。``project`` **只**决定
-``files/`` 与 ``sqlite_db/`` 下的业务文件夹，同一业务的多个 AVL 共用这一对
-文件夹、靠文件名体现归属；它不参与任何配置键的拼装。
-"""
+"""配置：唯一来源 ``sftp_avl2db/.env``，唯一入口 ``load_profiles()``。"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -18,20 +9,13 @@ from typing import Iterable
 ENV_PATH = Path(__file__).with_name(".env")
 RUNTIME_DIR = Path(__file__).with_name("runtime")
 
-# AVL 声明表：(AVL 名 / 文件前缀, 项目名)。
-# 项目名**只**用于 files/ 与 sqlite_db/ 的目录分组，不再是 .env 键前缀：
-# 轮询 / 清理 / 批次 / 分表数等运行参数一律按 AVL 粒度声明为 <AVL>_*，
-# 没有项目级键，也没有任何项目级兜底（见 load_profiles()）。
-# 每个 AVL 的其他静态信息（schema / parser / 是否分表）都在 avl_specs.py；
-# 表名自动取 AVL 名，产品 ID 归业务路由，SQLite 连接配置在
-# sink/sqlite_sink.py 全局统一，本层都不声明。
-# 新增 AVL = 这里加一行 + avl_specs.py 加一份声明 + .env 加一组 <AVL>_* 键。
+# AVL 声明表；项目名仅用于 files/ 与 sqlite_db/ 目录分组，运行参数按 <AVL>_* 声明。
 _AVLS = (
     ("F09554", "opportunity_recall"),
     ("F09555", "opportunity_recall"),
     ("F09556", "opportunity_recall"),
     ("F09591", "loss_control"),
-    # 诊断新线：8 张维表 / 对应关系表，各一个 db，统一落在 diagnosis/ 目录。
+    # 诊断：8 张维表 / 对应关系表，各一个 db，统一落在 diagnosis/ 目录。
     ("F09627", "diagnosis"),
     ("F09628", "diagnosis"),
     ("F09629", "diagnosis"),
@@ -43,11 +27,9 @@ _AVLS = (
 )
 
 
-# ---------------------------------------------------------------------------
 # 读 .env：只认整行 # 注释与 KEY=VALUE
-# ---------------------------------------------------------------------------
 def _read_env(env_path) -> dict[str, str]:
-    """读配置文件；文件不存在直接报错，不用脏值继续跑。"""
+    """读配置文件。"""
     path = Path(env_path)
     if not path.is_file():
         raise FileNotFoundError(
@@ -71,12 +53,7 @@ def _str(v: dict[str, str], key: str) -> str:
 
 
 def _int(v: dict[str, str], key: str, *, min_value: int = 1) -> int:
-    """读一个整数键；缺键 / 非整数 / 小于 ``min_value`` 一律 fail-fast。
-
-    ``min_value=1`` 是默认（正整数：批次、天数、轮询间隔、分表数）；
-    ``min_value=0`` 供 ``*_PURGE_CYCLE_DAYS`` 使用——``0`` 是合法的
-    「每轮全量清理」，但它仍是**必需键**，不是「缺键时回落的默认值」。
-    """
+    """读一个整数键。"""
     raw = _str(v, key)
     label = "正整数" if min_value > 0 else "非负整数"
     try:
@@ -90,16 +67,11 @@ def _int(v: dict[str, str], key: str, *, min_value: int = 1) -> int:
 
 
 def _num_tables(v: dict[str, str], name: str) -> int:
-    """分表数：只认 ``<AVL>_NUM_TABLES``，没有项目级键、没有兜底。
-
-    仅分表 AVL 会调用；缺键直接 fail-fast，启动期就暴露配置漂移。
-    """
+    """分表数：只认 ``<AVL>_NUM_TABLES``，没有项目级键、没有兜底。"""
     return _int(v, f"{name}_NUM_TABLES")
 
 
-# ---------------------------------------------------------------------------
 # 冻结配置对象（字段无默认值：一律由 load_profiles() 装配）
-# ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class SftpConfig:
     host: str
@@ -123,11 +95,7 @@ class RetentionConfig:
 
 @dataclass(frozen=True)
 class TaskProfileConfig:
-    """一个 AVL 入库任务的完整声明（不可变）。
-
-    四个路径都从 ``RUNTIME_DIR``（或显式传入的 ``runtime_dir``）派生，与 CWD
-    无关；本地 AVL 与 db 输出按 ``project`` 归档到同一业务文件夹。
-    """
+    """一个 AVL 入库任务的完整声明（不可变）。"""
 
     name: str                                # AVL 名 / 文件前缀 / {name}.db / .env 键前缀
     project: str                             # 项目名：仅用于输入输出文件夹分组
@@ -160,24 +128,9 @@ class TaskProfileConfig:
         return self.state_dir / f"{self.name}.lock"
 
 
-# ---------------------------------------------------------------------------
 # 唯一入口
-# ---------------------------------------------------------------------------
 def load_profiles(runtime_dir=None) -> dict[str, TaskProfileConfig]:
-    """读包内 ``.env``、按 AVL 装配、跑契约校验，返回冻结的 profile 表。
-
-    运行参数一律按 AVL 粒度读取 ``<AVL>_*``：批次、数据 / 本地文件保留天数、
-    轮询间隔、库表清理轮转周期，以及分表 AVL 的 ``<AVL>_NUM_TABLES``。
-    没有项目级键、没有兜底、没有默认值——``project`` 只决定目录分组。
-    缺任一键都 fail-fast，避免同项目下不同 AVL 悄悄共用一套节奏。
-
-    ``runtime_dir=None`` → 包内 ``runtime/``（写入侧默认产出目录）。
-    显式传目录 → 产出隔离到该目录；相对路径按 CWD 解析，部署建议用绝对路径
-    或把 ``runtime/`` 做成软链。
-
-    ``avl_specs`` / ``table_schemas`` 在函数内延迟导入，保持模块加载时零依赖；
-    ``validate_specs()`` 在返回前拦住表结构与声明的漂移。
-    """
+    """读包内 ``.env``、按 AVL 装配、跑契约校验，返回冻结的 profile 表。"""
     from .avl_specs import spec_of, validate_specs
     from .table_schemas import TABLE_PRIMARY_KEYS, TABLE_SCHEMAS
 
@@ -233,7 +186,7 @@ def load_profiles(runtime_dir=None) -> dict[str, TaskProfileConfig]:
 
 def remote_name_for(profile: TaskProfileConfig, prefix: str,
                     date_str: str) -> str:
-    """拼一个远程文件名；编排器与 ``iter_remote_names()`` 共用这一处定义。"""
+    """拼一个远程文件名。"""
     return profile.remote_name_tmpl.format(prefix=prefix, date=date_str)
 
 

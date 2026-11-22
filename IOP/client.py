@@ -1,18 +1,5 @@
 # -*- coding: utf-8 -*-
-"""``IOPClient``：IOP 的业务门面。
-
-``get_customer_labels(tel)`` 编排：确保 token → 不可用降级 → 构造请求 →
-超时/解析异常就地收口 → 逐层校验 → 统一降级 ``{}``。
-
-零参数可用：``async with IOPClient() as client:``
-- ``config=None``  → ``IOPConfig.load()``（读同目录 ``IOP/.env``）
-- ``transport=None`` → 自建 ``AiohttpTransport``
-- ``logger=None`` → ``NullLogger``，未注入则不记录日志
-
-``TokenManager`` 与门面共享同一个 config / transport / logger，一次
-``start()`` / ``aclose()`` 覆盖 token 与标签两端点。请求形状由
-``endpoints.py`` 的纯函数按 config 现算，不在对象之间传递「请求构造器」。
-"""
+"""``IOPClient``：IOP 的业务门面。"""
 from __future__ import annotations
 
 import asyncio
@@ -47,7 +34,6 @@ class IOPClient:
             logger=self._logger,
         )
 
-    # -- 只读属性 -----------------------------------------------------------
     @property
     def config(self) -> IOPConfig:
         return self._config
@@ -62,18 +48,17 @@ class IOPClient:
 
     @property
     def token_manager(self) -> TokenManager:
-        """token 状态与刷新逻辑；读状态用 ``client.token_manager.state``。"""
+        """token 状态与刷新逻辑。"""
         return self._tokens
 
-    # -- 生命周期 ------------------------------------------------------------
     async def start(self):
-        """转发到 transport.start()。注入的假传输层没有该方法时静默跳过。"""
+        """转发到 transport.start()。"""
         fn = getattr(self._transport, "start", None)
         if fn is not None:
             return await fn()
 
     async def aclose(self):
-        """转发到 transport.aclose()。注入的假传输层没有该方法时静默跳过。"""
+        """转发到 transport.aclose()。"""
         fn = getattr(self._transport, "aclose", None)
         if fn is not None:
             return await fn()
@@ -85,13 +70,8 @@ class IOPClient:
     async def __aexit__(self, exc_type, exc, tb) -> None:
         await self.aclose()
 
-    # -- 业务入口 -----------------------------------------------------------
     async def get_customer_labels(self, tel: str) -> dict:
-        """查询客户标签画像；任何失败统一降级为 ``{}``，绝不外抛。
-
-        返回 ``{ITEMCODE: [ITEMNAME, ITEMVALUE]}``。成功但 0 标签也返回
-        ``{}``，与降级返回值相同；区分靠注入的 logger（成功 INFO / 失败 ERROR）。
-        """
+        """查询客户标签画像；任何失败统一降级为 ``{}``。"""
         await self._tokens.ensure_token()
 
         if not self._tokens.token_valid():

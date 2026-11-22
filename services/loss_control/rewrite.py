@@ -13,11 +13,7 @@ _COLOR_CODE_RE = re.compile(r"#([0-9A-Fa-f]{6})")
 
 
 def parse_custom_tags(text: str) -> str:
-    """自定义标签 → HTML，纯函数、可单独单测。
-
-    支持 ``<$B>`` / ``<$I>`` / ``<$U>`` / ``<#RRGGBB>`` 及组合标签
-    ``<$B$I#RRGGBB>``；``</>`` 按入栈逆序闭合所有已开启的标签。
-    """
+    """自定义标签 → HTML，纯函数、可单独单测。"""
     result, tag_stack = [], []
     i, length = 0, len(text)
 
@@ -63,13 +59,7 @@ def parse_custom_tags(text: str) -> str:
 
 
 class ProductInfoByLossControl(ProductInfoBase):
-    """控损业务话术对象：只消费 ``record['strategy_name']``。
-
-    构造只收 ``(product_id, record)``。IOP 标签、卖点维表行映射与画像组件在
-    ``routing.build_product_object()`` 就被截断，本对象不再持有任何画像相关
-    状态（旧版继承 ``ProductInfoRaw`` 时全部被动带上）。``record`` 为空
-    （业务库未就绪）时按空记录出话术「无历史话术记录」，仍返回 ``code: "0"``。
-    """
+    """控损业务话术对象：只消费 ``record['strategy_name']``。"""
 
     def __init__(self, product_id, record=None):
         super().__init__(product_id, product_name="控损业务专用")

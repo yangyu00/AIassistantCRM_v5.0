@@ -1,32 +1,5 @@
 # -*- coding: utf-8 -*-
-"""在线话术接口冒烟脚本：发一次真实 POST，把返回原样打印出来。
-
-前身是根目录的 ``test_online.py``，搬进 ``tests/`` 后改名、补注释、修正端口。
-这里**不是 pytest 单元测试**：没有 test_ 函数、没有 assert、没有 fixture，
-跑一次打一次真实请求，结果靠人看。文件名故意不带 ``test_`` 前缀，避免被
-pytest 当成用例收集。
-
-打的是在线服务 ``POST /api/speechQryService``（路径对应 main.py 的
-``MARKET_ASSISTANT_URL``），会经过 IOP 客户端、``services/dimensions.py`` 对卖点
-维表的一次只读查询、``services/reader.py`` 业务库查询，并让 call_stat 的
-调用量 +1。所以它同时是「整条主链路通不通」的最快检查。
-
-前置：先在另一个终端起服务（``python main.py``，默认 8989 端口）。
-写入侧进程没起也能跑：业务库未就绪时商机 / 控损按空记录出话术（均
-``code="0"``）、诊断走卖点维表兜底（四段话术 ``code="0"``），维表里也没有该
-``product_id`` 才落 ``code="2"``；卖点维表未就绪时商机辅助画像为空、诊断无法
-兜底。``code`` 始终按路由对象类型判定，不抛 500。
-
-用法（项目根目录下）：
-
-    python tests/check_online_api.py
-    python tests/check_online_api.py 18866816199 202502120000001
-    python tests/check_online_api.py 18866816199 ID1 ID2 ID3   # 一次请求多个产品
-
-地址不对时不必改代码，设环境变量即可：
-
-    CRM_SMOKE_BASE_URL=http://10.0.0.5:8989 python tests/check_online_api.py
-"""
+"""在线话术接口冒烟脚本：发一次真实 POST，把返回原样打印出来。"""
 from __future__ import annotations
 
 import json

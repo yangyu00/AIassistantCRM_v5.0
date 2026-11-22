@@ -1,20 +1,5 @@
 # -*- coding: utf-8 -*-
-"""写入侧守护编排：单实例锁 + 定时轮询 + 逐表导入 + 日志。
-
-组件全部由构造器注入；路径不注入：``registry`` 只能由 ``config.load_registry()``
-产出，库 / 锁 / 日志恒落在包内 ``runtime/``，输入恒为项目根 ``excels/``。
-``serve_forever`` 本身不建库、不建目录、不装 logger：
-
-    task = build_watcher()                      # 默认：包内 registry.json + fcntl 锁
-    rc = task.watcher.serve_forever(max_rounds=2, sleeper=lambda _: None)
-    task.close()
-
-``--once`` 即 ``max_rounds=1``；``max_rounds`` / ``sleeper`` / ``logger`` / ``lock``
-都是注入点，便于离线断言退出码与轮数，但**不会改变任何路径**，生产默认行为不变。
-
-流程与日志文本平移自旧 ``dim_watcher``：逐表 ``MissingColumn`` / 其他异常都跳过
-本轮、指纹不更新、下轮重试；表与表之间互不影响。
-"""
+"""写入侧守护编排：单实例锁 + 定时轮询 + 逐表导入 + 日志。"""
 from __future__ import annotations
 
 import logging
@@ -36,10 +21,7 @@ from .repository import SqliteDimensionRepository
 
 
 class SingleInstanceLock:
-    """``fcntl`` 非阻塞文件锁，保证单机单实例；失败返回 False 而非抛异常。
-
-    ``fcntl`` 在方法内导入：非 Linux 平台仍可 import 本模块，由宿主项目换锁实现。
-    """
+    """``fcntl`` 非阻塞文件锁，保证单机单实例。"""
 
     def __init__(self, path: Path | str) -> None:
         self.path = Path(path)
@@ -73,11 +55,7 @@ class SingleInstanceLock:
 
 
 def build_logger(log_dir: Path, *, logger: LogSink | None = None) -> LogSink:
-    """按天轮转（保留 7 天）+ stderr 双出口；注入 logger 时直接返回，不碰磁盘。
-
-    ``log_dir`` 由 ``build_watcher`` 从 ``Registry`` 传入（恒为包内 ``runtime/log``），
-    不是外部可覆盖的入口。
-    """
+    """按天轮转（保留 7 天）+ stderr 双出口。"""
     if logger is not None:
         return logger
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -97,7 +75,7 @@ def build_logger(log_dir: Path, *, logger: LogSink | None = None) -> LogSink:
 
 
 class DimensionWatcher:
-    """逐表编排 + 守护循环；依赖注入，自身不持有资源所有权。"""
+    """逐表编排 + 守护循环。"""
 
     def __init__(self, registry: Registry, importer: TableImporter, *,
                  lock: InstanceLock, log: LogSink,
@@ -109,7 +87,7 @@ class DimensionWatcher:
         self._sleep: Sleeper = sleeper if sleeper is not None else time.sleep
 
     def run_once(self, *, force: bool = False) -> list[ImportResult]:
-        """跑一轮；逐表独立失败互不影响，返回本轮成功产出的结构化结果。"""
+        """跑一轮。"""
         results: list[ImportResult] = []
         for spec in self.registry.tables:
             name = spec.table
@@ -136,11 +114,7 @@ class DimensionWatcher:
 
     def serve_forever(self, *, max_rounds: int | None = None,
                       force: bool = False) -> int:
-        """拿锁 → 跑 N 轮（``None`` 为无限）→ 退出释放锁；返回进程退出码。
-
-        轮询间隔只取自 ``registry.poll_interval_seconds``（包内 registry.json），
-        不开放 CLI 覆盖；最后一轮之后不休眠；``--once`` 用 ``max_rounds=1``。
-        """
+        """拿锁 → 跑 N 轮（``None`` 为无限）→ 退出释放锁。"""
         seconds = self.registry.poll_interval_seconds
         if not self.lock.acquire():
             self.log.error("已有 local_excel2db watcher 实例在运行，退出")
@@ -173,7 +147,7 @@ class DimensionWatcher:
 
 @dataclass
 class AssembledWatcher:
-    """装配完成、可立即运行的写入侧任务；字段公开，便于单测断言与组件替换。"""
+    """装配完成、可立即运行的写入侧任务。"""
 
     registry: Registry
     repository: WritableRepository
@@ -190,12 +164,7 @@ def build_watcher(*, logger: LogSink | None = None,
                   lock: InstanceLock | None = None,
                   sleeper: Sleeper | None = None,
                   connection_factory=None) -> AssembledWatcher:
-    """唯一的装配入口；配置与路径都固定，可选参数只替换组件、不改路径。
-
-    ``load_registry()`` 读包内 ``registry.json``（按 ``__file__`` 定位），并注入
-    恒定的输入目录 ``PROJECT_ROOT/excels`` 与产出目录 ``MODULE_DIR/runtime``；
-    CLI 不提供 ``--config`` / ``--runtime-dir`` / ``--interval`` 一类覆盖。
-    """
+    """唯一的装配入口。"""
     reg = load_registry()
     repo = SqliteDimensionRepository(reg, connection_factory=connection_factory)
     importer = TableImporter(reg, OpenpyxlExcelSource(), repo)

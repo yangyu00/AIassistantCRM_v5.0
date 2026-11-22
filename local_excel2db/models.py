@@ -1,11 +1,5 @@
 # -*- coding: utf-8 -*-
-"""registry.json 的对象模型：已校验、不可变、纯数据（零 I/O）。
-
-由 ``config.load_registry()`` 构造；本模块不解析 JSON、不碰文件系统。
-输入恒为项目根 ``excels/`` 下的文件，库 / 锁 / 日志恒落在包内 ``runtime/``；
-所有路径在加载时由 ``config.py`` 按 ``__file__`` 解析成绝对 Path，配置里
-不携带任何可改的目录。
-"""
+"""registry.json 的对象模型：已校验、不可变、纯数据（零 I/O）。"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -50,12 +44,7 @@ class TableSpec:
 
 @dataclass(frozen=True)
 class Registry:
-    """写入侧唯一配置对象（冻结）。
-
-    路径字段全部由 ``config.py`` 的常量注入，不来自 registry.json，也不接受
-    CLI 覆盖：``input_dir`` 恒为项目根 ``excels/``，``database`` / ``state_dir`` /
-    ``lock_path`` / ``log_dir`` 恒在包内 ``runtime/`` 下。
-    """
+    """写入侧唯一配置对象（冻结）。"""
 
     config_path: Path
     input_dir: Path

@@ -1,27 +1,5 @@
 # -*- coding: utf-8 -*-
-"""在线业务侧**独立维护**的各 db 文件读取配置与静态声明。
-
-``services`` 读取侧要读哪些库文件、库里有哪些表 / 列、按什么键查、怎么排序、
-分表怎么定位，全部在本文件里自己声明；**不 import 任何写入侧包**
-（``sftp_avl2db`` / ``local_excel2db``）。写入侧只负责把数据写进磁盘，两侧
-唯一的交集是磁盘上的 db 文件，没有代码或配置模块互相引用。
-
-表字段在写入侧也有一份（建表 DDL 用），这里刻意冗余再写一遍：读在线侧代码时
-不用跳到别的包，就能看清 ``SELECT`` 回来的列顺序与 dict 的 key。字段声明重复
-是本次解耦刻意接受的成本。
-
-分表口径 ``zlib.crc32(product_no) % NUM_TABLES`` 与表名 ``{AVL}_{分表号}`` 是
-物理数据布局，写入侧也按它落库，所以这里独立实现同一算法。改分表数时两侧配置
-必须同步，并重灌对应 AVL（见 ``services/README.md``）。
-
-配置来源（优先级从高到低）：
-
-1. ``load()`` 的显式参数（离线自检 / 单测注入）；
-2. 包内 ``services/.env``（``KEY=VALUE``，从 ``.env.example`` 复制）；
-3. 本文件顶部的默认值常量。
-
-``import services.db_config`` 零 I/O；只有调用 ``load()`` 才会读 ``.env``。
-"""
+"""在线业务侧**独立维护**的各 db 文件读取配置与静态声明。"""
 from __future__ import annotations
 
 import zlib
@@ -34,7 +12,6 @@ MODULE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = MODULE_DIR.parent
 ENV_PATH = MODULE_DIR / ".env"
 
-# ---- 默认库文件位置（按 __file__ 定位，与启动 CWD 无关）--------------------
 # 写入侧把业务库产出到 sftp_avl2db/runtime/sqlite_db/{project}/{avl}.db；
 # 在线侧只是「按自己声明的路径去读同一份文件」，不引用写入侧的配置代码。
 DEFAULT_AVL_DB_ROOT: Final = (PROJECT_ROOT / "sftp_avl2db" / "runtime"
@@ -42,17 +19,14 @@ DEFAULT_AVL_DB_ROOT: Final = (PROJECT_ROOT / "sftp_avl2db" / "runtime"
 DEFAULT_DIMENSIONS_DB: Final = (PROJECT_ROOT / "local_excel2db" / "runtime"
                                 / "sqlite_db" / "dimensions.db")
 
-# ---- 分表数：与写入侧 .env 同名键，独立声明 -------------------------------
 NUM_TABLES_ENV_KEYS: Final = {
     "F09591": "LOSS_CONTROL_NUM_TABLES",   # 控损
     "F09633": "F09633_NUM_TABLES",         # 诊断·用户场景对应关系
 }
 NUM_TABLES_DEFAULTS: Final = {"F09591": 128, "F09633": 128}
 
-# ---------------------------------------------------------------------------
 # 一、各业务库的表字段（与写入侧建表 DDL 对齐；冗余声明便于在线侧独立理解）
 #     key = schema 名；值 = ((列名, 类型), ...)，顺序即 SELECT * 的列顺序
-# ---------------------------------------------------------------------------
 TABLE_SCHEMAS: Final[Mapping[str, tuple[tuple[str, str], ...]]] = {
     # 商机回捞：F09554 / F09555 / F09556 共用
     "opportunity_recall": (
@@ -77,7 +51,7 @@ TABLE_SCHEMAS: Final[Mapping[str, tuple[tuple[str, str], ...]]] = {
         ("city_id", "TEXT"),
         ("strategy_name", "TEXT"),
     ),
-    # 诊断新线 8 张表：一个 AVL 一个 db，列顺序 = AVL 制表符分隔顺序
+    # 诊断 8 张表：一个 AVL 一个 db，列顺序 = AVL 制表符分隔顺序
     "scene_rank": (
         ("op_time", "TEXT"), ("scene", "VARCHAR(255)"), ("rn", "INTEGER"),
     ),
@@ -127,9 +101,7 @@ TABLE_PRIMARY_KEYS: Final[Mapping[str, tuple[str, ...]]] = {
 }
 
 
-# ---------------------------------------------------------------------------
 # 二、每个 AVL 对应一个 db 文件 + 一份在线查询声明
-# ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class AvlDbSpec:
     """一个 AVL 的在线侧读取声明（不含任何写入侧信息）。"""
@@ -177,9 +149,7 @@ AVL_DB_SPECS: Final[Mapping[str, AvlDbSpec]] = {
 }
 
 
-# ---------------------------------------------------------------------------
 # 三、卖点维表 dimensions.db（在线侧自己声明，不读写入侧 registry.json）
-# ---------------------------------------------------------------------------
 SELLING_POINTS_TABLE: Final = "selling_points"
 SELLING_POINTS_PRIMARY_KEY: Final = ("product_id",)
 SELLING_POINTS_REQUIRED_COLUMNS: Final = ("product_id", "label_id")
@@ -199,26 +169,19 @@ SELLING_POINTS_SCHEMA: Final = tuple(
         "product_subcategory") + SELLING_POINTS_TAG_COLUMNS)
 
 
-# ---------------------------------------------------------------------------
 # 四、分表口径与表名（物理布局；写入侧独立实现了同样的规则）
-# ---------------------------------------------------------------------------
 def shard_index(product_no, num_tables: int) -> int:
-    """分表号：``zlib.crc32(str(product_no)) % NUM_TABLES``。
-
-    空主键取字符串 ``"NULL"``（解析器已跳过空主键，属不可达分支但口径保留）。
-    """
+    """分表号：``zlib.crc32(str(product_no)) % NUM_TABLES``。"""
     p_no = product_no if product_no else "NULL"
     return zlib.crc32(str(p_no).encode("utf-8")) % num_tables
 
 
 def table_name(base: str, shard: int | None = None) -> str:
-    """库内表名：固定表 = AVL 名；分表 = ``{AVL 名}_{分表号}``。"""
+    """库内表名：固定表 = AVL 名，分表 = ``{AVL 名}_{分表号}``。"""
     return base if shard is None else f"{base}_{shard}"
 
 
-# ---------------------------------------------------------------------------
 # 五、装配：把静态声明 + .env / 显式参数变成一份只读配置
-# ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class DbProfile:
     """一个 AVL 的运行时读取配置（不可变）。"""
@@ -254,7 +217,7 @@ class ReadConfig:
 
 
 def _read_env(path) -> dict[str, str]:
-    """读 KEY=VALUE；文件不存在返回空 dict（回落到代码内默认值）。"""
+    """读 KEY=VALUE。"""
     p = Path(path)
     if not p.is_file():
         return {}
@@ -280,7 +243,7 @@ def _positive_int(raw: str, key: str) -> int:
 
 
 def _resolve_path(raw: str | None, default: Path) -> Path:
-    """没配就用代码常量；配了相对路径按项目根解析，绝对路径原样使用。"""
+    """没配就用代码常量。"""
     if raw is None or not str(raw).strip():
         return Path(default)
     p = Path(str(raw).strip())
@@ -329,13 +292,7 @@ def _defaults() -> ReadConfig:
 
 def load(*, avl_db_root=None, dimensions_db=None, num_tables=None,
          env_path=None) -> ReadConfig:
-    """装配在线侧读取配置；返回冻结的 ``ReadConfig``。
-
-    - 无参：读 ``services/.env``（不存在则用代码内默认值），结果进程内缓存一次；
-    - ``avl_db_root`` / ``dimensions_db``：覆盖库文件位置（离线自检注入临时目录）；
-    - ``num_tables``：``{AVL 名: 分表数}``，覆盖分表数；
-    - ``env_path``：改用另一份 KEY=VALUE 配置文件。
-    """
+    """装配在线侧读取配置。"""
     if (env_path is None and avl_db_root is None and dimensions_db is None
             and num_tables is None):
         return _defaults()
@@ -359,10 +316,7 @@ def default_dimensions_db() -> Path:
 
 
 def validate(config) -> None:
-    """在线侧自己的契约校验：列 / 查询键 / 排序 / 分表声明逐一核对。
-
-    只检查本模块声明，不 import 写入侧任何东西；配置漂移在装配时暴露。
-    """
+    """在线侧自己的契约校验：列 / 查询键 / 排序 / 分表声明逐一核对。"""
     profiles = config.profiles if isinstance(config, ReadConfig) else config
     if set(profiles) != set(AVL_DB_SPECS):
         raise ValueError(

@@ -1,20 +1,5 @@
 # -*- coding: utf-8 -*-
-"""库表清理轮转自检：验证「每天一次 + 按天清部分分表」的覆盖性与兼容性。
-
-不是 pytest 单元测试，是手工跑一次、打印断言结论的冒烟脚本。**不连 SFTP、
-不写包内 runtime/**，全部库落在临时目录，跑完自动清理；只用标准库。
-
-    python tests/check_purge_rotation.py
-
-覆盖：AVL 粒度配置解析（无项目级兜底 / 缺键 fail-fast / 每个 AVL 独立取值）/
-7 组并集覆盖 128 张表且组间互斥 / cycle=0 行为不变 / 固定表每日全清 /
-每天只触发一次 purge_expired() / 跨 7 天过期行全清而新鲜行保留 /
-单次补跑一次全量清。
-
-装配真实 profile 时需要包内 .env；按当前约定 .env 允许随仓库入库、本仓库已随附，
-仅在检出里缺失时才临时从 .env.example 复制一份、结束删除。已有 .env 时不覆盖，
-只做字段存在性断言。
-"""
+"""库表清理轮转自检：验证「每天一次 + 按天清部分分表」的覆盖性。"""
 from __future__ import annotations
 
 import shutil
@@ -107,7 +92,7 @@ def make_profile(tag, *, num_tables=128, cycle=7, sharded=True):
 
 
 def seed(profile, layout):
-    """每张表插 1 行过期 + 1 行新鲜；op_time 用静态串避开时钟依赖。"""
+    """每张表插 1 行过期 + 1 行新鲜。"""
     sink = build_sink(profile, layout=layout)
     sink.ensure_schema()
     conn = sqlite3.connect(str(layout.db_path))
@@ -152,7 +137,6 @@ def make_runner(profile, cycle=7):
     return runner, spy, layout, clock
 
 
-# ---------------------------------------------------------------------------
 print("[1] 配置解析：AVL 粒度、必需键、无项目级兜底")
 # _int 默认要求正整数；min_value=0 供 PURGE_CYCLE_DAYS 使用（0 合法，但不是缺省值）
 check("正整数合法", _int({"X": "7"}, "X") == 7)

@@ -1,18 +1,5 @@
 # -*- coding: utf-8 -*-
-"""诊断新线离线自检：一次性跑完「注册 → 解析 → 入库 → 取数 → 拼装 → 路由」。
-
-不是 pytest 单元测试，是手工跑一次、打印断言结论的冒烟脚本；**不连 SFTP、
-不连 IOP、不写包内 runtime/**，所有库落在临时目录，跑完自动清理。
-
-主体只用标准库 + 包内纯模块；末尾的「在线路由」段需要 fastapi / pydantic /
-loguru / aiohttp / uvicorn 等运行时依赖，缺任一会自动跳过。
-
-    python tests/check_diagnosis_offline.py
-
-用 io_samples 的 8 个诊断 AVL 样例建库后，再补一组业务键自洽的数据
-（样例各表业务键彼此不对齐，直接跑只能看到降级），验证 6 个输出字段：
-括号拆分、多值按位置配对、场景交集汇总、RN 优先级、多行话术、挽留配对。
-"""
+"""诊断离线自检：一次性跑完「注册 → 解析 → 入库 → 取数 → 拼装 → 路由」。"""
 from __future__ import annotations
 
 import asyncio
@@ -78,7 +65,6 @@ BT = "套餐焕新融宽直点"              # F09628 样例已有的 BUSINESS_T
 TEL = "15054675009"                 # F09633 样例已有的手机号
 BIZ_NAME = "【五福套餐】流量放心用，月费58元"
 
-# ---- 诊断卖点维表兜底的测试数据 ----
 FALLBACK_PID = "202611210000000099"       # F09629 无此 ID → db 查空兜底
 NO_INTERSECT_PID = "202611210000000098"   # F09629 有映射，但用户场景无交集
 TEL_NO_INTERSECT = "15000000099"          # F09633 里只有不相干场景
@@ -100,11 +86,7 @@ def check(label, condition, detail=""):
 
 
 def build_avl(avl, date):
-    """用注册的表结构 + 声明的解析器把样例 AVL 写进临时库。
-
-    与生产写入侧 ``build_task()`` 走同一条布局路径：分表 AVL 先建全部
-    ``{AVL}_{i}``，再按 ``layout.target()`` 逐行路由；固定表只建一张。
-    """
+    """用注册的表结构 + 声明的解析器把样例 AVL 写进临时库。"""
     conf = write_profiles[avl]
     schema = TableSchema.from_profile(conf)
     layout = build_layout(conf)
@@ -145,7 +127,7 @@ def main():
     for avl in DIAG_AVLS:
         n = build_avl(avl, "20261120")
         check(f"{avl} 样例入库", n == 10, f"{n} 行")
-    build_avl("F09554", "20261110")       # 旧业务回归用
+    build_avl("F09554", "20261110")
 
     print("=== 1b. 单一 flat 解析器回归（商机与诊断共用） ===")
     check("解析器只有 flat / continuation",
@@ -212,10 +194,7 @@ def main():
           asyncio.run(reader.query_many(
               "F09633", where={"scene": "超套"})) == [])
 
-    print("=== 1d. 卖点维表 → 商机标签 ID（不再用固定集）===")
-    # 按 services/db_config.py 的在线侧声明建临时 dimensions.db
-    #（不再读写入侧 registry.json）。
-    # 3 行商机 ID 用于画像；3 行诊断 ID 用于 1e / 5b 的卖点维表兜底。
+    print("=== 1d. 卖点维表 → 商机标签 ID===")
     dim_db = TMP / "dimensions.db"
     tag_cols = list(db_config.SELLING_POINTS_TAG_COLUMNS[:3])
     conn = sqlite3.connect(str(dim_db))
@@ -301,11 +280,11 @@ def main():
     check("product_name 也来自维表行",
           opp_obj.selling_point_rows["202608041615335173"].product_name
           == "维表产品-173")
-    check("画像以组合方式挂在商机上（不再由公共基类继承）",
+    check("画像以组合方式挂在商机上",
           isinstance(opp_obj, ProductInfoBase) and
           isinstance(opp_obj.portrait, AuxiliaryPortrait) and
           opp_obj.selling_point_rows is sp_opp)
-    check("旧名 product_selling_point_match_dict 已移除",
+    check("product_selling_point_match_dict 属性不存在",
           not hasattr(opp_obj, "product_selling_point_match_dict"))
 
     print("=== 1e. 卖点维表兜底：话术原文解析 /「兜底话术」优先 ===")
@@ -352,14 +331,14 @@ def main():
     # 默认库路径在 __main__ 的 finally 里统一还原，避免污染其它调用方。
     dimensions.configure(dim_db)
 
-    print("=== 1f. 业务包按业务名命名（无历史别名 / 行为等价）===")
+    print("=== 1f. 业务包按业务名命名===")
     import services
     from services.loss_control import rewrite as loss_rewrite
     from services.opportunity_recall import rewrite as opp_rewrite
     check("业务包子模块可经 services 访问",
           services.opportunity_recall.__name__.endswith("opportunity_recall") and
           services.loss_control.__name__.endswith("loss_control"))
-    check("不再保留 ProductInfoRewrite 别名",
+    check("ProductInfoRewrite 别名不存在",
           not hasattr(opp_rewrite, "ProductInfoRewrite") and
           not hasattr(loss_rewrite, "ProductInfoRewrite"))
     check("包入口显式导出语义化类名",
@@ -383,7 +362,7 @@ def main():
         '<strong><span style="color:blue;">拒绝原因：</span></strong>太贵<br>'
         '<strong><span style="color:blue;">具体表述：</span></strong>每月多 10 元'
     )
-    check("商机四段 HTML 与重构前逐字一致",
+    check("商机四段 HTML 逐字符合预期",
           opp_full.output_script == expected_opp, opp_full.output_script)
     check("商机 product_name 来自映射表",
           opp_full.product_name == "号卡业务回捞商机", str(opp_full.product_name))
@@ -424,7 +403,7 @@ def main():
               all(not hasattr(obj, attr) for attr in portrait_attrs),
               str([a for a in portrait_attrs if hasattr(obj, a)]))
         check(f"{label}仍继承极简公共基类", isinstance(obj, ProductInfoBase))
-    check("诊断日志不再打印恒为空的画像行",
+    check("诊断日志不含画像行",
           "auxiliary_portrait" not in str(fb_obj) and
           "queried_label_ids" not in str(fb_obj))
     check("控损构造只需 (product_id, record)",
@@ -489,7 +468,7 @@ def main():
           str(logic.split_fee_name(BIZ_NAME)))
     check("无括号 → 摘要全文", logic.split_fee_name("日照中高端临界用户") ==
           ("", "日照中高端临界用户"))
-    check("ASCII [] 兼容", logic.split_fee_name("[权益]铂金会员（标准版）") ==
+    check("ASCII [] 写法", logic.split_fee_name("[权益]铂金会员（标准版）") ==
           ("权益", "铂金会员（标准版）"))
     check("多值按位置配对（不等长补空）",
           logic.pairs_by_position("a|b|c", "x|y") ==

@@ -1,13 +1,5 @@
 # -*- coding: utf-8 -*-
-"""标签响应的逐层校验与 BUSIINFO 组装。
-
-**纯函数**、无状态、无 I/O：logger 由调用方注入，``cost_ms`` 由编排层算好
-传入，喂任意 dict 就能单独验证。
-
-失败分支记 ERROR 并降级为 ``{}``，成功分支记 INFO 并返回标签 dict。
-成功但 ``BUSIINFO`` 为空时同样返回 ``{}``，与降级返回值相同；两者靠日志
-区分（成功 INFO / 失败 ERROR）。
-"""
+"""标签响应的逐层校验与 BUSIINFO 组装。"""
 from __future__ import annotations
 
 from typing import Any
@@ -20,11 +12,7 @@ def parse_custinfo_response(
     logger: Any,
     cost_ms: float,
 ) -> dict:
-    """把已解析的响应体逐层校验，组装成 ``{ITEMCODE: [ITEMNAME, ITEMVALUE]}``。
-
-    校验顺序：HTTP 状态 → 响应体类型 → ``res_code`` → ``BUSIINFO`` →
-    逐项组装。任一环节失败即记 ERROR 并降级为 ``{}``。
-    """
+    """把已解析的响应体逐层校验，组装成 ``{ITEMCODE: [ITEMNAME, ITEMVALUE]}``。"""
     if status_code != 200:
         logger.error(f"IOP 标签查询失败 | status={status_code} | cost={cost_ms:.0f}ms")
         return {}

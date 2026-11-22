@@ -1,16 +1,5 @@
 # -*- coding: utf-8 -*-
-"""组件契约与结果对象（纯 typing，零 I/O、零第三方依赖）。
-
-只约束方法形状，不约束实现技术；各层通过构造器注入，可换成测试替身：
-
-    ExcelSource            注册 xlsx 的指纹与抽列（写入侧的输入解析）
-    WritableRepository     建表 / 指纹 / 整表覆盖（只写，不提供查询）
-    InstanceLock           单机单实例锁
-    LogSink                日志出口
-    Sleeper                轮询休眠（可替换成立即返回）
-
-本包只写库，不含任何只读查库 / 业务 dict 重建契约。
-"""
+"""组件契约与结果对象（纯 typing，零 I/O、零第三方依赖）。"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -42,7 +31,7 @@ class ParsedRows:
 
 @dataclass(frozen=True)
 class ImportResult:
-    """单张表一轮导入的结果；不写日志，由编排器决定如何记录。"""
+    """单张表一轮导入的结果。"""
 
     table: str
     status: str                 # "missing" | "unchanged" | "updated"
@@ -55,11 +44,11 @@ class ImportResult:
 
 
 class MissingColumn(Exception):
-    """必需表头列缺失；编排器记录并跳过本轮，下轮重试。"""
+    """必需表头列缺失。"""
 
 
 class SchemaMismatch(RuntimeError):
-    """库表列集合与 registry 声明不一致；提示删库重建，不静默写错列。"""
+    """库表列集合与 registry 声明不一致。"""
 
 
 @runtime_checkable
@@ -89,7 +78,7 @@ class WritableRepository(Protocol):
 
 @runtime_checkable
 class InstanceLock(Protocol):
-    """单机单实例锁；acquire 失败返回 False 而不是抛异常。"""
+    """单机单实例锁。"""
 
     def acquire(self) -> bool: ...
 
@@ -98,7 +87,7 @@ class InstanceLock(Protocol):
 
 @runtime_checkable
 class LogSink(Protocol):
-    """日志出口；宿主项目可直接传 logging.Logger。"""
+    """日志出口。"""
 
     def info(self, msg: str) -> None: ...
 

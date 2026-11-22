@@ -13,10 +13,8 @@ from services import (
 from src.exceptions import telnumError, productIdError, register_errors_handlers
 from src.log_util import my_log, configure_logging
 
-# ===== 在线服务配置（端口、路由、日志目录） =====
 # 日志目录：留空表示写到项目根目录下的 log/，也可填绝对路径
 LOG_DIR = ""
-# uvicorn 启动参数，对应原 config.yaml 的 fastapi 段
 FASTAPI_CONFIG = {"host": "0.0.0.0", "port": 8989, "reload": False}
 # 业务路由；users 为预留项，当前业务代码未读取
 MARKET_ASSISTANT_URL = "/api/speechQryService"
@@ -34,13 +32,7 @@ iop_client = IOPClient()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """启动时恢复调用量基数并创建 IOP 会话，关闭时收尾。
-
-    IOP 会话必须在同一个 event loop 内创建/关闭，故挂在 lifespan 而非 atexit
-    （atexit 拿不到运行中的 loop）。uvicorn 的 SIGTERM 退出路径不经过 atexit，
-    由 yield 之后显式收尾；call_stat 仍注册 atexit 作为非 ASGI 运行方式的
-    兜底，两处幂等。startup 里不做任何定时任务，只做一次性初始化。
-    """
+    """启动时恢复调用量基数并创建 IOP 会话，关闭时收尾。"""
     base = startup()
     my_log.info(f"调用量统计已恢复：当天已累计 {base} 次（重启后继续计数）")
     await iop_client.start()
@@ -97,11 +89,7 @@ class Args(BaseModel):
 
 
 class IopLabelProvider:
-    """一次请求内的标签惰性提供者，负责同请求只查一次并隔离不同请求。
-
-    实例必须在请求处理函数内创建：标签属于单个手机号，放到模块级或
-    app.state 缓存会把上一个用户的标签带给下一个用户，且不会报错。
-    """
+    """一次请求内的标签惰性提供者，负责同请求只查一次并隔离不同请求。"""
 
     def __init__(self, telnum):
         self.telnum = telnum
@@ -149,7 +137,7 @@ async def marketAssistant(args: Args):
             selling_points=selling_points))
 
     # 3. 输出话术
-    # 商机回捞 / 控损 / 诊断新线三类业务对象返回 code=0；其余兜底 code=2。
+    # 商机回捞 / 控损 / 诊断三类业务对象返回 code=0；其余兜底 code=2。
     # 这里按对象类型判定，不能靠 product_name 是否为空：兜底对象也可能因
     # 维表残留拿到非空名称，只看它会返回 code=0 + 空话术，看起来成功、实际无内容。
     allScripts = []
