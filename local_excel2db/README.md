@@ -23,7 +23,7 @@ logger、不拉起 openpyxl / sqlite3）。
 
 在线业务侧按自己的配置以 `mode=ro` 只读上面那个 `dimensions.db`；改表名、
 列映射或 `tag_*` 个数时，除本包 `registry.json` 外还要同步
-`services/db_config.py` 的卖点维表声明，详见[解耦改造说明](../解耦改造说明.md)。
+`services/db_config.py` 的卖点维表声明，详见 [`services/README.md`](../services/README.md)「职责边界」。
 
 ## 路径边界（代码强制，不靠约定）
 

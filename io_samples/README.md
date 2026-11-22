@@ -35,8 +35,8 @@ AVL 命名遵循 `{业务前缀}{YYYYMMDD}000000.AVL`，制表符分隔、UTF-8�
 [`sftp_avl2db/README.md`](../sftp_avl2db/README.md) 与
 `sftp_avl2db/avl_specs.py`、`sftp_avl2db/table_schemas.py`。
 
-> 诊断链路的完整取数规则见根
-> [`诊断新线_在线链路实现说明.md`](../诊断新线_在线链路实现说明.md)
+> 诊断链路的完整取数规则见
+> [`services/README.md`](../services/README.md)「诊断新线」
 
 
 ## 三个子系统分别怎么用这些样例
@@ -56,7 +56,7 @@ python -m sftp_avl2db --task F09591 --date 20261110 \
 **2. IOP 响应对照**（只吃那个 `.json`）
 
 `iop_labels_query_raw_response.json` 是排查字段口径时看的原始报文形状；
-在线链路里 `IOPClient` 会把它解析成 `{ITEMCODE: (名称, 值)}` 的画像 dict，
+在线链路里 `IOPClient` 会把它解析成 `{ITEMCODE: [名称, 值]}` 的画像 dict，
 不做打桩、不读这个文件。想验证真实上游用
 [`tests/check_iop_direct.py`](../tests/README.md)。
 
@@ -91,8 +91,9 @@ python -m local_excel2db --once
 - 想用本目录的样例做离线验证，把样例复制到 `excels/` 覆盖同名文件再跑
   `--once`；别把这份样例库当成生产维表库用。改表名、列映射或主键后要删库重建：
   `rm local_excel2db/runtime/sqlite_db/dimensions.db`。
-- `excels/` 里是真实维表，通常不随仓库提交；如果确实放在工作区内，记得按需
-  加进 `.gitignore`，别把客户/产品数据提交上去。
+- `excels/` 随仓库提交（`卖点维表.xlsx` / `标签转换维表.xlsx`），是
+  `local_excel2db` 的默认输入；更新维表直接改这里的文件并重新提交，不要写进
+  `.gitignore`。补样例前先确认无真实客户信息。
 
 配置说明见 [`local_excel2db/README.md`](../local_excel2db/README.md)。
 

@@ -11,10 +11,10 @@
 > - `services/db_config.py`：**在线侧唯一的读取配置** —— 各 db 文件路径、表字段（含带类型的冗余声明）、查询键 / 排序、分表数、卖点维表列，全部自己维护；不 import 任何写入侧包。
 > - `services/reader.py` / `services/dimensions.py`：两个只读模块，只从 `db_config` 取配置。
 >
-> 两侧唯一的交集是**磁盘上的 db 文件**（数据契约），没有任何代码 / 配置模块互相引用。表字段在两侧各写一份是刻意接受的冗余：读在线侧代码时不用跳到别的包就能看清 `SELECT` 回来的列顺序。改列顺序 / 分表数 / 库路径时两侧声明必须同步，见 [解耦改造说明](../解耦改造说明.md)。
+> 两侧唯一的交集是**磁盘上的 db 文件**（数据契约），没有任何代码 / 配置模块互相引用。表字段在两侧各写一份是刻意接受的冗余：读在线侧代码时不用跳到别的包就能看清 `SELECT` 回来的列顺序。改列顺序 / 分表数 / 库路径时两侧声明必须同步，见下文「业务库读取侧」与 [`sftp_avl2db/README.md`](../sftp_avl2db/README.md)「配置」。
 >
 > 全局架构、进程数、跨模块降级总表见[根 README](../README.md)；
-> 诊断新线的字段口径与验证见[诊断新线说明](../诊断新线_在线链路实现说明.md)。
+> 诊断新线的字段口径与验证见下文「诊断新线」及 [`sftp_avl2db/README.md`](../sftp_avl2db/README.md)「诊断新线：8 张表注册」。
 
 ## 目录分层
 
@@ -126,7 +126,7 @@
 |---|---|
 | 库 | `DIMENSIONS_DB`（默认 `local_excel2db/runtime/sqlite_db/dimensions.db`，指向写入侧产出的文件） |
 | 连接 | `sqlite3` + `mode=ro` 只读，**写入侧仍只写、在线侧仍只读** |
-| 表 / 列名 | `SELLING_POINTS_TABLE` = `selling_points`；`SELLING_POINTS_SELECT_COLUMNS` = 必需列 + 可选列 + `tag_0 … tag_27`（与 `SELLING_POINTS_SCHEMA` 同源自检） |
+| 表 / 列名 | `SELLING_POINTS_TABLE` = `selling_points`；`SELLING_POINTS_SELECT_COLUMNS` 是线上实际 SELECT 的 34 列（2 必需 + 4 可选 + `tag_0 … tag_27`）。`SELLING_POINTS_SCHEMA` 多出 `product_category` / `product_subcategory` 两列，仅供离线自检按同一份声明建临时库，在线侧不读取 |
 | 商机画像用列 | `product_id`（主键）→ `label_id`（Excel「标签ID」） |
 | 诊断兜底用列 | `product_name`（产品名称）、`match_result`（「匹配结果2」场景标签 ID）、`tag_0 … tag_27`（「标签0…标签27」话术单元格） |
 | 其它列 | `selling_point` / `fallback_script` 保留原文本；可选列缺失填空串 |

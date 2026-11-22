@@ -1,12 +1,15 @@
 # tests/ · 手工冒烟脚本
 
-这里放的是**部署后/联调时手动跑的请求脚本**，不是 pytest 单元测试：
+这里放的是**部署后 / 联调时手动跑的冒烟脚本**，不是 pytest 单元测试：没有
+`test_` 开头的函数、没有 fixture，文件名也**故意不叫 `test_*.py`**，避免被 pytest
+收集。按是否联网分两类：
 
-- 没有 `test_` 开头的函数，没有 `assert`，没有 fixture，文件名也**故意不叫 `test_*.py`**，避免被 pytest 收集；
-- 每个脚本跑一次、发一次真实请求、把响应原样打印出来，结论靠人看；
-- 不打桩、不 mock，会真实访问在线服务或 IOP 上游。
-
-本目录收录主链路、入参校验、调用量统计、IOP 直连与诊断离线自检脚本。
+- **在线冒烟**：`check_online_api.py` / `check_param_validation.py` /
+  `check_call_stat.py` / `check_iop_direct.py` —— 跑一次、发真实请求、打印响应，
+  不打桩、不 mock，会真实访问在线服务或 IOP 上游，结论靠人看；
+- **离线自检**：`check_diagnosis_offline.py` / `check_purge_rotation.py` —— 不打
+  任何服务，用临时 SQLite + 内存桩 / 桩时钟跑断言，打印 `ALL PASS`，
+  临时产物跑完即删。
 
 ## 前置条件
 
@@ -22,7 +25,7 @@ export CRM_SMOKE_BASE_URL=http://10.0.0.5:8989
 
 业务路由 `/api/speechQryService` 与统计路由 `/api/callStat` 分别对应 `main.py` 的
 `MARKET_ASSISTANT_URL`、`call_stat/.env` 的 `CALL_STAT_QUERY_PATH`；改了这两处，脚本顶部的
-同名常量要跟着改。
+`SPEECH_PATH` / `CALL_STAT_PATH` 常量要跟着改。
 
 ## 脚本清单
 
@@ -72,17 +75,17 @@ python tests/check_purge_rotation.py
 - **GET 查询不含本次**：计数在 `finally` 阶段，所以某次查询返回的 `callCount` 不含它自己；
   连续两次查询时，第二次会把第一次算进去。
 - `check_iop_direct.py` 会真实刷新 token、消耗上游调用，**不经过在线服务也不计调用量**。
-- 脚本只打印，不写文件；服务侧日志照常落在项目根 `log/`。
-- **例外**：`check_diagnosis_offline.py` 不打服务，在临时目录建 8 个诊断库跑完即删；
-  它会打桩 `IOPClient.get_customer_labels`（不消耗上游 token），并按 `.env.example`
-  临时补一份 `sftp_avl2db/.env` 供 `services.reader` 装配 profiles（含
-  `F09633_NUM_TABLES` 分表数），结束后删除。
+- 在线冒烟脚本只打印，不写文件；服务侧日志照常落在项目根 `log/`。离线自检脚本会在临时目录建库、跑完即删。
+- `check_diagnosis_offline.py` 会在临时目录建 8 个诊断库跑完即删，并打桩
+  `IOPClient.get_customer_labels`（不消耗上游 token）。写入侧 `load_profiles()`
+  读包内 `sftp_avl2db/.env`；本仓库已随附该文件，若干净检出里缺失，脚本会临时
+  从 `.env.example` 复制一份（含 `F09633_NUM_TABLES` 分表数）并在结束后删除。
   末尾的在线路由段需要
   fastapi / pydantic / loguru / aiohttp，缺依赖会自动跳过，不影响主体断言。
 - **`check_purge_rotation.py` 同样不打服务**，只用标准库 + 临时 SQLite，
-  跑完即删；它会按 `.env.example` 临时补一份 `sftp_avl2db/.env` 验证
-  `load_profiles()` 装配，结束后删除。若部署机本来就有 `.env`，不覆盖、
-  只做字段存在性断言。
+  跑完即删；它用 `sftp_avl2db/.env` 验证 `load_profiles()` 装配。干净检出里
+  若缺 `.env`，会临时从 `.env.example` 复制、结束后删除；本仓库已随附 `.env`，
+  此时不覆盖，只做字段存在性断言。
 - 这里的示例号码与产品 ID 都是占位值，换成真实数据才能拿到业务话术。
 
 ## 为什么没有 pytest

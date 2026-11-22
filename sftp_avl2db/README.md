@@ -10,7 +10,7 @@
 
 一个 AVL = 一个 `{AVL}.db`，`project`（项目名）负责把同一业务的本地 AVL 与 db 收进同一对文件夹；表结构按名字放在 `table_schemas.py` 里，多个 AVL 可复用，也可以各不相同。主键按 schema 名注册在 `TABLE_PRIMARY_KEYS`，支持复合主键，各表按自身业务定位键建主键。库内固定表叫 `{AVL}`，分表叫 `{AVL}_{分表号}`。
 
-`import sftp_avl2db` 零 I/O、零第三方依赖；组件按「配置 / 解析 / 写入 / I-O / 编排」五层拆分，每层可单独 import、替换、测试。把包 copy 到别的项目时**排除 `.env` 与 `runtime/`**，从 `.env.example` 起步。
+`import sftp_avl2db` 零 I/O、零第三方依赖；组件按「配置 / 解析 / 写入 / I-O / 编排」五层拆分，每层可单独 import、替换、测试。把包 copy 到别的项目时**排除 `runtime/`**，凭据按新环境从 `.env.example` 重新填写。
 
 ## 调用链地图
 
@@ -114,15 +114,14 @@ runtime/
 
 `AVL_SPECS` 与 `_AVLS` 的 key 必须一致，schema 名必须在 `TABLE_SCHEMAS` 里，主键必须在 `TABLE_PRIMARY_KEYS` 里；分表 AVL 的表结构还必须含 `product_no` 列。这些漂移都由 `validate_specs()` 在启动时拦住。
 
-`load_profiles()` 不传参 → 产出落在包内 `runtime/`；`load_profiles(runtime_dir=...)` 或 CLI `--runtime-dir` 是唯一隔离入口，只改产出位置、不改配置来源。部署建议 `ln -s /data/crm_runtime sftp_avl2db/runtime` 把数据挂到独立盘 —— **不要 `rm -rf sftp_avl2db/` 整目录覆盖**，包目录现在是代码 + 数据盘。`.env` 含明文密码，仓库只提交 `.env.example`。
+`load_profiles()` 不传参 → 产出落在包内 `runtime/`；`load_profiles(runtime_dir=...)` 或 CLI `--runtime-dir` 是唯一隔离入口，只改产出位置、不改配置来源。部署建议 `ln -s /data/crm_runtime sftp_avl2db/runtime` 把数据挂到独立盘 —— **不要 `rm -rf sftp_avl2db/` 整目录覆盖**，包目录现在是代码 + 数据盘。`.env` 随仓库提交（`SFTP_PASSWORD` 为占位值、部署前替换）；`.env.example` 保留作脱敏模板。
 
 > 在线业务侧读取这些 db 文件时，库路径、表字段与分表数由 `services/db_config.py`
 > 与 `services/.env` **独立声明**（不读本包 `.env`）。写入侧的分表数键是
 > `<AVL>_NUM_TABLES`（如 `F09591_NUM_TABLES`），在线侧键名由它自己维护
 > （见 `services/.env.example`）——**键名不必相同，但取值必须一致**。
 > 改列顺序 / 分表数 / 库路径时两侧声明必须同步，详见
-> [`services/README.md`](../services/README.md) 与
-> [`诊断新线_在线链路实现说明.md`](../诊断新线_在线链路实现说明.md)。
+> [`services/README.md`](../services/README.md)「业务库读取侧」。
 
 ## 新增业务 / 新增 AVL 的步骤
 
@@ -171,7 +170,7 @@ for t in F09627 F09628 F09629 F09630 F09631 F09632 F09633 F09635; do
 done
 ```
 
-表结构与主键见 `table_schemas.py`，静态声明见 `avl_specs.py`，AVL 归属见 `config.py::_AVLS`，各自轮询 / 清理 / 批次参数见 `.env.example` 的 `<AVL>_*` 键（无 `DIAGNOSIS_*` 这类项目级键）。在线业务侧的取数链路见根 [`诊断新线_在线链路实现说明.md`](../诊断新线_在线链路实现说明.md) 与 [`services/README.md`](../services/README.md)。
+表结构与主键见 `table_schemas.py`，静态声明见 `avl_specs.py`，AVL 归属见 `config.py::_AVLS`，各自轮询 / 清理 / 批次参数见 `.env.example` 的 `<AVL>_*` 键（无 `DIAGNOSIS_*` 这类项目级键）。在线业务侧的取数链路见 [`services/README.md`](../services/README.md)「诊断新线」。
 
 ## 解析与写入行为
 

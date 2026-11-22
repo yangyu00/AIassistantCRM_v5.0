@@ -1,7 +1,7 @@
-# ===== 明文凭据：IOP/.env 按约定随仓库入库；sftp_avl2db 只提交 .env.example =====
+# ===== 明文凭据：IOP/.env 与 sftp_avl2db/.env 均按当前约定随仓库入库 =====
 .env
 !IOP/.env
-sftp_avl2db/.env
+!sftp_avl2db/.env
 services/.env
 !IOP/.env.example
 !sftp_avl2db/.env.example
@@ -9,7 +9,8 @@ services/.env
 !call_stat/.env
 
 # ===== 运行时产出（写入进程生成，在线侧只读）=====
-sftp_avl2db/runtime/
+sftp_avl2db/runtime/*
+!sftp_avl2db/runtime/.gitkeep
 local_excel2db/runtime/*
 !local_excel2db/runtime/.gitkeep
 call_stat/runtime/*
