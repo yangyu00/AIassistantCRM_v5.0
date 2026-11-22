@@ -10,7 +10,7 @@
 
 一个 AVL = 一个 `{AVL}.db`，`project`（项目名）负责把同一业务的本地 AVL 与 db 收进同一对文件夹；表结构按名字放在 `table_schemas.py` 里，多个 AVL 可复用，也可以各不相同。主键按 schema 名注册在 `TABLE_PRIMARY_KEYS`，支持复合主键，各表按自身业务定位键建主键。库内固定表叫 `{AVL}`，分表叫 `{AVL}_{分表号}`。
 
-`import sftp_avl2db` 零 I/O、零第三方依赖；组件按「配置 / 解析 / 写入 / I-O / 编排」五层拆分，每层可单独 import、替换、测试。把包 copy 到别的项目时**排除 `runtime/`**，凭据按新环境从 `.env.example` 重新填写。
+`import sftp_avl2db` 零 I/O、零第三方依赖；组件按「配置 / 解析 / 写入 / I-O / 编排」五层拆分，每层可单独 import、替换、测试。把包 copy 到别的项目时**排除 `runtime/`**；`.env` / `.env.example` 里都是实际生效字符串（不是占位值），新环境按实际环境改值即可。
 
 ## 调用链地图
 
@@ -38,7 +38,7 @@ python -m sftp_avl2db --task F09554
 | I/O | `remote.py`、`state.py`、`task_logging.py` | 无（`paramiko` / `loguru` / 锁库延迟导入） |
 | 编排 | `runner.py`、`profiles.py`、`cli.py` | 无 |
 
-公共 API **只认包根** `sftp_avl2db`：`__all__` 列出契约与工厂，I/O 类通过模块级 `__getattr__` 延迟导出，保证 `import sftp_avl2db` 零 I/O。`protocols.py` 是唯一契约来源，五个 Protocol 均标了编排器实际用到的方法与属性（含 `RemoteSource.connect()` 与 `RecordSink.stats`），照协议写替身即可替换任一层。
+公共 API **只认包根** `sftp_avl2db`：`__all__` 列出契约与工厂，I/O 类通过模块级 `__getattr__` 延迟导出，保证 `import sftp_avl2db` 零 I/O。`protocols.py` 是唯一契约来源，六个 Protocol 均标了编排器实际用到的方法与属性（含 `RemoteSource.connect()` 与 `RecordSink.stats`；`SinkStats` 是 `RecordSink.stats` 的附属契约），照协议写替身即可替换任一层。
 
 ## AVL 与运行
 
@@ -93,7 +93,7 @@ runtime/
 | 文件 | 作用 |
 |---|---|
 | `.env` | 与 `config.py` 同目录，日常改这个；`repr` 自动屏蔽 `SFTP_PASSWORD` |
-| `.env.example` | 带注释的配置说明（键含义与取值约束）；`.env` 按约定随仓库入库，新环境初始化时 `cp .env.example .env` |
+| `.env.example` | 带注释的配置说明（键含义与取值约束），与 `.env` 同值、写的就是实际生效字符串；`.env` 按约定随仓库入库，新环境初始化时 `cp .env.example .env` |
 | `config.py::_AVLS` | `(AVL 名, 项目名)` 声明表；AVL 名同时是文件前缀、db 文件名与 `.env` 键前缀，项目名**只**决定运行时目录名 |
 | `avl_specs.py` | 每个 AVL 的写入侧静态声明：项目、schema 名、解析器、是否分表；`table_name()` 表名规则、`shard_index()` 分表口径、`validate_specs()` 启动校验。**不声明表名、不含产品 ID、不含 PRAGMA，也不含任何在线查询条件 / 排序** |
 | `table_schemas.py` | 按名字注册的表结构（`TABLE_SCHEMAS`）与主键（`TABLE_PRIMARY_KEYS`），供写入侧建表 DDL、幂等与解析器列数校验使用；**单独一个 py 文件，供多个 AVL 复用** |
@@ -114,7 +114,7 @@ runtime/
 
 `AVL_SPECS` 与 `_AVLS` 的 key 必须一致，schema 名必须在 `TABLE_SCHEMAS` 里，主键必须在 `TABLE_PRIMARY_KEYS` 里；分表 AVL 的表结构还必须含 `product_no` 列。这些漂移都由 `validate_specs()` 在启动时拦住。
 
-`load_profiles()` 不传参 → 产出落在包内 `runtime/`；`load_profiles(runtime_dir=...)` 或 CLI `--runtime-dir` 是唯一隔离入口，只改产出位置、不改配置来源。部署建议 `ln -s /data/crm_runtime sftp_avl2db/runtime` 把数据挂到独立盘 —— **不要 `rm -rf sftp_avl2db/` 整目录覆盖**，包目录现在是代码 + 数据盘。`.env` 随仓库提交（`SFTP_PASSWORD` 为占位值、部署前替换）；`.env.example` 主要提供键注释，不替代 `.env`。
+`load_profiles()` 不传参 → 产出落在包内 `runtime/`；`load_profiles(runtime_dir=...)` 或 CLI `--runtime-dir` 是唯一隔离入口，只改产出位置、不改配置来源。部署建议 `ln -s /data/crm_runtime sftp_avl2db/runtime` 把数据挂到独立盘 —— **不要 `rm -rf sftp_avl2db/` 整目录覆盖**，包目录现在是代码 + 数据盘。`.env` 随仓库提交，里面就是实际生效字符串（含 `SFTP_PASSWORD`，不是占位值、无需部署前替换）；`.env.example` 同值，主要提供键注释，不替代 `.env`。
 
 > 在线业务侧读取这些 db 文件时，库路径、表字段与分表数由 `services/db_config.py`
 > 与 `services/.env` **独立声明**（不读本包 `.env`）。写入侧的分表数键是

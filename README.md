@@ -80,7 +80,7 @@
 | 写入侧进程 | 13 | 12 个 SFTP 拉取（每个 AVL 一个）+ 1 个 `python -m local_excel2db`，见各包说明 |
 | 在线 API | 1 | 只读业务库 + 每请求批量读一次卖点维表（商机标签 ID / 诊断兜底），按路由选业务对象并拼装话术；另由 `call_stat` 模块在内存累计调用量并按阈值写入 `call_stat/runtime/call_sum.db` |
 
-**部署时 14 个进程都要起**（`local_excel2db` 负责维护卖点维表库，在线侧读它取商机标签 ID 与诊断兜底内容）。业务库未就绪时诊断走卖点维表兜底（四段话术 `code: "0"`）；卖点维表库缺失 / 表结构漂移 / `product_id` 未命中时，商机辅助画像为空、诊断无法兜底（维持 `code: "2"`），都不会 500。四个需要 `.env` 的模块（`IOP/` / `sftp_avl2db/` / `call_stat/` / `services/`）都随仓库提交实际生效的 `.env`；`.env.example` 只是键注释模板，不替代 `.env`。没有凭据时直接回落到代码里的明文凭据（`IOP/config.py` 的内置默认值）；`sftp_avl2db/.env` 的 `SFTP_PASSWORD` 为占位值，部署前须填真实密码；对外分发前请评估明文凭据暴露风险。
+**部署时 14 个进程都要起**（`local_excel2db` 负责维护卖点维表库，在线侧读它取商机标签 ID 与诊断兜底内容）。业务库未就绪时，商机 / 控损按空记录出话术，诊断走卖点维表兜底（四段话术 `code: "0"`）；卖点维表库缺失 / 表结构漂移 / `product_id` 未命中时，商机辅助画像为空、诊断无法兜底（维持 `code: "2"`），都不会 500。四个需要 `.env` 的模块（`IOP/` / `sftp_avl2db/` / `call_stat/` / `services/`）都随仓库提交实际生效的 `.env`，里面填的是实际字符串（含凭据），不是占位值、无需部署前替换；`.env.example` 同值，只是带注释的键模板，不替代 `.env`。四者的回落行为各不相同、不可混为一谈：`IOP/` 缺 `.env` / 缺键 / 空值时回落到 `IOP/config.py` 的内置实际值；`sftp_avl2db/` 没有默认值，缺 `.env` 或缺任一键直接 fail-fast；`call_stat/` / `services/` 缺键时各自用 `config.py` / `db_config.py` 的代码内默认值（在线侧没有凭据）。
 
 ## 降级与容错（跨模块总表）
 
@@ -94,7 +94,7 @@
 | 业务库（在线读取侧） | 库不存在、AVL 未注册、查询异常 | [`services/reader.py`](services/README.md) 返回 `{}` / `[]`；诊断侧据此触发上一条兜底 | [`services/README.md`](services/README.md)「读取侧」 |
 | IOP | token / 标签超时、连接失败、响应异常、失败冷却期 | 重试退避冷却后降级 `{}`，不阻塞其它并发请求 | [`IOP/README.md`](IOP/README.md)「并发与可靠性约束」 |
 | 调用量库 | `call_stat/runtime/call_sum.db` 写入 / 启动读取失败 | 保留 `_PENDING` 下轮重试，或基数按 0 恢复、服务照常启动 | [`call_stat/Readme.md`](call_stat/Readme.md)「降级与容错」 |
-| 在线 API | 业务库不可用 | 诊断走卖点维表兜底（`code: "0"` + 四段话术），其余业务按空记录出话术；只有诊断连维表行也拿不到时才落 `code: "2"`，全程不抛 500 | 见「请求处理与路由」 |
+| 在线 API | 业务库不可用 | 商机 / 控损按空记录出话术（商机仍出四段、各段填「无」，控损为「无历史话术记录」，均 `code: "0"`），诊断走卖点维表兜底（`code: "0"` + 四段话术）；只有诊断连维表行也拿不到时才落 `code: "2"`，全程不抛 500 | 见「请求处理与路由」 |
 
 在线侧**每次请求**只读一次 `dimensions.db`（`mode=ro`、批量 `IN`），不做进程级缓存：写入侧按 600s 轮询整表覆盖，缓存会让新维表不生效。`dimensions.db` 只由 `python -m local_excel2db` 独立进程维护；同一份映射同时供商机画像与诊断兜底使用，维表侧出任何问题都不会让 API 500。
 
@@ -140,7 +140,7 @@
 | 顺序 | 条件（ID 来自 services/routing.py 路由表） | 数据源 | 业务对象 |
 |---|---|---|---|
 | 1 | `OPPORTUNITY_RECALL_PRODUCT_IDS`（202608041615335173 / 172 / 174） | `reader.query(OPPORTUNITY_RECALL_AVLS[id], telnum)` | `ProductInfoByOpportunityRecall` |
-| 2 | `LOSS_CONTROL_PRODUCT_IDS`（202609180955095402） | `reader.query(LOSS_CONTROL_AVLS[id], telnum)`，有记录才命中 | `ProductInfoByLossControl` |
+| 2 | `LOSS_CONTROL_PRODUCT_IDS`（202609180955095402） | `reader.query(LOSS_CONTROL_AVLS[id], telnum)`，命中即返回（无记录按空记录出话术） | `ProductInfoByLossControl` |
 | 3 | 诊断新线 | `services.diagnosis.build_diagnosis_record()`（7 表关联）；任一环节失败改用卖点维表兜底 | `ProductInfoByDiagnosis` |
 | 4 | 其余全部 | — | `ProductInfoRaw` |
 
@@ -199,7 +199,8 @@
 实例上，随对象一起回收，同样不跨请求共享。
 
 4. 输出：`ProductInfoByOpportunityRecall` / `ProductInfoByLossControl` /
-   `ProductInfoByDiagnosis` 三类对象返回 `code: "0"` 带话术；兜底返回
+   `ProductInfoByDiagnosis` 三类对象返回 `code: "0"` 带话术（业务库未就绪时
+   商机 / 控损也按空记录出话术，不再落空串）；兜底返回
    `code: "2"`、产品名与话术为空。
    这里按对象类型判定，不能靠 `product_name` 是否为空：兜底对象也可能因维表残留
    拿到非空名称，只看它会返回 `code: "0"` + 空话术，看起来成功、实际没有内容。
@@ -276,10 +277,13 @@ python -m call_stat --self-check
 ## 自检要点（在线业务 / 路由）
 
 - `import main` 正常，`app.router.on_startup` 为空（无定时任务）。
-- 路由四类：商机 3 个 ID 走 `ProductInfoByOpportunityRecall`、控损 ID 有记录时走
-  `ProductInfoByLossControl`、诊断新线走 `ProductInfoByDiagnosis`
-  （`code: "0"` + 六段话术；任一环节失败走卖点维表兜底，仍 `code: "0"` + 四段话术），
-  其余落 `ProductInfoRaw` 并返回 `code: "2"` 空话术（响应里 `productName` 与话术均为空）。
+- 路由四类：商机 3 个 ID 走 `ProductInfoByOpportunityRecall`、控损 ID 无论有无记录
+  都走 `ProductInfoByLossControl`（无记录按空记录出话术）、诊断新线走
+  `ProductInfoByDiagnosis`（`code: "0"` + 六段话术；任一环节失败走卖点维表兜底，
+  仍 `code: "0"` + 四段话术），其余落 `ProductInfoRaw` 并返回 `code: "2"` 空话术
+  （响应里 `productName` 与话术均为空）。业务库未就绪时商机仍返回
+  `code: "0"` + 四段空记录话术（各段填「无」），控损返回 `code: "0"` +
+  「无历史话术记录」，都不再落到诊断 / 兜底。
   商机标签 ID 子集来自卖点维表，维表未命中时辅助画像为空；`code` 始终按对象类型判定，
   不会因 `product_name` 非空而误判为 `code: "0"`。
 - **诊断新线一键自检**：`python tests/check_diagnosis_offline.py`（零第三方依赖主体，
@@ -287,7 +291,8 @@ python -m call_stat --self-check
   自洽数据，断言括号拆分、多值按位置配对、场景交集汇总、RN 优先级、多行话术、
   挽留配对、**单一 flat 解析器**（商机与诊断共用、末列不转 int、主键下标按注册
   换算）、**业务包按业务名命名（无历史别名、商机 / 控损重构前后输出等价）**、
-  `query()` 单条查询回归与 `main.py` 三类路由输出，结论应为 `ALL PASS`。
+  `query()` 单条查询回归、`main.py` 三类路由输出与**业务库未就绪时商机 / 控损
+  按空记录出话术**（1h 节），结论应为 `ALL PASS`。
 
 - **卖点维表 → 商机画像自检**（同一脚本 1d 节）：按 `services/db_config.py` 的
   `SELLING_POINTS_*` 声明建临时 `dimensions.db`，插 3 行商机 ID；断言换行 / 竖线

@@ -6,12 +6,11 @@
 ``IOPConfig.load()`` 读一次文件，缺键或数值非法就回落下面的默认值。
 
 ``import IOP`` 不读文件；``IOPClient()`` 构造时调用 ``load()``，结果冻结。
-``.env.example`` 只是键注释模板，不替代 ``.env``；文件缺失、缺键或写着
-``<填入 ...>`` 占位符（等于没有凭据）时，直接回落到下面代码里的明文凭据。
+``.env.example`` 与 ``.env`` 同值，只提供键注释、不替代 ``.env``；文件缺失、
+缺键、空值或显式占位符时，回落到下面代码里的内置实际值。
 
-⚠️ ``IOP_TOKEN_ID`` / ``IOP_TOKEN_SECRET`` 是明文凭据，``IOPConfig.__repr__``
-   已屏蔽 ``secret``。``IOP/.env`` 按当前约定随仓库入库，对外分发前请评估
-   凭据暴露风险。
+``IOP_TOKEN_ID`` / ``IOP_TOKEN_SECRET`` 的内置实际值写在 ``_SPECS``，
+``IOPConfig.__repr__`` 屏蔽 ``secret``；``IOP/.env`` 按当前约定随仓库入库。
 """
 from __future__ import annotations
 
@@ -76,8 +75,8 @@ def _resolve(values: dict[str, str]) -> dict[str, object]:
         raw = values.get(key)
         if minimum is None:                      # 字符串项
             text = (raw or "").strip()
-            # 空值或 <填入 ...> 占位符都算「没有凭据」：直接用代码里的明文值，
-            # 不把 .env.example 的模板占位符当成真实配置。
+            # 空值或显式写成 <...> 的占位符都算「没有凭据」：直接用代码里的
+            # 内置实际值，不把占位符当成真实配置。
             if not text or (text.startswith("<") and text.endswith(">")):
                 text = default
             out[key] = text

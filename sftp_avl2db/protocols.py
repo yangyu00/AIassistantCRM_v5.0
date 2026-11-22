@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
-"""组件契约（纯 typing，零 I/O）：五层组件的 Protocol 与结果数据类。
+"""组件契约（纯 typing，零 I/O）：各层组件的 Protocol 与结果数据类。
 
-任何一层都能换成测试替身；契约清单见 ``README.md``。
+共 6 个 Protocol（含 ``SinkStats`` 这一附属契约），任何一层都能换成测试
+替身；契约清单见 ``README.md``。
 """
 from __future__ import annotations
 

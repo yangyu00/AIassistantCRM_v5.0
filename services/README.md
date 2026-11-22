@@ -27,7 +27,7 @@
 | 业务库读取侧 | `reader.py` | `query` / `query_many` / `query_in`；只认 AVL 前缀 |
 | 卖点维表读取侧 | `dimensions.py` | `load_selling_points()` / `split_label_ids()`；`product_id → label_ids / product_name / fallback_script / tag_*`（都是库里的原始文本） |
 | 路由 | `routing.py` | `product_id → AVL` 两张静态表、`need_labels()`、`build_product_object()` |
-| 商机回捞 | `opportunity_recall/` | 四段话术（通话总结 / 用户需求 / 已推荐政策 / 拒绝原因）+ 辅助画像 |
+| 商机回捞 | `opportunity_recall/` | 四段话术（通话总结 / 用户需求 / 已推荐政策 / 拒绝原因，库里无记录时各段填「无」）+ 辅助画像 |
 | 控损 | `loss_control/` | `strategy_name` 自定义标签 → HTML |
 | 诊断新线 | `diagnosis/` | 取数、纯逻辑、六段话术对象、口径常量、**卖点维表兜底** |
 
@@ -60,14 +60,16 @@
 | 顺序 | 条件 | 数据源 | 对象 |
 |---|---|---|---|
 | 1 | 商机回捞 3 个 ID | `reader.query(avl, telnum)` | `ProductInfoByOpportunityRecall` |
-| 2 | 控损 1 个 ID，**有记录才命中** | `reader.query(avl, telnum)` | `ProductInfoByLossControl` |
+| 2 | 控损 1 个 ID，**命中即返回**（无记录按空记录出话术） | `reader.query(avl, telnum)` | `ProductInfoByLossControl` |
 | 3 | 诊断新线 | `diagnosis.build_diagnosis_record()`（7 表关联）；任一环节失败改用卖点维表兜底 | `ProductInfoByDiagnosis` |
 | 4 | 其余 | — | `ProductInfoRaw`（兜底） |
 
-控损分支未查到记录时**不短路**，继续往下走诊断与兜底（与重构前 `main.py`
-一致）。诊断新线不维护静态映射：`F09629`（`DIM_MARKET_PRODUCT_BUSINESS_ONCE`）
-本身就是「产品ID → 策略 / 产品」映射表。**7 表关联任一环节失败时用卖点维表
-兜底，仍返回 `ProductInfoByDiagnosis`（`code: "0"`）**；只有连维表里也没有该
+商机 / 控损命中即返回各自业务对象；业务库未就绪（`reader.query` 返回 `{}`）
+时**按空记录出话术**：商机仍输出四段（各段填「无」），控损输出
+「无历史话术记录」，都不再落到诊断 / 兜底，也不抛 500。诊断新线不维护静态
+映射：`F09629`（`DIM_MARKET_PRODUCT_BUSINESS_ONCE`）本身就是「产品ID → 策略 /
+产品」映射表。**7 表关联任一环节失败时用卖点维表兜底，仍返回
+`ProductInfoByDiagnosis`（`code: "0"`）**；只有连维表里也没有该
 `product_id` 时才落第 4 类 `code: "2"`，详见「诊断新线 → 卖点维表兜底」。
 
 `product_id → AVL 前缀` 的两张静态表在 `routing.py`，是**唯一维护点**；
@@ -225,7 +227,7 @@
 
 | 触发 | 行为 |
 |---|---|
-| 业务库缺失 / 查询异常 | `reader` 返回 `{}` / `[]`，业务对象走空记录分支，API 不 500 |
+| 业务库缺失 / 查询异常 | `reader` 返回 `{}` / `[]`；商机 / 控损按空记录出话术（商机四段各段填「无」、控损「无历史话术记录」，仍 `code: "0"`），诊断触发卖点维表兜底，API 不 500 |
 | 分表 AVL 的 `where` 缺标量 `product_no` | 定位不到分表，`reader` 返回 `[]`（不广播、不抛异常） |
 | `F09633` 分表数被改动但未重灌全量 | 号码落到旧分表，查不到 → 该查询返回空 → 走卖点维表兜底 |
 | 诊断 7 个查询任一返回空 / 场景交集为空 / 六项全空 | `query.py` 走卖点维表兜底，输出四段，`code: "0"` |
@@ -253,7 +255,7 @@ python -m call_stat --self-check            # 调用量统计组件自检
 `code: "2"`）**、**业务包按业务名命名（1f 节：两个业务包可经 `services` 访问、
 无历史别名、商机四段 HTML 逐字等价、控损组合标签解析等价；1g 节：控损 /
 诊断 / 兜底不持有画像、标签、维表与实例缓存字段，旧属性名已移除）**，在线路由段
-（第 7 段）再用 IOP 桩端到端验证「只有商机回捞触发 IOP 查询」、
+（1h 节）业务库未就绪时商机 / 控损仍返回各自业务对象并按空记录出话术；（第 7 段）再用 IOP 桩端到端验证「只有商机回捞触发 IOP 查询」、
 「维表选 ID → IOP 取名值 → 辅助画像」与「db 查空 → 在线侧 `code=0` 四段兜底」，多行查询、7 表关联、六段话术，结论
 应为 `ALL PASS`。
 

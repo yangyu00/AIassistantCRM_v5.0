@@ -7,12 +7,14 @@
 | 顺序 | 业务 | 数据源 | 对象 |
 |---|---|---|---|
 | 1 | 商机回捞（3 个 ID） | ``reader.query(avl, telnum)`` | ``ProductInfoByOpportunityRecall`` |
-| 2 | 控损（1 个 ID，有记录才命中） | ``reader.query(avl, telnum)`` | ``ProductInfoByLossControl`` |
+| 2 | 控损（1 个 ID，命中即返回） | ``reader.query(avl, telnum)`` | ``ProductInfoByLossControl`` |
 | 3 | 诊断新线 | ``build_diagnosis_record()``；任一环节失败改用卖点维表兜底 | ``ProductInfoByDiagnosis`` |
 | 4 | 兜底 | — | ``ProductInfoRaw`` |
 
-顺序不可调换。控损分支未查到记录时**不短路**，继续落诊断与兜底（与重构前
-``main.py`` 的行为一致）。诊断新线不维护静态 product_id 映射：``F09629``
+顺序不可调换。商机 / 控损命中即返回各自业务对象：业务库未就绪
+（``reader.query`` 返回 ``{}``）时**按空记录出话术**——商机仍输出四段、
+各段填「无」，控损输出「无历史话术记录」——不再继续往下走诊断与兜底，
+都返回 ``code: "0"``。诊断新线不维护静态 product_id 映射：``F09629``
 本身就是「产品ID → 策略 / 产品」映射表。诊断取数失败（db 查空 / 场景交集
 为空 / 六项输出全空）时由 ``diagnosis/fallback.py`` 用卖点维表兜底，仍返回
 ``ProductInfoByDiagnosis``（``code: "0"``）；维表里也没有该 product_id 时才
@@ -85,22 +87,23 @@ async def build_product_object(product_id, telnum, *, custom_label_info,
     批量查回的 ``{product_id: SellingPointRow}``。工厂按分支只传该业务真正
     消费的参数：商机对象把标签与维表行交给自己的 ``AuxiliaryPortrait`` 拼
     画像；诊断取数只要维表行；控损 / 兜底对象不接触标签或画像。维表未命中
-    或库缺失时映射为空 dict，商机画像自然降级为空串。
+    或库缺失时映射为空 dict，商机画像自然降级为空串；业务库未就绪时商机 /
+    控损仍返回各自业务对象，按空记录出话术。
     """
-    # 1. 商机回捞（3 个 ID）：即使库里无记录也返回业务对象；只有它拿画像组件
+    # 1. 商机回捞（3 个 ID）：即使库里无记录也返回业务对象，按空记录出四段话术；
+    #    只有它拿画像组件
     if product_id in OPPORTUNITY_RECALL_PRODUCT_IDS:
         avl = OPPORTUNITY_RECALL_AVLS[product_id]
         record = await reader.query(avl, telnum)
         return ProductInfoByOpportunityRecall(
             product_id, custom_label_info, selling_points, record)
 
-    # 2. 控损：有记录才命中；无记录时继续往下走（不 continue）
+    # 2. 控损：命中即返回；业务库未就绪（record 为空）也按空记录出话术，
+    #    不再落到诊断 / 兜底。只消费 strategy_name：标签 / 维表行 / 画像都不透传
     if product_id in LOSS_CONTROL_PRODUCT_IDS:
         avl = LOSS_CONTROL_AVLS[product_id]
         record = await reader.query(avl, telnum)
-        if record:
-            # 只消费 strategy_name：标签 / 维表行 / 画像都不透传
-            return ProductInfoByLossControl(product_id, record)
+        return ProductInfoByLossControl(product_id, record)
 
     # 3. 诊断新线：7 张表关联；任一查询空 / 交集为空 / 六项全空时
     #    build_diagnosis_record 会改用卖点维表兜底（见 diagnosis/fallback.py），

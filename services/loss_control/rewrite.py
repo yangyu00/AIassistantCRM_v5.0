@@ -67,7 +67,8 @@ class ProductInfoByLossControl(ProductInfoBase):
 
     构造只收 ``(product_id, record)``。IOP 标签、卖点维表行映射与画像组件在
     ``routing.build_product_object()`` 就被截断，本对象不再持有任何画像相关
-    状态（旧版继承 ``ProductInfoRaw`` 时全部被动带上）。
+    状态（旧版继承 ``ProductInfoRaw`` 时全部被动带上）。``record`` 为空
+    （业务库未就绪）时按空记录出话术「无历史话术记录」，仍返回 ``code: "0"``。
     """
 
     def __init__(self, product_id, record=None):
@@ -78,6 +79,7 @@ class ProductInfoByLossControl(ProductInfoBase):
     def _build_output_script(self):
         raw = (self.record or {}).get("strategy_name", "")
         if not raw:
+            # 业务库未就绪 / 查无记录：按空记录出话术，不落到诊断 / 兜底
             return "无历史话术记录"
         return parse_custom_tags(raw).strip().replace("\n", "<br>")
 

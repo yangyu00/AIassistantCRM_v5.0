@@ -387,9 +387,18 @@ def main():
           opp_full.output_script == expected_opp, opp_full.output_script)
     check("商机 product_name 来自映射表",
           opp_full.product_name == "号卡业务回捞商机", str(opp_full.product_name))
-    check("商机空 record → 空话术",
+    expected_opp_empty = (
+        "<strong>【通话总结】</strong>无<br>"
+        '<strong>【用户需求】</strong><strong><span style="color:blue;">无：</span></strong>无<br>'
+        "<strong>【已推荐政策】</strong>无<br>"
+        "<strong>【拒绝原因】</strong><br>"
+        '<strong><span style="color:blue;">拒绝原因：</span></strong>无<br>'
+        '<strong><span style="color:blue;">具体表述：</span></strong>无'
+    )
+    check("商机空 record → 仍出四段空记录话术（各段填「无」）",
           ProductInfoByOpportunityRecall(
-              "202608041615335173", {}, {}, {}).output_script == "")
+              "202608041615335173", {}, {}, {}).output_script
+          == expected_opp_empty)
 
     check("控损组合标签 B/I/颜色 + 逆序闭合",
           parse_custom_tags("<$B$I#0070C0>加粗斜体蓝色</> 尾巴") ==
@@ -421,6 +430,35 @@ def main():
     check("控损构造只需 (product_id, record)",
           ProductInfoByLossControl("x", {"strategy_name": "A"}).output_script
           == "A")
+
+    print("=== 1h. 业务库未就绪：商机 / 控损按空记录出话术 ===")
+    from services.routing import (                       # noqa: E402
+        BUSINESS_OBJECT_TYPES, build_product_object)
+    empty_root = TMP / "no_business_db"
+    empty_root.mkdir(parents=True, exist_ok=True)
+    reader.configure(db_config.load(
+        avl_db_root=empty_root, dimensions_db=dim_db))
+    try:
+        opp_empty = asyncio.run(build_product_object(
+            "202608041615335173", TEL,
+            custom_label_info={}, selling_points={}))
+        loss_empty = asyncio.run(build_product_object(
+            "202609180955095402", TEL,
+            custom_label_info={}, selling_points={}))
+        check("商机库空 → 仍返回商机对象（code=0 判定成立）",
+              isinstance(opp_empty, ProductInfoByOpportunityRecall) and
+              isinstance(opp_empty, BUSINESS_OBJECT_TYPES))
+        check("商机库空 → 四段空记录话术、不是空串",
+              opp_empty.output_script == expected_opp_empty,
+              opp_empty.output_script[:80])
+        check("控损库空 → 仍返回控损对象，不落诊断 / 兜底",
+              isinstance(loss_empty, ProductInfoByLossControl) and
+              isinstance(loss_empty, BUSINESS_OBJECT_TYPES))
+        check("控损库空 → 空记录话术「无历史话术记录」",
+              loss_empty.output_script == "无历史话术记录",
+              loss_empty.output_script)
+    finally:
+        reader.configure(read_config)
 
     print("=== 2. 补一组业务键自洽的数据 ===")
     append_rows("F09629", [
@@ -607,12 +645,13 @@ def main():
         args = main.Args(telnum=TEL, productId=[
             main.ProductIds(id=PID),
             main.ProductIds(id="202608041615335173"),   # 商机回捞
+            main.ProductIds(id="202609180955095402"),   # 控损（业务库空 → 空记录话术）
             main.ProductIds(id=FALLBACK_PID),           # db 查空 → 卖点维表兜底
             main.ProductIds(id="999999999999999999"),   # 未命中 → 兜底
         ])
         resp = asyncio.run(main.marketAssistant(args))
         scripts = resp["result"]["allScripts"]
-        check("返回 4 条", len(scripts) == 4, str(len(scripts)))
+        check("返回 5 条", len(scripts) == 5, str(len(scripts)))
         check("只有商机回捞触发 IOP 查询（整请求 1 次）",
               len(iop_calls) == 1, str(iop_calls))
         by_id = {x["productId"]: x for x in scripts}
@@ -646,6 +685,11 @@ def main():
                   ("资费名称", "资费摘要", "切入话术", "挽留话术")) and
               all(f"【{seg}】" not in fb_script for seg in
                   ("痛点诊断", "营销话术")))
+        loss_resp = by_id.get("202609180955095402", {})
+        check("控损业务库未就绪 → 在线侧 code=0 + 空记录话术",
+              loss_resp.get("code") == "0" and
+              loss_resp.get("script") == "无历史话术记录",
+              str(loss_resp.get("script")))
         check("未知ID 仍 code=2",
               by_id.get("999999999999999999", {}).get("code") == "2")
 
