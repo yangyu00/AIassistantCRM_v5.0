@@ -165,7 +165,7 @@ class SqliteSink:
             conn = None
             try:
                 conn = sqlite3.connect(str(db_path))
-                cur = conn.cursor()
+                cur = _configure(conn)
                 for t in targets:
                     cur.execute(self.schema.delete_expired_sql(t), (cutoff,))
                     total += max(cur.rowcount, 0)

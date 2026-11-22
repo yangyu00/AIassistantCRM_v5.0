@@ -110,7 +110,11 @@ def _self_check() -> int:
 
 
 def main(argv=None) -> int:
-    """解析参数、执行动作、返回进程退出码（0 正常 / 1 参数错 / 2 运行错）。"""
+    """解析参数、执行动作、返回进程退出码。
+
+    0 正常；1 日期 / 月份格式非法；2 缺参、--date/--month 互斥冲突或运行异常
+    （缺参与互斥冲突沿用 argparse 的 CLI 惯例退出码 2）。
+    """
     parser = build_arg_parser()
     args = parser.parse_args(argv)
     try:

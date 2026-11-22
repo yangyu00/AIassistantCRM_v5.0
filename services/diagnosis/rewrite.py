@@ -19,19 +19,16 @@ from .logic import build_output_script
 class ProductInfoByDiagnosis(ProductInfoBase):
     """诊断新线产品对象：命中 F09629（或卖点维表兜底）后由工厂创建。
 
-    ``product_name`` 取资费名称（【】内），无括号时退到资费摘要、再到原始
-    BUSINESS_NAME，保证响应里的 productName 不为空。
+    响应 ``productName`` 只取 ``record['business_name']`` 原文（正常链路为
+    ``F09629.BUSINESS_NAME``、卖点维表兜底为「产品名称」），不再按【】拆分，
+    也不再回退到资费摘要；``output_script`` 里的资费名称 / 摘要仍由
+    ``logic.split_fee_name()`` 拆出的 ``fee_name`` / ``fee_summary`` 提供。
     """
 
     def __init__(self, product_id, record=None):
         super().__init__(product_id, product_name="")
         self.record = record or {}
-        self.product_name = (
-            self.record.get("fee_name")
-            or self.record.get("fee_summary")
-            or self.record.get("business_name")
-            or ""
-        )
+        self.product_name = self.record.get("business_name") or ""
         omit = (FALLBACK_OMIT_SECTIONS if self.record.get("is_fallback")
                 else ())
         self.output_script = build_output_script(self.record, omit=omit)

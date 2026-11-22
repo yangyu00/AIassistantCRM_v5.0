@@ -22,7 +22,7 @@ python -m call_stat --flush                           # 把本进程未落库增
 python -m call_stat --self-check                      # 自检，临时库在 runtime/selftest/ 用完即删
 ```
 
-`--date` 与 `--month` 互斥且必须二选一；参数非法返回码 1，运行异常返回码 2，正常 0。`--self-check` / `--flush` 是独立动作，优先于查询执行。
+`--date` 与 `--month` 互斥且必须二选一；**缺参（打印帮助）或同时给两个参数由 argparse / 空参分支拦截，返回码 2**；日期 / 月份格式非法返回码 1；运行异常返回码 2；正常 0。`--self-check` / `--flush` 是独立动作，优先于查询执行。
 
 ## 目录分层
 

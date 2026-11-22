@@ -340,8 +340,8 @@ def main():
         check(f"兜底输出含【{seg}】", f"【{seg}】" in fb_obj.output_script)
     for seg in ("痛点诊断", "营销话术"):
         check(f"兜底输出不含【{seg}】", f"【{seg}】" not in fb_obj.output_script)
-    check("兜底 productName 取资费名称",
-          fb_obj.product_name == "兜底套餐", fb_obj.product_name)
+    check("兜底 productName 取维表产品名称原文",
+          fb_obj.product_name == "【兜底套餐】兜底摘要", fb_obj.product_name)
 
     dimensions.configure(TMP / "no_such_dimensions.db")
     check("维表库缺失 → {}（不抛异常）",
@@ -571,8 +571,8 @@ def main():
 
     # ④ 兜底对象输出：四段、无痛点诊断 / 营销话术
     fb_obj2 = ProductInfoByDiagnosis(FALLBACK_PID, fb_db)
-    check("兜底 productName 取资费名称",
-          fb_obj2.product_name == "兜底套餐", fb_obj2.product_name)
+    check("兜底 productName 取维表产品名称原文",
+          fb_obj2.product_name == "【兜底套餐】兜底摘要", fb_obj2.product_name)
     for seg in ("资费名称", "资费摘要", "切入话术", "挽留话术"):
         check(f"兜底 output_script 含【{seg}】",
               f"【{seg}】" in fb_obj2.output_script)
@@ -587,7 +587,7 @@ def main():
 
     print("=== 6. 业务对象拼装 ===")
     obj = ProductInfoByDiagnosis(PID, record)
-    check("productName = 资费名称", obj.product_name == "五福套餐", obj.product_name)
+    check("productName = business_name 原文", obj.product_name == BIZ_NAME, obj.product_name)
     for label in ("资费名称", "资费摘要", "痛点诊断", "切入话术", "营销话术", "挽留话术"):
         check(f"output_script 含【{label}】", f"【{label}】" in obj.output_script)
     check("output_script 含实际话术内容", "营销话术A" in obj.output_script and
@@ -617,7 +617,7 @@ def main():
         by_id = {x["productId"]: x for x in scripts}
         d = by_id.get(PID, {})
         check("诊断 code=0", d.get("code") == "0", d.get("code"))
-        check("诊断 productName", d.get("productName") == "五福套餐",
+        check("诊断 productName", d.get("productName") == BIZ_NAME,
               str(d.get("productName")))
         check("诊断 script 非空且含资费名称",
               "【资费名称】" in (d.get("script") or ""))
@@ -634,8 +634,8 @@ def main():
         fb_script = fb_resp.get("script") or ""
         check("db 查空 → 在线侧 code=0（不是 code=2）",
               fb_resp.get("code") == "0", str(fb_resp.get("code")))
-        check("兜底 productName 来自维表【】内",
-              fb_resp.get("productName") == "兜底套餐",
+        check("兜底 productName 取维表产品名称原文",
+              fb_resp.get("productName") == "【兜底套餐】兜底摘要",
               str(fb_resp.get("productName")))
         check("兜底 script 含命中 tag 的切入话术",
               "切入B" in fb_script and "切入A" not in fb_script,

@@ -118,6 +118,7 @@ class IopLabelProvider:
         except Exception as e:
             my_log.error(e)
             self._labels = {}
+            self._fetched = True
         return self._labels
 
 

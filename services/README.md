@@ -180,7 +180,8 @@
 **兜底内容**（`fallback.py`，来源都是 `selling_points` 该行）：
 
 1. `product_name` 按【】拆成资费名称 / 资费摘要 —— **与正常诊断一样**用
-   `split_fee_name()`；响应 `productName` 也取资费名称；
+   `split_fee_name()`；响应 `productName` 只取 `record['business_name']` 原文
+   （此处即维表「产品名称」），不再按【】拆分或回退；
 2. 「匹配结果2」`match_result` 按位置拆成场景标签 ID，**顺序遍历**，第一个
    出现在 IOP `custom_label_info` 里的即命中并**中断遍历**；
 3. 取同下标的「标签N」单元格，`parse_tag_script()` 按 `切入话术` /
