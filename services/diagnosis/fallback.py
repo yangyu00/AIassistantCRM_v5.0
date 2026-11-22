@@ -1,21 +1,20 @@
 # -*- coding: utf-8 -*-
-"""诊断新线的**卖点维表兜底**：db 查空 / IOP 无场景标签 / 场景交集为空时启用。
+"""诊断新线的**卖点维表兜底**：db 查空 / 场景交集为空 / 六项输出全空时启用。
 
 正常链路（``query.py`` 的 7 张表关联）任一环节拿不到结果，就改用卖点维表
 ``selling_points`` 的这一行，按用户口径组装四段话术：
 
 1. 按 ``product_id`` 取 ``product_name``（产品名称），**与诊断一样**用
    ``split_fee_name()`` 按【】拆成资费名称 / 资费摘要填入；
-2. 取 ``match_result``（「匹配结果2」）——多个场景标签 ID，按位置与
-   ``tag_0 … tag_N``（「标签0…标签N」）一一对应；
-3. **按顺序遍历**这些 ID，第一个出现在 IOP 返回里的即命中并**中断遍历**；
-   取该下标的 tag 单元格，解析出「切入话术」「拒绝原因 / 挽留话术」填入；
+2. 取 ``fallback_script``（「兜底话术」）原文，为空时回退到「标签N」列里
+   第一个非空原文；库里只存原始文本，拆解加工在本层完成；
+3. ``parse_tag_script()`` 解析出「切入话术」「拒绝原因 / 挽留话术」填入；
 4. 痛点诊断与营销话术没有来源，**这两段不出现在最终输出**（由
    ``FALLBACK_OMIT_SECTIONS`` 控制，不是填「无」）。
 
 若维表里没有该 ``product_id`` 或产品名称为空 → 返回 ``None``，上层维持原有
-``code: "2"`` 降级；若没有任何场景标签 ID 命中 IOP → 仍输出资费名称 / 摘要，
-切入与挽留段为空值占位。本模块纯函数、零 I/O、零第三方依赖。
+``code: "2"`` 降级；话术单元格为空时仍输出资费名称 / 摘要，切入与挽留段
+为空值占位。本模块纯函数、零 I/O、零第三方依赖，不依赖 IOP 标签。
 """
 from __future__ import annotations
 
@@ -28,7 +27,6 @@ FALLBACK_OMIT_SECTIONS = ("痛点诊断", "营销话术")
 
 # 触发原因（写进 record，便于日志排查）
 REASON_DB_EMPTY = "db_empty"
-REASON_NO_SCENE_LABELS = "no_scene_labels"
 REASON_EMPTY_INTERSECTION = "empty_intersection"
 REASON_EMPTY_OUTPUT = "empty_output"
 
@@ -49,7 +47,7 @@ def _is_title(line: str, title: str) -> bool:
 
 
 def parse_tag_script(text):
-    """解析一个「标签N」单元格 → ``(切入话术, [(拒绝原因, 挽留话术), ...])``。
+    """解析一个话术单元格 → ``(切入话术, [(拒绝原因, 挽留话术), ...])``。
 
     单元格结构（样例）：
 
@@ -95,27 +93,22 @@ def parse_tag_script(text):
     return "<br>".join(entry_lines), retain_pairs
 
 
-def has_scene_labels(custom_label_info, row) -> bool:
-    """IOP 返回里是否有可用于场景匹配的标签。
+def pick_script_text(row) -> str:
+    """兜底话术原文：优先「兜底话术」列，其次「标签N」列第一个非空原文。
 
-    口径（集中在这里，业务要改只改这一处）：
-
-    - IOP 返回为空 → 没有场景标签；
-    - 维表该行配置了「匹配结果2」→ 其中**至少一个** ID 出现在 IOP 返回才算有；
-    - 维表没配「匹配结果2」（或维表未命中）→ 无从按 ID 判定，退化为
-      「IOP 至少返回了标签」，避免把没配维表的诊断 ID 全部误判成需要兜底。
+    库里只存原始文本，这里只做选择、不做解析；解析统一由
+    ``parse_tag_script()`` 完成。
     """
-    labels = custom_label_info or {}
-    if not labels:
-        return False
-    scene_ids = row.scene_label_ids if row is not None else ()
-    if not scene_ids:
-        return True
-    return any(label_id in labels for label_id in scene_ids)
+    text = str(row.fallback_script or "").strip()
+    if text:
+        return text
+    for tag_text in row.tag_texts:
+        if str(tag_text or "").strip():
+            return tag_text
+    return ""
 
 
-def build_fallback_record(product_id, telnum, *, custom_label_info=None,
-                          selling_points=None, reason=""):
+def build_fallback_record(product_id, telnum, *, selling_points=None, reason=""):
     """按卖点维表组装兜底 record；维表无该行 / 无产品名称时返回 ``None``。
 
     返回的 dict 带 ``is_fallback=True`` 与 ``fallback_reason``，
@@ -126,18 +119,7 @@ def build_fallback_record(product_id, telnum, *, custom_label_info=None,
         return None
 
     fee_name, fee_summary = split_fee_name(row.product_name)
-    labels = custom_label_info or {}
-
-    hit_id, hit_index, tag_text = None, None, ""
-    for index, label_id in enumerate(row.scene_label_ids):
-        if label_id not in labels:
-            continue
-        hit_id, hit_index = label_id, index
-        if index < len(row.tag_texts):
-            tag_text = row.tag_texts[index]
-        break                                   # 命中即中断遍历
-
-    entry_script, retain_pairs = parse_tag_script(tag_text)
+    entry_script, retain_pairs = parse_tag_script(pick_script_text(row))
     return {
         "is_fallback": True,
         "fallback_reason": reason,
@@ -151,14 +133,11 @@ def build_fallback_record(product_id, telnum, *, custom_label_info=None,
         # 痛点诊断 / 营销话术无来源：保持空，且输出时整段省略
         "pain_points": [],
         "marketing_scripts": [],
-        "scene_label_ids": list(row.scene_label_ids),
-        "hit_label_id": hit_id,
-        "hit_tag_index": hit_index,
     }
 
 
 __all__ = [
-    "FALLBACK_OMIT_SECTIONS", "REASON_DB_EMPTY", "REASON_NO_SCENE_LABELS",
+    "FALLBACK_OMIT_SECTIONS", "REASON_DB_EMPTY",
     "REASON_EMPTY_INTERSECTION", "REASON_EMPTY_OUTPUT",
-    "parse_tag_script", "has_scene_labels", "build_fallback_record",
+    "parse_tag_script", "pick_script_text", "build_fallback_record",
 ]

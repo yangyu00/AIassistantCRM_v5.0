@@ -68,7 +68,7 @@ python -m local_excel2db --once --force # 忽略指纹强制重导并递增 vers
 | `selling_points` | `product_id` | 8 个静态列 + 28 个 `tag_*` 动态列；`source` 表头仍为「业务ID」 |
 | `label_name_mapping` | `label_id` | 3 列 |
 
-完整表名与列映射以 `registry.json` 为准。改表名、列映射、主键、标签列数后必须删库重建，并同步在线侧 `services/db_config.py` 的 `SELLING_POINTS_*` 声明：
+完整表名与列映射以 `registry.json` 为准。所有话术 / 标签列都只存单元格原始文本（`TEXT`），不做拆分或解析；拆解加工一律放在在线读取侧，库里不落任何解析结果。改表名、列映射、主键、标签列数后必须删库重建，并同步在线侧 `services/db_config.py` 的 `SELLING_POINTS_*` 声明：
 
 ```bash
 rm local_excel2db/runtime/sqlite_db/dimensions.db

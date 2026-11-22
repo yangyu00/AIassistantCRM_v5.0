@@ -55,7 +55,7 @@ async def lifespan(app: FastAPI):
 # 本进程只读磁盘上的 db 文件：读哪些库、库里有哪些列、怎么查，全部由
 # services/db_config.py 独立声明，不引用后台写入侧的任何代码或配置。
 # 每请求经 services.dimensions 批量只读一次 dimensions.db（商机标签 ID 子集与
-# 诊断兜底所需的产品名称 /「匹配结果2」/「标签N」话术），经 services.reader
+# 诊断兜底所需的产品名称 /「兜底话术」/「标签N」原文），经 services.reader
 # 只读业务库；唯一写入是调用量统计（call_stat/runtime/call_sum.db）。
 app = FastAPI(lifespan=lifespan)
 register_errors_handlers(app)
@@ -135,7 +135,8 @@ async def marketAssistant(args: Args):
         [one.id for one in args.productId])
     product_obj_list = []
     for one_product_obj in args.productId:
-        # 是否查标签由业务层 need_labels() 声明；提供者保证整请求最多查一次 IOP。
+        # 只有商机回捞查标签，由业务层 need_labels() 声明；提供者保证整请求
+        # 最多查一次 IOP，诊断 / 控损 / 兜底都不触发查询。
         # 逐个判断等价于对全部 ID 取并集，不会因首个 ID 不需要而漏查。
         # 「要不要拼画像」不在这里判断：只有商机对象持有画像组件，空标签 / 空标签 ID 子集时它自然返回空串。
         custom_label_info = (await label_provider.labels()

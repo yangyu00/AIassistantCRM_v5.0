@@ -35,7 +35,7 @@ export CRM_SMOKE_BASE_URL=http://10.0.0.5:8989
 | `check_param_validation.py` | `POST /api/speechQryService` | 手机号 / 产品 ID 的非法入参，期望 `res_code=1`；附一组正常请求做对照 |
 | `check_call_stat.py` | `GET /api/callStat` | 单日、整月、连续两次查询（计数规则）、4 组非法参数 |
 | `check_iop_direct.py` | IOP 上游（**不经在线服务**） | 单独查标签画像，用来区分「上游挂了」还是「在线编排有问题」 |
-| `check_diagnosis_offline.py` | **不打任何服务**（临时 SQLite + 内存桩） | 诊断新线端到端自检：注册 / 解析 / 入库 → **`F09633` 分表（128 张、号码不串表、按 telnum 定位）** → **卖点维表 → 商机标签 ID / 辅助画像** → **业务包按业务名命名（1f：无历史别名、商机/控损输出等价）** → **诊断兜底（tagN 解析、匹配结果2 顺序遍历命中即中断、db 查空/交集空/IOP 无场景标签三种触发、四段输出）** → `services.reader` 多行查询 → 7 表关联 → 话术拼装 → `services/routing.py` 路由（含兜底 `code=0`），结论 `ALL PASS` |
+| `check_diagnosis_offline.py` | **不打任何服务**（临时 SQLite + 内存桩） | 诊断新线端到端自检：注册 / 解析 / 入库 → **`F09633` 分表（128 张、号码不串表、按 telnum 定位）** → **卖点维表 → 商机标签 ID / 辅助画像** → **业务包按业务名命名（1f：无历史别名、商机/控损输出等价）** → **诊断兜底（话术原文解析、「兜底话术」优先、db 查空/交集空/话术原文全空三种触发、四段输出；只有商机回捞触发 IOP 查询）** → `services.reader` 多行查询 → 7 表关联 → 话术拼装 → `services/routing.py` 路由（含兜底 `code=0`），结论 `ALL PASS` |
 | `check_purge_rotation.py` | **不打任何服务**（临时 SQLite + 桩时钟） | 库表清理轮转自检：AVL 粒度配置（缺键 fail-fast / 无项目级兜底 / 逐 AVL 独立取值）/ 7 组并集覆盖 128 张表且组间互斥 / `cycle=0` 行为不变 / 固定表每日全清 / 每天只触发一次 `purge_expired()` / 跨 7 天过期行全清而新鲜行保留 / 单次补跑一次全量清，结论 `ALL PASS` |
 
 ## 运行

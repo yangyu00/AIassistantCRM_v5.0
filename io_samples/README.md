@@ -66,7 +66,7 @@ python -m sftp_avl2db --task F09591 --date 20261110 \
 `excels/` 轮询 xlsx、抽列写入 `local_excel2db/runtime/sqlite_db/dimensions.db`；
 本包只写不读，在线侧经 `services/dimensions.py` 每请求只读一次该库，按
 `product_id` 取 `selling_points.label_id`（Excel「标签ID」）拼商机辅助画像；诊断
-7 表关联失败时还取该行的产品名称 /「匹配结果2」/「标签N」话术拼四段兜底话术。
+7 表关联失败时还取该行的产品名称 /「兜底话术」/「标签N」原文拼四段兜底话术；库里只存原始文本，拆解加工在在线读取侧。
 
 ## 维表 Excel 的实际目录：`excels/`
 

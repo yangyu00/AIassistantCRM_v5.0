@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """诊断新线业务对象：把结构化 record 拼成 ``output_script``。
 
-IOP 标签与卖点维表行在取数 / 兜底阶段（``query.py`` / ``fallback.py``）已经
-消费完毕，对象本身只依赖 ``build_diagnosis_record()`` 产出的结构化 ``record``；
-因此只继承极简的 ``ProductInfoBase``，不再为了「对象形状一致」继承画像基类。
+卖点维表行在取数 / 兜底阶段（``query.py`` / ``fallback.py``）已经消费完毕，
+诊断链路不查 IOP；对象本身只依赖 ``build_diagnosis_record()`` 产出的结构化
+``record``，因此只继承极简的 ``ProductInfoBase``，不再为了「对象形状一致」
+继承画像基类。
 
 ``record.is_fallback`` 为真（卖点维表兜底）时省略「痛点诊断」「营销话术」两段，
 其余四段照常拼装；两类 record 都由 ``build_output_script()`` 输出，样式一致。
@@ -37,9 +38,7 @@ class ProductInfoByDiagnosis(ProductInfoBase):
         r = self.record
         lines = []
         if r.get("is_fallback"):
-            lines.append(
-                f'fallback: {r.get("fallback_reason")} '
-                f'hit={r.get("hit_label_id")} @{r.get("hit_tag_index")}')
+            lines.append(f'fallback: {r.get("fallback_reason")}')
         lines += [
             f'business_type: {r.get("business_type")}',
             f'matched_scenes: {r.get("matched_scenes")}',

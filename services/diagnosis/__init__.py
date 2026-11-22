@@ -12,7 +12,7 @@ _LAZY_EXPORTS = {
     "build_diagnosis_record": ("query", "build_diagnosis_record"),
     "ProductInfoByDiagnosis": ("rewrite", "ProductInfoByDiagnosis"),
     "build_fallback_record": ("fallback", "build_fallback_record"),
-    "has_scene_labels": ("fallback", "has_scene_labels"),
+    "pick_script_text": ("fallback", "pick_script_text"),
     "parse_tag_script": ("fallback", "parse_tag_script"),
     "FALLBACK_OMIT_SECTIONS": ("fallback", "FALLBACK_OMIT_SECTIONS"),
 }
@@ -32,6 +32,6 @@ def __dir__():
 
 __all__ = [
     "build_diagnosis_record", "ProductInfoByDiagnosis",
-    "build_fallback_record", "has_scene_labels", "parse_tag_script",
+    "build_fallback_record", "pick_script_text", "parse_tag_script",
     "FALLBACK_OMIT_SECTIONS",
 ]

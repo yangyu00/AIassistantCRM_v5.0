@@ -7,7 +7,7 @@
       product_info_raw.py        极简公共基类 ProductInfoBase + 商机专属画像组件
                                  AuxiliaryPortrait + 兜底对象 ProductInfoRaw
       reader.py                  业务库在线读取侧（AVL 前缀，单条 / 多行 / IN）
-      dimensions.py              卖点维表在线读取侧（标签 ID / 产品名 / 匹配结果2 / 标签N）
+      dimensions.py              卖点维表在线读取侧（标签 ID / 产品名 / 兜底话术 / 标签N 原文）
       routing.py                 业务路由表、IOP 查询依赖声明、产品对象工厂
       opportunity_recall/        商机回捞（ProductInfoByOpportunityRecall）
       loss_control/              控损（ProductInfoByLossControl）

@@ -58,7 +58,7 @@
                                                         │（在线侧 services/dimensions.py 每请求只读一次）
                                                         ↓
                        ┌─ selling_points.标签ID ───────────────→ 商机辅助画像
-                       └─ 产品名称 / 匹配结果2 / 标签N ───────→ 诊断四段兜底
+                       └─ 产品名称 / 兜底话术 / 标签N ─────────→ 诊断四段兜底
 ```
 
 > `sftp_avl2db/runtime/` 与 `local_excel2db/runtime/` 都是**运行时数据目录**
@@ -80,7 +80,7 @@
 | 写入侧进程 | 13 | 12 个 SFTP 拉取（每个 AVL 一个）+ 1 个 `python -m local_excel2db`，见各包说明 |
 | 在线 API | 1 | 只读业务库 + 每请求批量读一次卖点维表（商机标签 ID / 诊断兜底），按路由选业务对象并拼装话术；另由 `call_stat` 模块在内存累计调用量并按阈值写入 `call_stat/runtime/call_sum.db` |
 
-**部署时 14 个进程都要起**（`local_excel2db` 负责维护卖点维表库，在线侧读它取商机标签 ID 与诊断兜底内容）。业务库未就绪时诊断走卖点维表兜底（四段话术 `code: "0"`）；卖点维表库缺失 / 表结构漂移 / `product_id` 未命中时，商机辅助画像为空、诊断无法兜底（维持 `code: "2"`），都不会 500。`sftp_avl2db/.env` 随仓库提交，其中 `SFTP_PASSWORD` 为占位值，部署前须填真实密码；`IOP/.env` 含明文凭据，按当前约定随仓库入库，部署时按实际环境替换，对外分发前请评估凭据暴露风险。四个需要 `.env` 的模块（`IOP/` / `sftp_avl2db/` / `call_stat/` / `services/`）均按当前约定允许 `.env` 随仓库入库；各模块的 `.env.example` 主要用于提供键注释，不替代实际 `.env`。
+**部署时 14 个进程都要起**（`local_excel2db` 负责维护卖点维表库，在线侧读它取商机标签 ID 与诊断兜底内容）。业务库未就绪时诊断走卖点维表兜底（四段话术 `code: "0"`）；卖点维表库缺失 / 表结构漂移 / `product_id` 未命中时，商机辅助画像为空、诊断无法兜底（维持 `code: "2"`），都不会 500。四个需要 `.env` 的模块（`IOP/` / `sftp_avl2db/` / `call_stat/` / `services/`）都随仓库提交实际生效的 `.env`；`.env.example` 只是键注释模板，不替代 `.env`。没有凭据时直接回落到代码里的明文凭据（`IOP/config.py` 的内置默认值）；`sftp_avl2db/.env` 的 `SFTP_PASSWORD` 为占位值，部署前须填真实密码；对外分发前请评估明文凭据暴露风险。
 
 ## 降级与容错（跨模块总表）
 
@@ -90,7 +90,7 @@
 |---|---|---|---|
 | 维表写入 `local_excel2db` | 注册 xlsx 缺失、缺必需表头列、表结构漂移 | 写入侧告警跳过本表、保留上次成功版本，下轮重试；在线侧下次读到的仍是上次成功版本 | [`local_excel2db/README.md`](local_excel2db/README.md)「容错与日志」 |
 | 卖点维表（在线读取侧） | 库不存在、表 / 必需列缺失、查询异常、`product_id` 未命中、标签 ID 为空 | [`services/dimensions.py`](services/README.md) 降级返回 `{}` / 空子集；商机辅助画像为空，诊断无法兜底（维持 `code: "2"`），API 不 500 | [`services/README.md`](services/README.md)「卖点维表读取侧」 |
-| 诊断 7 表关联 | 任一查询返回空、IOP 返回里没有场景标签、场景交集为空、六项输出全空 | [`services/diagnosis/fallback.py`](services/README.md) 用卖点维表兜底：产品名按【】拆资费名称 / 摘要，「匹配结果2」顺序遍历命中 IOP 后取对应「标签N」的切入 / 拒绝原因 / 挽留话术，输出**四段**（无痛点诊断 / 营销话术），`code: "0"` | [`services/README.md`](services/README.md)「诊断新线 → 卖点维表兜底」 |
+| 诊断 7 表关联 | 任一查询返回空、场景交集为空、六项输出全空 | [`services/diagnosis/fallback.py`](services/README.md) 用卖点维表兜底：产品名按【】拆资费名称 / 摘要，「兜底话术」列原文（为空时取第一个非空「标签N」原文）解析出切入 / 拒绝原因 / 挽留话术，输出**四段**（无痛点诊断 / 营销话术），`code: "0"` | [`services/README.md`](services/README.md)「诊断新线 → 卖点维表兜底」 |
 | 业务库（在线读取侧） | 库不存在、AVL 未注册、查询异常 | [`services/reader.py`](services/README.md) 返回 `{}` / `[]`；诊断侧据此触发上一条兜底 | [`services/README.md`](services/README.md)「读取侧」 |
 | IOP | token / 标签超时、连接失败、响应异常、失败冷却期 | 重试退避冷却后降级 `{}`，不阻塞其它并发请求 | [`IOP/README.md`](IOP/README.md)「并发与可靠性约束」 |
 | 调用量库 | `call_stat/runtime/call_sum.db` 写入 / 启动读取失败 | 保留 `_PENDING` 下轮重试，或基数按 0 恢复、服务照常启动 | [`call_stat/Readme.md`](call_stat/Readme.md)「降级与容错」 |
@@ -116,12 +116,13 @@
 「请求内隔离」）。
 
 是否发起 IOP 查询由 `services/routing.py::need_labels(product_id)` 逐 ID 声明
-（控损不查，其余都查）；声明只回答「查不查标签」，不回答「拼不拼画像」。
-`IopLabelProvider` 在请求内惰性取一次标签，保证一次请求最多查一次、结果在
-`productId` 循环内被各产品对象复用。`get_customer_labels()` 的返回值（任何失败
-统一降级为 `{}`）作为 `custom_label_info` 传给对象工厂：商机的
-`AuxiliaryPortrait` 用它拼装 `queried_label_nvs` 与 `auxiliary_portrait`，
-诊断取数用它判定兜底场景标签；不需要标签的分支直接传 `{}`，连查询都不发生。
+（只有商机回捞查，控损 / 诊断 / 兜底都不查）；声明只回答「查不查标签」，
+不回答「拼不拼画像」。`IopLabelProvider` 在请求内惰性取一次标签，保证一次
+请求最多查一次、结果在 `productId` 循环内被各产品对象复用。
+`get_customer_labels()` 的返回值（任何失败统一降级为 `{}`）作为
+`custom_label_info` 传给对象工厂：只有商机的 `AuxiliaryPortrait` 用它拼装
+`queried_label_nvs` 与 `auxiliary_portrait`；不需要标签的分支直接传 `{}`，
+连查询都不发生。
 
 在此前提下，请求内的编排步骤为：
 
@@ -150,8 +151,8 @@
 
 **诊断新线不维护静态 product_id 映射**：`F09629`（`DIM_MARKET_PRODUCT_BUSINESS_ONCE`）
 本身就是「产品ID → 策略 / 产品」的映射表；由 `services/diagnosis/query.py` 用
-`query_many()` 关联另外 6 张维表。**任一查询返回空 / IOP 返回里没有场景标签 /
-场景交集为空 / 六项全空** → 改用卖点维表兜底，仍返回 `ProductInfoByDiagnosis`
+`query_many()` 关联另外 6 张维表。**任一查询返回空 / 场景交集为空 /
+六项全空** → 改用卖点维表兜底，仍返回 `ProductInfoByDiagnosis`
 （`code: "0"`）与四段话术；连维表里也没有该 `product_id` 时才落第 4 类
 `code: "2"`。取数与兜底规则见
 [`services/README.md`](services/README.md)「诊断新线 → 卖点维表兜底」。
@@ -164,7 +165,7 @@
 |---|---|---|
 | 商机回捞 3 个 ID | 查 | 由商机对象的 `AuxiliaryPortrait` 拼装 |
 | 控损 | **不查** | 无画像组件 |
-| 诊断新线 / 兜底 | 查（正常链路不消费；兜底链路用它判定哪个场景标签 ID 命中） | 无画像组件 |
+| 诊断新线 / 兜底 | **不查**（只由业务库字段与维表原文拼装） | 无画像组件 |
 
 「是否生成画像」不再是一层需要传递的声明：只有商机对象持有画像组件，
 维表未命中 / 标签子集为空 / IOP 降级为 `{}` 时 `build_auxiliary_portrait()`
@@ -176,8 +177,8 @@
 
 | 待查 `productId` 列表 | IOP 标签查询 | 辅助画像拼装 |
 |---|---|---|
-| 纯控损 | **0** | **0** |
-| 纯商机 / 纯诊断 / 控损+商机 / 三混合 | 1 | 请求里的商机对象数（重复 ID 也各算 1 次） |
+| 纯控损 / 纯诊断 / 纯兜底 | **0** | **0** |
+| 含商机（控损+商机 / 三混合 / 纯商机） | 1 | 请求里的商机对象数（重复 ID 也各算 1 次） |
 | 3 个不同商机 | 1 | 3 |
 | 同一商机 ID 重复 3 次 | 1 | 3 |
 
@@ -207,7 +208,7 @@
    是六段【资费名称 / 资费摘要 / 痛点诊断 / 切入话术 / 营销话术 / 挽留话术】HTML；
    **卖点维表兜底时省略【痛点诊断】【营销话术】，只输出四段**（两段没有维表来源，
    不是填「无」），资费名称 / 摘要来自维表「产品名称」按【】拆分，切入话术与
-   拒绝原因 / 挽留话术来自「匹配结果2」首个命中 IOP 的标签 ID 对应的「标签N」。
+   拒绝原因 / 挽留话术来自「兜底话术」列原文（为空时取第一个非空「标签N」原文）。
 
 ## 对象模型与辅助画像（`services/product_info_raw.py` + `services/dimensions.py`）
 
@@ -229,7 +230,8 @@
 去重的 ID 元组；号码对应的名称与值仍来自 IOP 返回。维表决定「查哪些 ID」，
 IOP 决定「这些 ID 叫什么、值是多少」，两者职责分开。「标签ID」单元格按换行 /
 竖线 / 逗号 / 分号（含全角）拆分、去空、保序去重，见
-`services/dimensions.py::split_label_ids()`。
+`services/dimensions.py::split_label_ids()`。卖点维表的话术 / 标签列在库里
+一律只存原始文本，拆分与解析都在在线读取侧完成，不写回解析结果。
 
 `queried_label_ids` / `queried_label_nvs` / `auxiliary_portrait` 都是组件上的
 懒执行 property：模块级纯函数 `build_auxiliary_portrait(queried_label_nvs)`
@@ -295,12 +297,12 @@ python -m call_stat --self-check
   「维表选 ID → IOP 取名值 → 辅助画像」，诊断对象不带画像。
 
 - **诊断卖点维表兜底自检**（同一脚本 1e / 5b 节与在线路由第 7 段）：断言
-  「标签N」单元格按 `切入话术` / `拒绝挽留话术` 解析（含去 `**`）、「匹配结果2」
-  保序不去重且与 `tag_*` 同下标、**按顺序遍历命中第 2 个 ID 即中断并取 tag1**；
-  db 查空 / 场景交集为空 / IOP 无场景标签三种触发都得到兜底 record，产品名按【】
-  拆出资费名称 / 摘要，输出**四段**（无【痛点诊断】【营销话术】）；无 ID 命中时
-  切入 / 挽留填「无」，维表里也没有该 `product_id` 才落 `code: "2"`。在线路由段
-  用 IOP 桩验证 db 查空时仍返回 `code=0` 的四段兜底话术。
+  「兜底话术」/「标签N」原文按 `切入话术` / `拒绝挽留话术` 解析（含去 `**`）、
+  「兜底话术」优先且为空时回退第一个非空「标签N」原文；db 查空 / 场景交集为空 /
+  话术原文全空都得到兜底 record，产品名按【】拆出资费名称 / 摘要，输出**四段**
+  （无【痛点诊断】【营销话术】）；话术原文全空时切入 / 挽留填「无」，维表里也
+  没有该 `product_id` 才落 `code: "2"`。在线路由段用 IOP 桩验证只有商机回捞
+  触发查询、db 查空时仍返回 `code=0` 的四段兜底话术。
 
 - **`F09633` 分表自检**（同一脚本 1c 节）：建满 128 张 `F09633_{i}`、样例号码只落在
   `crc32(product_no) % 128` 指定的那一张、`reader.query_many(where={"product_no": telnum})`
@@ -308,9 +310,9 @@ python -m call_stat --self-check
   （`sftp_avl2db/.env` 的 `F09633_NUM_TABLES` 与在线侧 `services/.env` / `db_config.py` 默认值），自检会断言
   两侧分表口径一致。
 
-- **按业务声明 IOP 查询依赖**：`need_labels()` 对控损 ID 返回 `False`、其余
-  （含商机与维表里存在的业务 ID）返回 `True`；判定按全部 `productId` 取并集，
-  把控损 ID 排在商机之前也不能漏查。控损请求不应发起任何 IOP 标签查询。
+- **按业务声明 IOP 查询依赖**：`need_labels()` 只对 3 个商机 ID 返回 `True`，
+  控损 / 诊断 / 兜底全部返回 `False`；判定按全部 `productId` 取并集，把控损 ID
+  排在商机之前也不能漏查商机。控损 / 诊断请求不应发起任何 IOP 标签查询。
 
 - **画像归属**：控损 / 诊断 / 兜底对象不持有 `portrait`、`_portrait`、
   `custom_label_info`、`selling_point_rows` 与画像相关 property；只有商机对象
@@ -358,14 +360,14 @@ python -m call_stat --self-check
 - `F09635`（标签ID-标签名）在取数说明里没有位置，未接入主链路；话术样例中的
   `#客运个性化运营标签34&` 一类占位符也未做替换（缺映射依据）。
 - 诊断兜底口径：「任一查询空即整单兜底」比原来「单表为空只填『无』」更激进；
-  「IOP 无场景标签」的判定集中在 `fallback.has_scene_labels()`；「标签N」分段
-  解析集中在 `fallback.parse_tag_script()`，三处口径要改都只改一处。
+  「兜底话术」原文的选取集中在 `fallback.pick_script_text()`、分段解析集中在
+  `fallback.parse_tag_script()`，两处口径要改都只改一处。
 
 **已实现**（见「请求处理与路由」「对象模型与辅助画像」与「自检要点」）：
-按业务声明 IOP 查询依赖的布尔判定、请求级惰性标签提供者、辅助画像由商机
-对象自行拼装并只缓存在实例上、卖点维表每请求只读 1 次并据此取商机标签 ID
-子集与诊断兜底内容（产品名 /「匹配结果2」/「标签N」），诊断任一环节失败
-输出四段兜底话术。
+按业务声明 IOP 查询依赖的布尔判定（只有商机回捞查）、请求级惰性标签提供者、
+辅助画像由商机对象自行拼装并只缓存在实例上、卖点维表每请求只读 1 次并据此
+取商机标签 ID 子集与诊断兜底内容（产品名 /「兜底话术」/「标签N」原文），
+诊断任一环节失败输出四段兜底话术。
 
 **待优化**：诊断取数目前按产品 ID 逐个查库，一次请求多个产品 ID 时可加请求内
 缓存减少重复查询；若同一 `productId` 在请求里重复出现，也应在编排层去重或

@@ -6,6 +6,8 @@
 ``IOPConfig.load()`` 读一次文件，缺键或数值非法就回落下面的默认值。
 
 ``import IOP`` 不读文件；``IOPClient()`` 构造时调用 ``load()``，结果冻结。
+``.env.example`` 只是键注释模板，不替代 ``.env``；文件缺失、缺键或写着
+``<填入 ...>`` 占位符（等于没有凭据）时，直接回落到下面代码里的明文凭据。
 
 ⚠️ ``IOP_TOKEN_ID`` / ``IOP_TOKEN_SECRET`` 是明文凭据，``IOPConfig.__repr__``
    已屏蔽 ``secret``。``IOP/.env`` 按当前约定随仓库入库，对外分发前请评估
@@ -73,7 +75,12 @@ def _resolve(values: dict[str, str]) -> dict[str, object]:
     for key, default, minimum in _SPECS:
         raw = values.get(key)
         if minimum is None:                      # 字符串项
-            out[key] = raw if raw and raw.strip() else default
+            text = (raw or "").strip()
+            # 空值或 <填入 ...> 占位符都算「没有凭据」：直接用代码里的明文值，
+            # 不把 .env.example 的模板占位符当成真实配置。
+            if not text or (text.startswith("<") and text.endswith(">")):
+                text = default
+            out[key] = text
             continue
         try:
             number = float(raw)

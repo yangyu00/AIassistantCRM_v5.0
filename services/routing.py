@@ -13,8 +13,8 @@
 
 顺序不可调换。控损分支未查到记录时**不短路**，继续落诊断与兜底（与重构前
 ``main.py`` 的行为一致）。诊断新线不维护静态 product_id 映射：``F09629``
-本身就是「产品ID → 策略 / 产品」映射表。诊断取数失败（db 查空 / IOP 无场景
-标签 / 场景交集为空）时由 ``diagnosis/fallback.py`` 用卖点维表兜底，仍返回
+本身就是「产品ID → 策略 / 产品」映射表。诊断取数失败（db 查空 / 场景交集
+为空 / 六项输出全空）时由 ``diagnosis/fallback.py`` 用卖点维表兜底，仍返回
 ``ProductInfoByDiagnosis``（``code: "0"``）；维表里也没有该 product_id 时才
 落 ``code: "2"``。
 
@@ -26,11 +26,11 @@
 
 - 商机对象：接收 IOP 标签与维表行映射，收进 ``AuxiliaryPortrait`` 组件，
   由组件自己拼辅助画像；
-- 诊断取数 / 兜底：接收 IOP 标签与维表行映射，**不进诊断对象**；
+- 诊断取数 / 兜底：只接收维表行映射，不查 IOP，也不进诊断对象；
 - 控损对象：只接收 ``record``，上述两项全部截断；
 - 兜底对象：只接收维表行映射，用于日志里的产品名。
 
-IOP 查询依赖由 ``need_labels()`` 在这里声明（由业务归属派生），``main.py``
+只有商机回捞需要 IOP 标签，由 ``need_labels()`` 在这里声明；``main.py``
 只负责按请求惰性取一次标签。「要不要拼画像」不再是一个需要跨层传递的开关：
 只有商机对象持有 ``AuxiliaryPortrait``，标签子集或 IOP 标签为空时画像自然是
 空串，编排层与对象工厂都不参与这个判断。
@@ -58,14 +58,13 @@ LOSS_CONTROL_PRODUCT_IDS = frozenset(LOSS_CONTROL_AVLS)
 
 
 def need_labels(product_id):
-    """该 ``product_id`` 是否需要查 IOP 标签，由业务归属派生。
+    """该 ``product_id`` 是否需要查 IOP 标签。
 
-    控损话术只由数据库字段拼装，不查标签；商机回捞要标签拼辅助画像，
-    诊断新线 / 兜底的卖点维表兜底也要用 IOP 返回判定「匹配结果2」里哪个
-    场景标签 ID 命中（见 ``diagnosis/fallback.py``）。对编排层来说只有
-    「查 / 不查」两态，画像与否由业务对象自己决定，不在这里声明。
+    只有商机回捞用 IOP 标签拼辅助画像；控损、诊断新线与卖点维表兜底都
+    只由数据库字段与维表原文拼装，不查 IOP。对编排层来说只有「查 / 不查」
+    两态，画像与否由业务对象自己决定，不在这里声明。
     """
-    return product_id not in LOSS_CONTROL_PRODUCT_IDS
+    return product_id in OPPORTUNITY_RECALL_PRODUCT_IDS
 
 
 # 前三类对象返回 code "0"，其余（ProductInfoRaw 兜底）返回 code "2"。
@@ -84,9 +83,9 @@ async def build_product_object(product_id, telnum, *, custom_label_info,
     调用方（``main.py``）只准备两样东西：按 ``need_labels()`` 取回（或跳过）
     的 ``custom_label_info``，以及请求开始时 ``dimensions.load_selling_points()``
     批量查回的 ``{product_id: SellingPointRow}``。工厂按分支只传该业务真正
-    消费的参数：控损 / 诊断 / 兜底对象不接触画像，商机对象把标签与维表行
-    交给自己的 ``AuxiliaryPortrait`` 拼画像。维表未命中或库缺失时映射为空
-    dict，商机画像自然降级为空串。
+    消费的参数：商机对象把标签与维表行交给自己的 ``AuxiliaryPortrait`` 拼
+    画像；诊断取数只要维表行；控损 / 兜底对象不接触标签或画像。维表未命中
+    或库缺失时映射为空 dict，商机画像自然降级为空串。
     """
     # 1. 商机回捞（3 个 ID）：即使库里无记录也返回业务对象；只有它拿画像组件
     if product_id in OPPORTUNITY_RECALL_PRODUCT_IDS:
@@ -103,13 +102,11 @@ async def build_product_object(product_id, telnum, *, custom_label_info,
             # 只消费 strategy_name：标签 / 维表行 / 画像都不透传
             return ProductInfoByLossControl(product_id, record)
 
-    # 3. 诊断新线：7 张表关联；任一查询空 / IOP 无场景标签 / 交集为空时
+    # 3. 诊断新线：7 张表关联；任一查询空 / 交集为空 / 六项全空时
     #    build_diagnosis_record 会改用卖点维表兜底（见 diagnosis/fallback.py），
-    #    所以 IOP 标签与维表行在这里一次性消费完毕，对象只拿结构化 record。
+    #    维表行在这里一次性消费完毕，对象只拿结构化 record。
     diagnosis_record = await build_diagnosis_record(
-        product_id, telnum,
-        custom_label_info=custom_label_info,
-        selling_points=selling_points)
+        product_id, telnum, selling_points=selling_points)
     if diagnosis_record:
         return ProductInfoByDiagnosis(product_id, diagnosis_record)
 

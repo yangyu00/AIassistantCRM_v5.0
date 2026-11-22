@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """诊断新线取数：按「产品ID + 手机号」关联 7 张维表，产出结构化 record。
 
-唯一入口 ``build_diagnosis_record(product_id, telnum, *, custom_label_info,
-selling_points)``，async，全部走 ``services.reader`` 的多行 / 多条件查询；
-库缺失、表为空、异常一律降级成空列表，本层不会把异常抛给在线接口。
+唯一入口 ``build_diagnosis_record(product_id, telnum, *, selling_points)``，
+async，全部走 ``services.reader`` 的多行 / 多条件查询；库缺失、表为空、异常
+一律降级成空列表，本层不会把异常抛给在线接口。
 
 关联路径（取数说明 02～08）：
 
@@ -15,19 +15,19 @@ selling_points)``，async，全部走 ``services.reader`` 的多行 / 多条件�
     交集场景 ───F09627──> 最高优先级场景 ───F09630─> 切入话术
 
 F09635（标签ID-标签名）在取数说明里没有位置，不进本链路，仅保留注册。
+诊断链路不查 IOP：正常取数与卖点维表兜底都只由数据库字段与维表原文拼装。
 
 **卖点维表兜底**（见 ``fallback.py``）：以下任一情况不再返回 ``None`` 或
 「一屏无」，而是改用卖点维表该 ``product_id`` 行组装四段话术：
 
 1. 上述 7 个查询**任一返回空**（或提取出的有效值为空）；
-2. **IOP 返回里没有场景标签**（口径见 ``has_scene_labels()``）；
-3. **场景交集为空**；
-4. 六项输出全空。
+2. **场景交集为空**；
+3. 六项输出全空。
 
-兜底来源：``product_name`` 按【】拆资费名称 / 摘要；「匹配结果2」的标签 ID
-按顺序遍历，第一个命中 IOP 的取对应「标签N」单元格，解析切入 / 拒绝原因 /
-挽留话术；痛点诊断与营销话术无来源，输出时整段省略。维表里没有该
-``product_id`` 时无法兜底，仍返回 ``None`` → 上层 ``code: "2"``。
+兜底来源：``product_name`` 按【】拆资费名称 / 摘要；「兜底话术」列原文
+（为空时取「标签N」列第一个非空原文）解析出切入 / 拒绝原因 / 挽留话术；
+痛点诊断与营销话术无来源，输出时整段省略。维表里没有该 ``product_id``
+时无法兜底，仍返回 ``None`` → 上层 ``code: "2"``。
 """
 from __future__ import annotations
 
@@ -46,9 +46,7 @@ from .fallback import (
     REASON_DB_EMPTY,
     REASON_EMPTY_INTERSECTION,
     REASON_EMPTY_OUTPUT,
-    REASON_NO_SCENE_LABELS,
     build_fallback_record,
-    has_scene_labels,
 )
 from .logic import (
     dedup,
@@ -61,30 +59,22 @@ from .logic import (
 )
 
 
-async def build_diagnosis_record(product_id, telnum, *, custom_label_info=None,
-                                 selling_points=None):
+async def build_diagnosis_record(product_id, telnum, *, selling_points=None):
     """组装诊断话术所需的全部字段；无法产出时走卖点维表兜底。
 
     返回 dict 交给 ``ProductInfoByDiagnosis`` 拼装 ``output_script``；正常 record
     带交集场景、优先级选择来源等中间量，兜底 record 带 ``is_fallback`` /
-    ``fallback_reason`` / ``hit_label_id`` 等，便于日志排查与离线自检。
+    ``fallback_reason``，便于日志排查与离线自检。
     """
-    labels = custom_label_info or {}
     sp = selling_points or {}
-    selling_point_row = sp.get(product_id)
 
     def fallback(reason):
         """统一的兜底出口；维表无该行时返回 None，维持原有 code=2 降级。"""
         return build_fallback_record(
-            product_id, telnum, custom_label_info=labels,
-            selling_points=sp, reason=reason)
+            product_id, telnum, selling_points=sp, reason=reason)
 
     def db_empty(avl):
         return fallback(f"{REASON_DB_EMPTY}:{avl}")
-
-    # ⓪ IOP 返回里没有场景标签 → 卖点维表兜底
-    if not has_scene_labels(labels, selling_point_row):
-        return fallback(REASON_NO_SCENE_LABELS)
 
     # ① 产品ID → 策略(BUSINESS_NAME) / 产品(BUSINESS_TYPE)
     business_rows = await reader.query_many(

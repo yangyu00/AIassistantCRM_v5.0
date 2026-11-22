@@ -6,9 +6,11 @@
 业务消费：
 
 - **商机回捞**：``label_id``（「标签ID」）切成标签 ID 元组，拼辅助画像；
-- **诊断新线兜底**：``product_name``（产品名称）、``match_result``
-  （「匹配结果2」的场景标签 ID 列表）与 ``tag_*``（「标签0…标签N」话术单元格），
-  见 ``services/diagnosis/fallback.py``。
+- **诊断新线兜底**：``product_name``（产品名称）、``fallback_script``
+  （「兜底话术」原文）与 ``tag_*``（「标签N」原文，作回退），
+  见 ``services/diagnosis/fallback.py``。诊断链路不查 IOP。
+
+库里所有话术 / 标签列都只存原始文本，拆分与解析一律在读取侧完成。
 
 **库路径、表名、列名由 ``services.db_config`` 独立声明**，不 import 后台写入侧
 （``local_excel2db``）的任何配置或 registry：写入侧建表用的字段在这里冗余再写
@@ -58,8 +60,8 @@ class SellingPointRow:
     """一行卖点维表：只保留在线链路真正消费的列。
 
     ``label_ids`` 已按注册列「标签ID」拆好、去空、保序去重；顺序即辅助画像的
-    拼接顺序。``tag_texts`` 按 ``tag_0 … tag_N`` 的下标顺序保留「标签N」单元格
-    原文，与 ``scene_label_ids``（「匹配结果2」）**按下标一一对应**。
+    拼接顺序。``fallback_script`` / ``tag_texts`` / ``match_result`` 都是库里的
+    原始文本，不做结构化拆解；「兜底话术」为空时按 ``tag_0 … tag_N`` 顺序回退。
     """
 
     product_id: str
@@ -70,21 +72,12 @@ class SellingPointRow:
     match_result: str = ""
     tag_texts: tuple[str, ...] = ()
 
-    @property
-    def scene_label_ids(self) -> tuple[str, ...]:
-        """「匹配结果2」的场景标签 ID，按位置保留、**不去重**。
-
-        与 ``tag_texts`` 同下标：第 i 个 ID 对应「标签i」单元格。这里不能去重，
-        否则重复 ID 会让后续 tag 下标整体错位。
-        """
-        return split_label_ids(self.match_result, unique=False)
-
 
 def split_label_ids(raw, *, unique: bool = True) -> tuple[str, ...]:
     """把标签 ID 单元格拆成 ID 元组：去空白、去空项、保序。
 
-    ``unique=True``（默认）用于商机画像的标签子集；``unique=False`` 用于
-    「匹配结果2」这种**按下标对应**另一个列表的场景，重复项必须保留。
+    ``unique=True``（默认）用于商机画像的标签子集；``unique=False`` 保留重复项，
+    供需要按原顺序使用原始文本的场景。
     """
     if raw is None:
         return ()
