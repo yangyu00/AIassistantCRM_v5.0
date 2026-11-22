@@ -36,7 +36,7 @@
 > [`services/README.md`](services/README.md)「诊断新线」，
 > 注册详情见 [`sftp_avl2db/README.md`](sftp_avl2db/README.md)。
 
-本仓库由 **14 个进程**组成：12 个 `sftp_avl2db` 拉取任务（`config.py::_AVLS` 中 12 个 AVL，每个 AVL 一个 db、一个进程）、1 个 `local_excel2db` 卖点维表写入、1 个 `main.py` 在线 API；在线侧只读 `sftp_avl2db` 业务库，并**每请求只读一次** `local_excel2db` 产出的 `dimensions.db` 取标签 ID 子集，唯一写入是调用量统计 `call_stat/runtime/call_sum.db`。`call_stat/` 是在线进程内的自包含模块：配置、代码、产物、说明都在包目录内，按 `__file__` 定位，与启动 CWD 无关；`sftp_avl2db/runtime/` 与 `local_excel2db/runtime/` 同理是写入侧产出的运行时数据目录。业务库未就绪时 API 按「无业务记录」降级，卖点维表未就绪时商机辅助画像为空，都不会 500。
+本仓库由 **14 个进程**组成：12 个 `sftp_avl2db` 拉取任务（`config.py::_AVLS` 中 12 个 AVL，每个 AVL 一个 db、一个进程）、1 个 `local_excel2db` 卖点维表写入、1 个 `main.py` 在线 API；在线侧只读 `sftp_avl2db` 业务库，并**每请求只读一次** `local_excel2db` 产出的 `dimensions.db` 取标签 ID 子集，唯一写入是调用量统计 `call_stat/runtime/call_sum.db`。`call_stat/` 是在线进程内的自包含模块：配置、代码、产物、说明都在包目录内，按 `__file__` 定位，与启动 CWD 无关；`sftp_avl2db/runtime/` 与 `local_excel2db/runtime/` 同理是写入侧产出的运行时数据目录。业务库未就绪时，商机 / 控损按空记录出话术，诊断新线改走卖点维表兜底（四段话术 `code: "0"`），只有连维表里也没有该 `product_id` 时才落 `code: "2"`；卖点维表未就绪时商机辅助画像为空、诊断无法兜底，都不会 500。
 
 ## 架构与数据流向
 
@@ -80,7 +80,7 @@
 | 写入侧进程 | 13 | 12 个 SFTP 拉取（每个 AVL 一个）+ 1 个 `python -m local_excel2db`，见各包说明 |
 | 在线 API | 1 | 只读业务库 + 每请求批量读一次卖点维表（商机标签 ID / 诊断兜底），按路由选业务对象并拼装话术；另由 `call_stat` 模块在内存累计调用量并按阈值写入 `call_stat/runtime/call_sum.db` |
 
-**部署时 14 个进程都要起**（`local_excel2db` 负责维护卖点维表库，在线侧读它取商机标签 ID 与诊断兜底内容）。业务库未就绪时诊断走卖点维表兜底（四段话术 `code: "0"`）；卖点维表库缺失 / 表结构漂移 / `product_id` 未命中时，商机辅助画像为空、诊断无法兜底（维持 `code: "2"`），都不会 500。`sftp_avl2db/.env` 随仓库提交，其中 `SFTP_PASSWORD` 为占位值，部署前须填真实密码；`IOP/.env` 含明文凭据，按当前约定随仓库入库，部署时按实际环境替换，对外分发前请评估凭据暴露风险。
+**部署时 14 个进程都要起**（`local_excel2db` 负责维护卖点维表库，在线侧读它取商机标签 ID 与诊断兜底内容）。业务库未就绪时诊断走卖点维表兜底（四段话术 `code: "0"`）；卖点维表库缺失 / 表结构漂移 / `product_id` 未命中时，商机辅助画像为空、诊断无法兜底（维持 `code: "2"`），都不会 500。`sftp_avl2db/.env` 随仓库提交，其中 `SFTP_PASSWORD` 为占位值，部署前须填真实密码；`IOP/.env` 含明文凭据，按当前约定随仓库入库，部署时按实际环境替换，对外分发前请评估凭据暴露风险。四个需要 `.env` 的模块（`IOP/` / `sftp_avl2db/` / `call_stat/` / `services/`）均按当前约定允许 `.env` 随仓库入库；各模块的 `.env.example` 主要用于提供键注释，不替代实际 `.env`。
 
 ## 降级与容错（跨模块总表）
 

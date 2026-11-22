@@ -57,7 +57,7 @@ async with IOPClient() as client:
 | 文件 | 作用 |
 |---|---|
 | `IOP/.env` | 与 `config.py` 同目录，不依赖启动时的当前工作目录，日常改这个 |
-| `IOP/.env.example` | 脱敏模板，新环境 `cp IOP/.env.example IOP/.env` 后按实际填写 |
+| `IOP/.env.example` | 带注释的配置说明（键含义 / 默认值 / 约束）；`.env` 按当前约定随仓库入库，新环境初始化时可 `cp IOP/.env.example IOP/.env` |
 | `IOP/config.py` 的 `_SPECS` | 20 个键的清单、默认值与数值下界；新增参数在这里加一行并写进 `.env.example` |
 
 `.env` 语法只认**整行 `#` 注释**和 `KEY=VALUE`，不做引号、行内注释或
@@ -86,8 +86,8 @@ python -c "from IOP import IOPConfig; print(IOPConfig.load())"
   串行循环），`cooldown=0` 表示不冷却，`IOP_TIMEOUT_*` 填 0 或过小值回落默认，
   避免请求立刻超时。文件不存在时同理，全部回落默认值。
 - **凭据**：`IOPConfig.__repr__` 屏蔽 `secret`；`IOP/.env` 含明文凭据，按当前约定
-  随仓库入库，不进 `.gitignore`（`.env.example` 仍作脱敏模板保留）。部署时按实际
-  环境替换凭据；对外分发本仓库前请评估凭据暴露风险。
+  随仓库入库、不进 `.gitignore`；`IOP/.env.example` 只提供键注释，不替代 `.env`。
+  部署时按实际环境替换凭据；对外分发本仓库前请评估凭据暴露风险。
 
 ## 并发与可靠性约束
 

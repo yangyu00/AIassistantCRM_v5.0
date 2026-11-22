@@ -11,9 +11,9 @@
 每天只触发一次 purge_expired() / 跨 7 天过期行全清而新鲜行保留 /
 单次补跑一次全量清。
 
-装配真实 profile 时需要包内 .env；干净检出里没有，临时从 .env.example 复制
-一份、结束删除（.gitignore 已忽略 .env）。若部署机本来就有 .env，不覆盖、只做
-字段存在性断言。
+装配真实 profile 时需要包内 .env；按当前约定 .env 允许随仓库入库、本仓库已随附，
+仅在检出里缺失时才临时从 .env.example 复制一份、结束删除。已有 .env 时不覆盖，
+只做字段存在性断言。
 """
 from __future__ import annotations
 

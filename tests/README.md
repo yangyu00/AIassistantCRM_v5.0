@@ -81,7 +81,7 @@ python tests/check_purge_rotation.py
   读包内 `sftp_avl2db/.env`；本仓库已随附该文件，若干净检出里缺失，脚本会临时
   从 `.env.example` 复制一份（含 `F09633_NUM_TABLES` 分表数）并在结束后删除。
   末尾的在线路由段需要
-  fastapi / pydantic / loguru / aiohttp，缺依赖会自动跳过，不影响主体断言。
+  fastapi / pydantic / loguru / aiohttp / uvicorn，缺任一依赖会自动跳过，不影响主体断言。
 - **`check_purge_rotation.py` 同样不打服务**，只用标准库 + 临时 SQLite，
   跑完即删；它用 `sftp_avl2db/.env` 验证 `load_profiles()` 装配。干净检出里
   若缺 `.env`，会临时从 `.env.example` 复制、结束后删除；本仓库已随附 `.env`，

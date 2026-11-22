@@ -17,7 +17,7 @@
 | `F0955420261110000000.AVL`    | `sftp_avl2db` | 号卡业务样例，2 行记录                                                                                          |
 | `F0955520261110000000.AVL`    | `sftp_avl2db` | 套餐业务样例，2 行记录                                                                                          |
 | `F0955620261110000000.AVL`    | `sftp_avl2db` | 宽带业务样例，2 行记录                                                                                          |
-| `F0959120261110000000.AVL`    | `sftp_avl2db` | 控损样例，40 行；含 `<$B>` / `<$I>` / `<$U>` / `<#RRGGBB>` 自定义标签，供 `services/loss_control` 的 HTML 转换对照       |
+| `F0959120261110000000.AVL`    | `sftp_avl2db` | 控损样例，40 行；含 `<$B>` / `</>` / `<#RRGGBB>`（3 种颜色）自定义标签，供 `services/loss_control` 的 HTML 转换对照；解析器另支持 `<$I>` / `<$U>` 与组合标签，但样例未覆盖 |
 | `F0962720261120000000.AVL`    | `sftp_avl2db` | 诊断业务，`SCENE_RANKE` 样例，10 行                                                                            |
 | `F0962820261120000000.AVL`    | `sftp_avl2db` | 诊断业务，`PRODUCT_SCENE` 样例，10 行                                                                          |
 | `F0962920261120000000.AVL`    | `sftp_avl2db` | 诊断业务，`PRODUCT_BUSINESS` 样例，10 行                                                                       |
@@ -88,8 +88,10 @@ python -m local_excel2db --once
 
 两个实操提醒：
 
-- 想用本目录的样例做离线验证，把样例复制到 `excels/` 覆盖同名文件再跑
-  `--once`；别把这份样例库当成生产维表库用。改表名、列映射或主键后要删库重建：
+- 仓库已把本目录的两张 xlsx 原样预置在 `excels/` 里（内容完全一致），它本身就是
+  `local_excel2db` 的默认输入，直接跑 `python -m local_excel2db --once` 即可验证，
+  不需要再「复制覆盖」；只有想换成自制样例时才覆盖 `excels/` 下的同名文件。
+  别把这份样例库当成生产维表库用。改表名、列映射或主键后要删库重建：
   `rm local_excel2db/runtime/sqlite_db/dimensions.db`。
 - `excels/` 随仓库提交（`卖点维表.xlsx` / `标签转换维表.xlsx`），是
   `local_excel2db` 的默认输入；更新维表直接改这里的文件并重新提交，不要写进

@@ -22,7 +22,7 @@
 |---|---|---|
 | 包根 | `__init__.py` | 公共 API，`__getattr__` 延迟导出；**`import services` 零 I/O** |
 | **读取配置** | **`db_config.py`** | **在线侧唯一配置来源**：`AVL_DB_SPECS`（12 个 AVL 各对应哪个 db 文件、查询键、排序、分表）、`TABLE_SCHEMAS`（列顺序与类型）、`SELLING_POINTS_*`（卖点维表列）、`shard_index()` / `table_name()`、`load()` / `validate()` |
-| 配置模板 | `.env.example` | `AVL_DB_ROOT` / `DIMENSIONS_DB` / 两个 `NUM_TABLES`；复制成 `.env` 后生效，缺文件用代码内默认值 |
+| 配置说明 | `.env.example` | 主要用于注释 `AVL_DB_ROOT` / `DIMENSIONS_DB` / 两个 `NUM_TABLES` 的含义；复制成 `.env` 后生效（`.env` 也允许随仓库入库），缺文件用代码内默认值 |
 | 公共基类 / 画像组件 | `product_info_raw.py` | `ProductInfoBase`（最小公共形状）、`AuxiliaryPortrait`（商机专属，组合）、`ProductInfoRaw`（第 4 类兜底对象）、`build_auxiliary_portrait()` |
 | 业务库读取侧 | `reader.py` | `query` / `query_many` / `query_in`；只认 AVL 前缀 |
 | 卖点维表读取侧 | `dimensions.py` | `load_selling_points()` / `split_label_ids()`；`product_id → label_ids / product_name / match_result / tag_*` |

@@ -1,12 +1,13 @@
-# ===== 明文凭据：IOP/.env 与 sftp_avl2db/.env 均按当前约定随仓库入库 =====
+# ===== .env 配置：四个模块的 .env 均允许随仓库入库 =====
+# 全局 .env 规则只对未显式放行的路径生效，下面逐一反忽略。
+# 各模块 .env.example 主要用于提供键说明与注释，不替代实际 .env。
 .env
 !IOP/.env
 !sftp_avl2db/.env
-services/.env
+!call_stat/.env
+!services/.env
 !IOP/.env.example
 !sftp_avl2db/.env.example
-# call_stat/.env 不含凭据，作为默认配置随仓库提交
-!call_stat/.env
 
 # ===== 运行时产出（写入进程生成，在线侧只读）=====
 sftp_avl2db/runtime/*

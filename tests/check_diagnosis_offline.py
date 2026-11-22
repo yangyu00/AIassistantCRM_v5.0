@@ -5,7 +5,7 @@
 不连 IOP、不写包内 runtime/**，所有库落在临时目录，跑完自动清理。
 
 主体只用标准库 + 包内纯模块；末尾的「在线路由」段需要 fastapi / pydantic /
-loguru / aiohttp 等运行时依赖，缺失会自动跳过。
+loguru / aiohttp / uvicorn 等运行时依赖，缺任一会自动跳过。
 
     python tests/check_diagnosis_offline.py
 
@@ -25,8 +25,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-# 写入侧 load_profiles() 读包内 .env；CI / 干净检出里没有 .env，临时从模板
-# 复制一份，脚本结束删除（.gitignore 已忽略 .env）。
+# 写入侧 load_profiles() 读包内 .env；按当前约定 .env 允许随仓库入库、本仓库已随附，
+# 仅当检出里确实缺失时才临时从 .env.example 复制一份，脚本结束删除。
 # 在线侧 services 读自己的 services/.env（不存在时用 db_config 的代码内默认值），
 # 不依赖这份文件。
 ENV = ROOT / "sftp_avl2db" / ".env"

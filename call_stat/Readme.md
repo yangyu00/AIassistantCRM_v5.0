@@ -46,9 +46,9 @@ python -m call_stat --self-check                      # 自检，临时库在 ru
 
 | 文件 | 作用 |
 |---|---|
-| `.env` | 与 `config.py` 同目录，日常改这个；不含任何凭据，可随仓库提交 |
-| `.env.example` | 模板，新环境 `cp call_stat/.env.example call_stat/.env` |
-| `config.py::_DEFAULTS` | 4 个键的默认值；新增参数在这里加一行并写进模板 |
+| `.env` | 与 `config.py` 同目录，日常改这个；不含任何凭据，按当前约定允许随仓库提交 |
+| `.env.example` | 带注释的配置说明（键含义 / 默认值 / 约束），不替代 `.env`；新环境初始化时可 `cp call_stat/.env.example call_stat/.env` |
+| `config.py::_DEFAULTS` | 4 个键的默认值；新增参数在这里加一行并写进 `.env.example` 的注释 |
 
 | `.env` 键 | 默认值 | 约束 |
 |---|---|---|
