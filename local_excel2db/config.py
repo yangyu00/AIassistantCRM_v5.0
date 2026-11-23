@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """配置：唯一来源 ``local_excel2db/registry.json``，唯一入口 ``load_registry()``。"""
 from __future__ import annotations
 

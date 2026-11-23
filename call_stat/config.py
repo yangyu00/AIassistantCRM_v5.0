@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """调用量统计配置：唯一来源 ``call_stat/.env``，唯一入口 ``load_config()``。"""
 from __future__ import annotations
 

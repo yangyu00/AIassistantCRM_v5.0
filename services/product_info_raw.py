@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """产品对象的最小公共形状 + 商机专属的辅助画像组件。"""
 from __future__ import annotations
 

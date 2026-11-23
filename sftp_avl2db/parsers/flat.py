@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Flat AVL 解析（制表符分隔、一行一条、无续行）。"""
 from __future__ import annotations
 

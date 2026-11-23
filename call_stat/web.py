@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """FastAPI 集成适配（可选）：计数中间件与 GET 查询路由工厂。"""
 from __future__ import annotations
 

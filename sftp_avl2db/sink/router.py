@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """库表布局：一个 AVL 一个 db，既是「单条记录路由」也是「全部库表枚举」。"""
 from __future__ import annotations
 

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """AVL 声明：一个 AVL = 一个 db（**纯写入侧**）。"""
 from __future__ import annotations
 

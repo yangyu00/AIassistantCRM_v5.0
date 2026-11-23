@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """IOP 配置：唯一来源就是同目录的 ``.env``。"""
 from __future__ import annotations
 

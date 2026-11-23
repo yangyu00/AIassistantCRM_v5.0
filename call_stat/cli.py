@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """命令行入口 ``python -m call_stat``：脱离在线 API 也能查 / 导出 / 落库 / 自检。"""
 from __future__ import annotations
 

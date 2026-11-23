@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """写入侧守护编排：单实例锁 + 定时轮询 + 逐表导入 + 日志。"""
 from __future__ import annotations
 
@@ -87,7 +86,6 @@ class DimensionWatcher:
         self._sleep: Sleeper = sleeper if sleeper is not None else time.sleep
 
     def run_once(self, *, force: bool = False) -> list[ImportResult]:
-        """跑一轮。"""
         results: list[ImportResult] = []
         for spec in self.registry.tables:
             name = spec.table

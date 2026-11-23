@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """配置：唯一来源 ``sftp_avl2db/.env``，唯一入口 ``load_profiles()``。"""
 from __future__ import annotations
 

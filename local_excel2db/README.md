@@ -96,5 +96,5 @@ python -m local_excel2db --once
 ## 6. 依赖约定
 
 - 写入侧只需 `openpyxl` 读 xlsx；其余为标准库（`sqlite3` / `hashlib` / `fcntl` / `logging` / `argparse`），不引入 pandas。
-- `fcntl` 文件锁为 Linux 单机单实例设计：`watcher.py::SingleInstanceLock.acquire()` 里直接 `import fcntl`，**没有 `portalocker` 回落**（与 `sftp_avl2db/state.py` 不同），Windows 上 `python -m local_excel2db` 会抛 `ModuleNotFoundError`；`cli.py` 只捕获 `(OSError, ValueError)`，该异常会带 traceback 退出。根 README 第 1 节因此把整个项目标为仅 Linux / Unix。
+- `fcntl` 文件锁为 Linux 单机单实例设计：`SingleInstanceLock.acquire()` 里直接 `import fcntl`，无 `portalocker` 回落。根 README 第 1 节因此把整个项目标为仅 Linux / Unix。
 - 组件通过 `protocols.py` 的 `ExcelSource` / `WritableRepository` / `InstanceLock` / `LogSink` / `Sleeper` 契约解耦，可逐层替换；注入只替换组件，不改任何路径。

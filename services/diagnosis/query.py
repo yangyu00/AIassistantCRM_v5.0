@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """诊断取数：按「产品ID + 手机号」关联 7 张维表，产出结构化 record。"""
 from __future__ import annotations
 

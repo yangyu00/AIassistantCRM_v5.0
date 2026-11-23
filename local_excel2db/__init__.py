@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """``local_excel2db``：本地 Excel 维表 → SQLite 的**写入侧**独立进程。"""
 from .config import (
     MODULE_DIR, PROJECT_ROOT, INPUT_DIR, REGISTRY_PATH, RUNTIME_DIR,

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """``Avl2DbRunner``：把五个可注入组件编成一轮「SFTP AVL → SQLite」。"""
 from __future__ import annotations
 
@@ -30,8 +29,8 @@ class Avl2DbRunner:
         # datetime 便于单测锁定 cleanup cutoff；统一规范成可调用。
         raw_now = now if now is not None else datetime.now
         self._now = raw_now if callable(raw_now) else (lambda: raw_now)
-        # 库表清理「每天一次」的进程内闸门。只记日历序号，不落状态文件：
-        # 进程重启当天最多重复清一次，语义无害且不需要新的持久化契约。
+        # 库表清理「每天一次」的进程内闸门：只记日历序号，不落状态文件，
+        # 同一天最多触发一次清理（进程重启可能重复一次）。
         self._last_purge_day: int | None = None
 
     def _remote_path(self, remote_name: str) -> str:

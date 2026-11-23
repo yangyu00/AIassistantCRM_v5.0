@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """组件契约与结果对象（纯 typing，零 I/O、零第三方依赖）。"""
 from __future__ import annotations
 

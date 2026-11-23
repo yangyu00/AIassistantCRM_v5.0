@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """IOP 标签直连冒烟：给一个号码，打印查到的客户标签画像。"""
 from __future__ import annotations
 
@@ -33,7 +32,7 @@ def _render(tel, profile):
 
     print(f"  共 {len(profile)} 项标签：")
     for i, (code, pair) in enumerate(profile.items(), 1):
-        # 标签值在不同上游版本里可能是 (名称, 值) 二元组，也可能就是单个值
+        # 标签值可能是 (名称, 值) 二元组，也可能就是单个值
         if isinstance(pair, (list, tuple)):
             name = pair[0] if len(pair) > 0 else ""
             value = pair[1] if len(pair) > 1 else ""

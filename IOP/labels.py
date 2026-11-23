@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """标签响应的逐层校验与 BUSIINFO 组装。"""
 from __future__ import annotations
 

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """入参校验冒烟：用 requests 连打几组非法请求，打印每次的实际返回。"""
 from __future__ import annotations
 

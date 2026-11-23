@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """SQLite 落地层：表结构 SQL、库表布局、建表 / 分批写 / 过期清理。"""
 from .router import AvlDbLayout, build_layout
 from .schema import (

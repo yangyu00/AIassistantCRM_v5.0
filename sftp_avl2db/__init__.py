@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """``sftp_avl2db``：SFTP AVL → SQLite 入库包。"""
 from . import avl_specs, table_schemas   # noqa: E402  (纯静态契约)
 from .config import (

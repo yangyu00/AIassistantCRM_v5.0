@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """控损 AVL 解析（逻辑 5 列，``strategy_name`` 含裸换行、需续行重组）。"""
 from __future__ import annotations
 

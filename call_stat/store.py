@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """SQLite 落库层：只负责 I/O，不持有任何全局计数状态。"""
 from __future__ import annotations
 

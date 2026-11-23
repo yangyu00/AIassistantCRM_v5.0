@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """``python -m sftp_avl2db`` 入口。"""
 import sys
 

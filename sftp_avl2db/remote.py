@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """远程文件源：SFTP（生产）与本地目录（离线）。"""
 from __future__ import annotations
 

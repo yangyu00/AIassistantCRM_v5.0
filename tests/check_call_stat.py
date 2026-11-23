@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """调用量统计 GET 接口冒烟：用 requests 查单日 / 整月 / 非法参数并打印返回。"""
 from __future__ import annotations
 

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """registry.json 的对象模型：已校验、不可变、纯数据（零 I/O）。"""
 from __future__ import annotations
 

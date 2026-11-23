@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """在线业务库只读查询（``services`` 读取侧，统一入口）。"""
 from __future__ import annotations
 
@@ -41,8 +40,7 @@ def _error(msg):
 def _latest_op_time(conn, avl):
     """同连接读写入侧登记的批次水位。
 
-    元数据表缺失 / 无行 / 窗口关闭都返回 ``None``，此时查询完全退回旧行为，
-    保证没有升级写入侧的库、离线自检临时库都能正常工作。
+    元数据表缺失 / 无行 / 窗口关闭都返回 ``None``，此时不做批次过滤。
     """
     if _CONFIG.freshness_window_days <= 0:
         return None
@@ -59,8 +57,7 @@ def _cutoff(latest_op_time):
     """窗口下界 = 最新数据日期 - (N-1) 天。
 
     N 表示「保留最近 N 个 op_time 日期」：N=2、最新 21 日 → 下界 20 日。
-    以数据里的 ``op_time`` 为基准，不依赖「op_time = 文件日期 - 1」这一
-    当前事实；日期文本不是 YYYY-MM-DD 时降级不做过滤，避免误杀。
+    以数据里的 ``op_time`` 为基准；日期文本不是 YYYY-MM-DD 时降级不做过滤，避免误杀。
     """
     window = _CONFIG.freshness_window_days
     if window <= 0 or not latest_op_time:

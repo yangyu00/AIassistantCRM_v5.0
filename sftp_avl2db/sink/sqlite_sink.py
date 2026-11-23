@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """SQLite 写入层：建表 / 流式分批写 / 过期清理。"""
 from __future__ import annotations
 

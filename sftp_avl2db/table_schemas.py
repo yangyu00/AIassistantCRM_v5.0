@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """表结构定义：按名字注册，供多个 AVL 复用。"""
 from __future__ import annotations
 
@@ -89,8 +88,7 @@ TABLE_SCHEMAS: Final[Mapping[str, tuple[tuple[str, str], ...]]] = {
 
 
 # 主键注册：与 TABLE_SCHEMAS 同名同键，写入侧建表 / 幂等 / 跳过判定共用。复合主键保证
-# INSERT OR REPLACE 幂等且不丢样例行；op_time 不进主键（每日全量覆盖最新批次，
-# 与商机回捞 / 控损「同一键只保留一条」的既有口径一致）。
+# INSERT OR REPLACE 幂等且不丢样例行；op_time 不进主键，同一主键只保留最新一条。
 TABLE_PRIMARY_KEYS: Final[Mapping[str, tuple[str, ...]]] = {
     "opportunity_recall": ("product_no",),
     "loss_control": ("product_no",),

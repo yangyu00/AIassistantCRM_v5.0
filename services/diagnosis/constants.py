@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """诊断的 AVL 前缀与业务口径常量（纯静态、零 I/O）。"""
 from __future__ import annotations
 
@@ -32,4 +31,4 @@ SMALLER_RN_HIGHER_PRIORITY = True
 # 无 RN 的交集场景按原顺序补位，取第一个能查到切入话术的场景。
 ALLOW_ENTRY_SCRIPT_FALLBACK = True
 
-EMPTY_TEXT = "无"                  # 与现有 rewrite 模块的空值占位保持一致
+EMPTY_TEXT = "无"                  # 空值占位

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """诊断业务对象：把结构化 record 拼成 ``output_script``。"""
 from __future__ import annotations
 

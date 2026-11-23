@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """控损话术对象：把 ``strategy_name`` 里的自定义标签转成 HTML。"""
 from __future__ import annotations
 

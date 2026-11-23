@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """注册 xlsx 的源文件侧：内容指纹 + 按 registry 抽列去重。"""
 from __future__ import annotations
 

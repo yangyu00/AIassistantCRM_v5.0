@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """诊断的**卖点维表兜底**：db 查空 / 场景交集为空 / 六项输出全空时启用。"""
 from __future__ import annotations
 

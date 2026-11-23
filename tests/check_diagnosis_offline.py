@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """诊断离线自检：一次性跑完「注册 → 解析 → 入库 → 取数 → 拼装 → 路由」。"""
 from __future__ import annotations
 
@@ -248,7 +247,7 @@ def main():
           sp_opp["202608041615335174"].label_ids == (),
           str(sp_opp["202608041615335174"].label_ids))
 
-    # 全量映射：后续诊断取数与在线路由都复用这一份（每请求只读一次的等价物）
+    # 全量映射：后续诊断取数与在线路由都复用这一份
     sp = dimensions.load_selling_points([
         "202608041615335173", "202608041615335172", "202608041615335174",
         PID, FALLBACK_PID, NO_INTERSECT_PID])

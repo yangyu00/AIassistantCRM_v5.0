@@ -16,9 +16,8 @@ from src.log_util import my_log, configure_logging
 # 日志目录：留空表示写到项目根目录下的 log/，也可填绝对路径
 LOG_DIR = ""
 FASTAPI_CONFIG = {"host": "0.0.0.0", "port": 8989, "reload": False}
-# 业务路由；users 为预留项，当前业务代码未读取
+# 业务路由
 MARKET_ASSISTANT_URL = "/api/speechQryService"
-MARKET_ASSISTANT_USERS = ["CRM"]
 
 # 业务路由（product_id → AVL 前缀、是否查 IOP 标签、产品对象工厂）统一在
 # services/routing.py，由 services/__init__.py 导出；本文件只保留在线服务的
@@ -129,8 +128,6 @@ async def marketAssistant(args: Args):
         # 「要不要拼画像」不在这里判断：只有商机对象持有画像组件，空标签 / 空标签 ID 子集时它自然返回空串。
         custom_label_info = (await label_provider.labels()
                              if need_labels(one_product_obj.id) else {})
-        # 四类路由（商机 / 控损 / 诊断 / 兜底）、取数与对象构造都在
-        # services/routing.py::build_product_object；本函数只做请求级编排
         product_obj_list.append(await build_product_object(
             one_product_obj.id, args.telnum,
             custom_label_info=custom_label_info,

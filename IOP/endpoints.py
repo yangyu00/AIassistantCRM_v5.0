@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """IOP 两个端点的请求形状（上游契约，唯一真源）。"""
 from __future__ import annotations
 

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """诊断：取数、纯逻辑、业务对象、口径常量与卖点维表兜底。"""
 _LAZY_EXPORTS = {
     "build_diagnosis_record": ("query", "build_diagnosis_record"),

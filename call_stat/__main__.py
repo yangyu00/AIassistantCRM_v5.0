@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """``python -m call_stat`` 的进程退出点。"""
 import sys
 

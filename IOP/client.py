@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """``IOPClient``：IOP 的业务门面。"""
 from __future__ import annotations
 
@@ -52,13 +51,11 @@ class IOPClient:
         return self._tokens
 
     async def start(self):
-        """转发到 transport.start()。"""
         fn = getattr(self._transport, "start", None)
         if fn is not None:
             return await fn()
 
     async def aclose(self):
-        """转发到 transport.aclose()。"""
         fn = getattr(self._transport, "aclose", None)
         if fn is not None:
             return await fn()
@@ -81,10 +78,8 @@ class IOPClient:
                 "IOP token 不可用：刷新后仍无有效 access_token，本次标签查询降级为空标签")
             return {}
 
-        # 上游接口约定：access_token 必须放在 URL 查询串中（不接受 Authorization 头），
-        # 且只提供 http 明文端点。均为上游实际要求，不可改动。
-        # 上游强制要求 Content-Type 声明 charset=gbk 并显式携带 Accept-Encoding，
-        # 即使与实际序列化编码不一致也需照发，不可改动。
+        # 请求形状（URL / headers / body）由 endpoints.custinfo_request 统一生成；
+        # 上游强制的明文端点、查询串 token 与 gbk 请求头契约见 endpoints.py。
         url, headers, post_data = endpoints.custinfo_request(
             self._config, tel, self._tokens.state.access_token)
 

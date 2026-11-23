@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """``call_stat``：调用量统计独立模块（包内配置 + 包内产物 + 可独立调用）。"""
 from .config import CallStatConfig, ENV_PATH, RUNTIME_DIR, load_config, warn
 

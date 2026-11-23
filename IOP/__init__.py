@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """IOP 客户端包：查用户标签，任何失败统一降级为 ``{}``。"""
 from .config import (
     IOPConfig,

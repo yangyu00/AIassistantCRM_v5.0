@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """``python -m local_excel2db`` 的进程退出点。"""
 import sys
 

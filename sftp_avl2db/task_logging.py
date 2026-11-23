@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """任务日志：为每个任务挂 INFO / ERROR 两个文件 sink，且不动宿主 logger。"""
 from __future__ import annotations
 

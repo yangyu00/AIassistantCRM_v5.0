@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """装配工厂：把各层组件拼成可直接运行的任务。"""
 from __future__ import annotations
 

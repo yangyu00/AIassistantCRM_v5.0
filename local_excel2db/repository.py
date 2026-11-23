@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """SQLite 落地：写入侧建表 / 单事务整表覆盖 / 版本登记（只写，不提供查询）。"""
 from __future__ import annotations
 

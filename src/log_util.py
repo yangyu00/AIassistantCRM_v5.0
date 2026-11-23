@@ -1,4 +1,3 @@
-# -*- encoding: utf-8 -*-
 """在线进程日志初始化。"""
 from loguru import logger
 from pathlib import Path
@@ -21,24 +20,24 @@ def configure_logging(log_dir: str = "") -> None:
         str(log_dir_path / f"INFO_{time.strftime('%Y-%m-%d')}.log"),
         level="INFO",
         filter=lambda record: record["level"].name == "INFO",
-        rotation="00:00",  # 每天00:00 自动生成新的日志文件
+        rotation="00:00",  # 每天 00:00 轮转
         encoding="utf8",
-        compression=None,  # 压缩归档旧日志文件
-        retention="7 day",  # 保留最近7天的日志文件
+        compression=None,  # 不压缩归档
+        retention="7 day",  # 保留最近 7 天
         format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level} | (file:{file.name}:{line}) {message}",
-        backtrace=True,  # 记录完整的异常堆栈跟踪信息
-        diagnose=True  # 在日志中显示更多的诊断信息
+        backtrace=True,  # 记录完整异常堆栈
+        diagnose=True  # 显示更多诊断信息
     )
 
     logger.add(
         str(log_dir_path / f"ERROR_{time.strftime('%Y-%m-%d')}.log"),
         level="ERROR",
         filter=lambda record: record["level"].name == "ERROR",
-        rotation="00:00",  # 每天00:00 自动生成新的日志文件
+        rotation="00:00",
         encoding="utf8",
-        compression=None,  # 压缩归档旧日志文件
+        compression=None,
         format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level} | (file:{file.name}:{line}) {message}",
-        retention="7 day",  # 保留最近7天的日志文件
-        backtrace=True,  # 记录完整的异常堆栈跟踪信息
-        diagnose=True  # 在日志中显示更多的诊断信息
+        retention="7 day",
+        backtrace=True,
+        diagnose=True
     )

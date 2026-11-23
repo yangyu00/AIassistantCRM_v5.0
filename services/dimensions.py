@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """在线侧卖点维表只读（``services`` 读取侧之一）。"""
 from __future__ import annotations
 

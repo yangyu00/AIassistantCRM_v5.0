@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """状态层：断点续传清单与单实例锁。"""
 from __future__ import annotations
 

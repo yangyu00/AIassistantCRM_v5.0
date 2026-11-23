@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """库表清理轮转自检：验证「每天一次 + 按天清部分分表」的覆盖性。"""
 from __future__ import annotations
 
@@ -180,9 +179,9 @@ check("各组数量均衡(差 ≤ 1) 且合计 128",
       f"各组大小={sizes}")
 check("周期大于表数时收敛", r0._purge_plan(base_ord, 999)[2] == 128)
 
-print("[3] cycle=0 保持旧行为：每轮全量、无日历闸门")
+print("[3] cycle=0：每轮全量、无日历闸门")
 r_old, spy_old, layout_old, clock_old = make_runner(
-    make_profile("legacy", cycle=0), cycle=0)
+    make_profile("case_cycle0", cycle=0), cycle=0)
 seed(r_old.profile, layout_old)
 for _ in range(3):
     r_old.cleanup_expired()
@@ -317,7 +316,7 @@ def load_with(lines):
 check("完整模板可装配", len(load_with(env_lines())) == 12)
 check("删 F09591_NUM_TABLES → fail-fast",
       raises(lambda: load_with(env_lines(drop=("F09591_NUM_TABLES",)))))
-check("删 F09591_NUM_TABLES 但保留旧项目级键 → 仍 fail-fast",
+check("删 F09591_NUM_TABLES 且另加无关键 → 仍 fail-fast",
       raises(lambda: load_with(env_lines(drop=("F09591_NUM_TABLES",))
                                + ["LOSS_CONTROL_NUM_TABLES=128"])))
 check("删 F09627_POLL_INTERVAL_SECONDS → fail-fast（不复用同项目其它 AVL）",

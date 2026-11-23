@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """单表导入编排：文件存在性 → 指纹比对 → 抽列 → 单事务整表覆盖 + version 递增。"""
 from __future__ import annotations
 

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """组件契约（纯 typing，零 I/O）：各层组件的 Protocol 与结果数据类。"""
 from __future__ import annotations
 

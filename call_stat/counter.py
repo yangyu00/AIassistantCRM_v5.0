@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """内存计数核心：两个全局字典 + RLock，热路径不读库（除非恰好触发 flush）。"""
 from __future__ import annotations
 

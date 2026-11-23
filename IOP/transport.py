@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """IOP 的 HTTP 传输层：把 aiohttp 会话与请求收口到一个可替换的对象里。"""
 from __future__ import annotations
 

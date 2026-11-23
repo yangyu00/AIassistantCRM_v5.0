@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """命令行入口 ``python -m sftp_avl2db --task <任务名> [选项]``。"""
 from __future__ import annotations
 

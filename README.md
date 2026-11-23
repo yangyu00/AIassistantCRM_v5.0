@@ -1,4 +1,4 @@
-# AIassistantCRM v5.0 · 项目说明
+# AIassistantCRM · 项目说明
 
 本文件是全局规格：系统组成、数据流、对外接口、路由、降级、部署与自检。各组件与业务层的详细契约见文末索引；按这些文档可重建代码。
 
@@ -13,9 +13,9 @@
 
 部署时 14 个进程都要起。业务与计数数据的写入边界是：在线进程只写 `call_stat/runtime/call_sum.db`，业务库与维表均由写入侧独立维护；此外在线进程启动时会由 `configure_logging()` 在项目根 `log/` 下写 `INFO_YYYY-MM-DD.log` / `ERROR_YYYY-MM-DD.log`（按天轮转、保留 7 天），这是日志产物，不参与业务数据流。各包配置与运行时产物按 `__file__` 锚在包目录内，与启动 CWD 无关。
 
-依赖清单与安装命令见 [`requirements.txt`](requirements.txt)（`python -m pip install -r requirements.txt`）：Python 3.10+；在线侧 `fastapi>=0.100 / uvicorn / pydantic>=2 / aiohttp / loguru`；写入侧同样需要 `loguru`（`sftp_avl2db/task_logging.py` 的 `TaskLogger` 默认实现，缺它 `python -m sftp_avl2db` 会直接抛 `RuntimeError`、退出码 2），另有 `paramiko`（SFTP）、`openpyxl`（xlsx）、`portalocker`（可选）、`requests`（冒烟脚本）。`@field_validator` 是 pydantic v2 API，装 v1 会在 import 期直接失败；`FastAPI(lifespan=...)` 需较新 FastAPI。
+依赖清单与安装命令见 [`requirements.txt`](requirements.txt)（`python -m pip install -r requirements.txt`）：Python 3.10+；在线侧 `fastapi>=0.100 / uvicorn / pydantic>=2 / aiohttp / loguru`；写入侧同样需要 `loguru`（`sftp_avl2db/task_logging.py` 的 `TaskLogger` 默认实现，缺它 `python -m sftp_avl2db` 会直接抛 `RuntimeError`、退出码 2），另有 `paramiko`（SFTP）、`openpyxl`（xlsx）、`portalocker`（可选）、`requests`（冒烟脚本）。
 
-**仅支持 Linux / Unix**：`local_excel2db/watcher.py` 在拿锁时直接 `import fcntl`，没有其它回落，Windows 上 `python -m local_excel2db` 会抛 `ModuleNotFoundError`；`portalocker` 的「可选、缺失回落 `fcntl`」只对 `sftp_avl2db/state.py` 生效。两个写入侧进程都依赖 Unix 文件锁，部署前先确认目标平台。
+**仅支持 Linux / Unix**：两个写入侧进程都依赖 `fcntl` 文件锁（`local_excel2db/watcher.py` 在拿锁时导入；`sftp_avl2db/state.py` 优先用 `portalocker`，缺失时回落到 `fcntl`），部署前先确认目标平台。
 
 `import` 边界并非所有包一致：`sftp_avl2db / local_excel2db / call_stat / services` 四个包根零 I/O、零第三方依赖，靠 `__getattr__` 延迟导出，第三方库在入口函数内延迟加载；但 `IOP` 包根在 `__init__.py` 顶层链式导入 `transport / token / client`，三者模块顶层 `import aiohttp`，因此 `import IOP` 必须先装 `aiohttp`（配置仍只在构造 `IOPClient()` 时才读）；`src/log_util.py` 顶层 `from loguru import logger`、`src/exceptions.py` 顶层 `from fastapi import ...`，二者同样在 import 期就要第三方库。
 
@@ -188,7 +188,7 @@ python -m venv .venv && . .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-平台要求见第 1 节（仅 Linux / Unix）。`requirements.txt` 给的是版本下限，生产环境验证通过后建议 `pip freeze > requirements.lock.txt` 固化。
+平台要求见第 1 节（仅 Linux / Unix）。
 
 ### 10.2 凭据替换（首次部署必做）
 
@@ -200,7 +200,7 @@ python -m pip install -r requirements.txt
 | `IOP/.env` 与 `.env.example` | `IOP_TOKEN_HOST` / `IOP_TOKEN_PORT` / `IOP_TOKEN_ID` / `IOP_TOKEN_SECRET` / `IOP_CUSTINFO_HOST` / `IOP_CUSTINFO_PORT` |
 | `IOP/config.py::_SPECS` | 与上一行对应的内置默认值 |
 
-最后一处不能漏：`.env` 缺键、空值或写成 `<...>` 占位符时会**回落到 `_SPECS` 的内置值**（见 `IOP/README.md` 第 4 节），只改 `.env` 并不能保证生效值已换掉。仓库内原有明文凭据应视为已泄露并轮换；生产环境不要把 `.env` 再提交进版本库。改完配置重启对应进程生效（配置对象首次加载后冻结）。
+最后一处不能漏：`.env` 缺键、空值或写成 `<...>` 占位符时会**回落到 `_SPECS` 的内置值**（见 `IOP/README.md` 第 4 节），只改 `.env` 并不能保证生效值已换掉。生产环境不要把 `.env` 再提交进版本库。改完配置重启对应进程生效（配置对象首次加载后冻结）。
 
 ### 10.3 首次上线顺序
 
@@ -264,7 +264,7 @@ python tests/check_iop_direct.py 13900000000   # IOP 上游直连冒烟
 
 `check_diagnosis_offline.py` 真正断言的是：`F09633` 建满 128 张分表、号码不串表、按 `telnum` 精确定位且缺 `product_no` 时降级 `[]`；写入侧 / 在线侧分表口径一致；维表「标签ID」拆分与库缺失降级；商机画像端到端来自维表 → IOP；诊断 7 表关联、六段话术、三种兜底触发、四段输出且省略两段；业务库未就绪时商机 / 控损按空记录出话术；四类路由输出与 `code` 按对象类型判定；只有商机回捞触发 IOP 查询（整请求 1 次）。
 
-以下三条**不在任何自检脚本的断言里**，只由代码结构保证、需人工或另行验证，不要把它们算进 `ALL PASS`：`app.router.on_startup` 为空（lifespan 注册）、每请求只读一次 `dimensions.db`、请求间标签 / 画像隔离（脚本里只有「每请求只读一次的等价物」注释与单次请求调用）。调用量阈值落库、重启恢复、shutdown `flush()` 不丢尾部增量则由 `python -m call_stat --self-check` 独立断言，输出 `SELF-CHECK OK`。
+以下三条**不在任何自检脚本的断言里**，只由代码结构保证、需人工或另行验证，不要把它们算进 `ALL PASS`：`app.router.on_startup` 为空（lifespan 注册）、每请求只读一次 `dimensions.db`、请求间标签 / 画像隔离。调用量阈值落库、重启恢复、shutdown `flush()` 不丢尾部增量则由 `python -m call_stat --self-check` 独立断言，输出 `SELF-CHECK OK`。
 
 `ALL PASS` 有成立条件：`check_diagnosis_offline.py` 的第 1～6 段只用标准库 + 临时 SQLite，缺 `fastapi / pydantic / loguru / aiohttp / uvicorn` 任一都不会报错；第 7 段「在线路由」会打印全角括号的 `[SKIP] 未加载在线侧（{异常类型}: {异常信息}）`（异常类型随实际缺失的依赖变化，不只是 `uvicorn`），脚本末尾**仍然输出 `ALL PASS`**。因此 `ALL PASS` 只代表已执行段的断言通过；`import main` 与第 7 段的在线侧四类路由断言，必须先装齐在线依赖才会真正跑起来。`tests/README.md` 第 4 节也记录了这一跳过条件。
 

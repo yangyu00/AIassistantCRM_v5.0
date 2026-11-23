@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """命令行入口：``python -m local_excel2db [--once] [--force]``。"""
 from __future__ import annotations
 

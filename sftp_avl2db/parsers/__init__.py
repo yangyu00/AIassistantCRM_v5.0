@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """AVL 解析层：本地文件 → 逻辑记录元组，纯解析、无副作用。"""
 from .continuation import (
     DATE_RE,

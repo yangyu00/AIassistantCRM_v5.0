@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """商机回捞话术对象：把 F09554/55/56 的单条记录拼成四段话术 + 辅助画像。"""
 from __future__ import annotations
 

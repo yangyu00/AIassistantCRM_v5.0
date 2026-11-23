@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """SQLite 表结构与 SQL 文本生成。"""
 from __future__ import annotations
 

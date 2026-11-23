@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """token 的获取、有效期与并发保护。"""
 from __future__ import annotations
 
@@ -87,7 +86,6 @@ class TokenManager:
         return self._refresh_lock
 
     def token_valid(self) -> bool:
-        """token 是否有效。"""
         return (self._state.access_token is not None
                 and datetime.datetime.now() <= self._state.deadline)
 

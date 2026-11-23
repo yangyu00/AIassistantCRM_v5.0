@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """在线业务侧**独立维护**的各 db 文件读取配置与静态声明。"""
 from __future__ import annotations
 
@@ -31,7 +30,7 @@ TIME_COLUMN: Final = "op_time"
 # 两侧各自声明，磁盘上的 db 文件是唯一交集。
 AVL_META_TABLE: Final = "_avl_meta"
 # 新鲜度窗口：只召回 op_time 落在 [最新批次-(N-1)天, 最新批次] 的数据。
-# N=0 表示关闭（保持旧行为）；N=1 表示只要最新一批。
+# N=0 关闭过滤；N=1 仅取最新一批。
 DEFAULT_FRESHNESS_WINDOW_DAYS: Final = 2
 FRESHNESS_WINDOW_ENV_KEY: Final = "AVL_FRESHNESS_WINDOW_DAYS"
 

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """查询参数校验与响应组装：纯函数（除取数外），供 web / CLI 共用一处口径。"""
 from __future__ import annotations
 

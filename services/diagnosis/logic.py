@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """诊断话术的业务逻辑：纯函数、零 I/O、零第三方依赖，便于离线单测。"""
 from __future__ import annotations
 
@@ -127,7 +126,7 @@ def extract_scripts(rows, column):
 
 # 话术拼装
 def build_output_script(record, *, omit=()):
-    """把 6 个输出字段拼成 HTML 话术（风格与现有 rewrite 模块一致）。"""
+    """把 6 个输出字段拼成 HTML 话术。"""
     record = record or {}
 
     def line(label, value):

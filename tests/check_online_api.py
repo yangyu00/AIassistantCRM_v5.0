@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """在线话术接口冒烟脚本：发一次真实 POST，把返回原样打印出来。"""
 from __future__ import annotations
 
