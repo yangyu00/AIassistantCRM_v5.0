@@ -146,7 +146,7 @@ curl "http://host:8989/api/callStat?month=2026-11"
 - 月查询补齐整月天数、当天为 8；参数校验拒绝空参 / 双参 / 非法日期 / 非法月份。
 - 临时库路径确实位于 `runtime/` 内。
 
-另外 `import call_stat` 后 `runtime/` 不应多出任何文件；`CALL_STAT_QUERY_PATH` 改值后 `build_router()` 注册路径随之变化；`configure(db_path='/tmp/x')` 必须抛 `ValueError`。
+以下三条是模块性质，**不在 `--self-check` 的断言里**，需另行验证：`import call_stat` 后 `runtime/` 不应多出任何文件；`CALL_STAT_QUERY_PATH` 改值后 `build_router()` 注册路径随之变化；`configure(db_path='/tmp/x')` 必须抛 `ValueError`。`_self_check()` 只断言临时库路径确实位于 `runtime/` 内，不覆盖这三条。
 
 ## 10. 行为约定与已知限制
 

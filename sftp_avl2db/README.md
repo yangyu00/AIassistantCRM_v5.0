@@ -29,7 +29,7 @@ python -m sftp_avl2db --task F09554
 | 配置 | `config.py`、`avl_specs.py`、`table_schemas.py` | 无 |
 | 解析 | `parsers/` | 无 |
 | 写入 | `sink/` | 仅标准库 `sqlite3` |
-| I/O | `remote.py`、`state.py`、`task_logging.py` | 无（`paramiko` / `loguru` / 锁库延迟导入） |
+| I/O | `remote.py`、`state.py`、`task_logging.py` | 无（`paramiko` / `loguru` / 锁库延迟导入；`loguru` 是 `TaskLogger` 的**运行时必需**依赖，未装且未注入 logger 时抛 `RuntimeError`，可注入 `InMemoryLogger()` 替身） |
 | 编排 | `runner.py`、`profiles.py`、`cli.py` | 无 |
 
 公共 API 只认包根 `sftp_avl2db`：`__all__` 列出契约与工厂，I/O 类通过模块级 `__getattr__` 延迟导出。`protocols.py` 是唯一契约来源（Protocol 与结果数据类），照协议写替身即可替换任一层。
@@ -100,12 +100,54 @@ runtime/
 | `<AVL>_POLL_INTERVAL_SECONDS` | 常驻轮询间隔秒数 | 正整数 |
 | `<AVL>_PURGE_CYCLE_DAYS` | 库表清理轮转周期 | 非负整数，`0` 合法 |
 
-分表 AVL 再加 `<AVL>_NUM_TABLES`（正整数）：`F09591_NUM_TABLES`、`F09633_NUM_TABLES`，由 `config._num_tables()` 按 AVL 名直读。固定表配置为 `1`，`F09591_PURGE_CYCLE_DAYS=2`，`F09633_PURGE_CYCLE_DAYS=7`。
+分表 AVL 再加 `<AVL>_NUM_TABLES`（正整数）：只有 `F09591_NUM_TABLES=128`、`F09633_NUM_TABLES=128` 两个键，由 `config._num_tables()` 按 AVL 名直读。这里要区分两组容易混淆的数字：
+
+- **分表数**：固定表**没有** `<AVL>_NUM_TABLES` 键，代码里 `num_tables=0`（`config.py::load_profiles()` 对非分表 AVL 直接置 0），`validate_specs()` 会拦住「固定表配了 NUM_TABLES」的漂移；分表 AVL 才是 128。
+- **清理轮转周期 `<AVL>_PURGE_CYCLE_DAYS`**：所有 12 个 AVL 都有这个键。当前值固定表（10 个）一律 `1`（每天对全部库表清一次），两个分表 AVL 是 `F09591_PURGE_CYCLE_DAYS=2`、`F09633_PURGE_CYCLE_DAYS=7`（每天只清约 1/N 的分表，N 天轮完）。`0` 是「每轮全量清」的合法取值，不是分表数。
+
+也就是说，本节下面「67 个键的完整清单」表里固定表 `NUM_TABLES` 列写 `—` 表示**不配该键**，不是配了 1；`1 / 2 / 7` 全部是清理周期，逐键取值见该表，语义见第 11 节「分表 db 的库表清理降频」。
 
 - 粒度是 AVL：`project` 不参与任何键的拼装，没有项目级键、没有项目级兜底、没有任何默认值；漏配一个 AVL 的任一键，启动直接 fail-fast。改完 `.env` 重启进程生效（配置对象冻结）。
 - `AVL_SPECS` 与 `_AVLS` 的 key 必须一致，schema 名必须在 `TABLE_SCHEMAS` 里，主键必须在 `TABLE_PRIMARY_KEYS` 里；分表 AVL 的表结构还须含 `product_no` 列。这些漂移由 `validate_specs()` 启动时拦住。
 - `load_profiles(runtime_dir=...)` 或 CLI `--runtime-dir` 是唯一产出隔离入口，只改产出位置、不改配置来源。部署建议 `ln -s /data/crm_runtime sftp_avl2db/runtime` 把数据挂到独立盘，不要整目录覆盖包目录。
 - 在线业务侧读取这些 db 时，库路径、表字段与分表数由 `services/db_config.py` 与 `services/.env` 独立声明；两侧键名不必相同，但分表数取值必须一致，改列顺序 / 分表数 / 库路径时两侧声明必须同步。
+
+### 67 个键的完整清单与当前生效值
+
+`sftp_avl2db/.env`（与 `.env.example` 同值、随仓库入库）的实际内容如下。仅凭 `<AVL>_*` 模板无法写出这份文件，重建时照下表逐键落盘；新环境可 `cp .env.example .env` 再替换凭据。
+
+**SFTP 公共 5 项**
+
+| 键 | 当前值 |
+|---|---|
+| `SFTP_HOST` | `134.80.199.252` |
+| `SFTP_PORT` | `22` |
+| `SFTP_USERNAME` | `wangsi` |
+| `SFTP_PASSWORD` | 见仓库内 `.env` 明文串（此处不转录；部署前必须替换并轮换） |
+| `SFTP_REMOTE_PATH` | `/ftpdata2/data_reverse/wangsi/aifile` |
+
+**12 个 AVL 各 5 项（共 60 项）**
+
+列名是键的后缀，实际键名为 `<AVL>_<列名>`，例如 `F09554_BATCH_SIZE`。
+
+| AVL | BATCH_SIZE | DATA_EXPIRE_DAYS | LOCAL_FILE_EXPIRE_DAYS | POLL_INTERVAL_SECONDS | PURGE_CYCLE_DAYS | NUM_TABLES |
+|---|---|---|---|---|---|---|
+| `F09554` | 10000 | 30 | 7 | 600 | 1 | — |
+| `F09555` | 10000 | 30 | 7 | 600 | 1 | — |
+| `F09556` | 10000 | 30 | 7 | 600 | 1 | — |
+| `F09591` | 5000 | 3 | 3 | 1800 | 2 | 128 |
+| `F09627` | 10000 | 30 | 7 | 1800 | 1 | — |
+| `F09628` | 10000 | 30 | 7 | 1800 | 1 | — |
+| `F09629` | 10000 | 30 | 7 | 1800 | 1 | — |
+| `F09630` | 10000 | 30 | 7 | 1800 | 1 | — |
+| `F09631` | 10000 | 30 | 7 | 1800 | 1 | — |
+| `F09632` | 10000 | 30 | 7 | 1800 | 1 | — |
+| `F09633` | 10000 | 30 | 7 | 1800 | 7 | 128 |
+| `F09635` | 10000 | 30 | 7 | 1800 | 1 | — |
+
+**分表 2 项**：`F09591_NUM_TABLES=128`、`F09633_NUM_TABLES=128`。只有这两个 AVL 有 `NUM_TABLES` 键，固定表不配（代码里 `num_tables=0`）。
+
+合计 `5 + 60 + 2 = 67` 个键，全部必需，没有项目级键、没有缺省回落；`load_profiles()` 用 `_int()` / `_str()` 逐键读取，漏任一键启动时直接 fail-fast。`PURGE_CYCLE_DAYS` 允许 `0`（每轮全量清），其余数值项均为正整数。
 
 ## 6. 新增业务 / 新增 AVL
 
@@ -123,6 +165,43 @@ runtime/
 - **控损**（`F09591`）：逻辑 5 列，`strategy_name` 含裸换行需续行拼接；`product_no` 为主键与分表键。单个 `F09591.db` 内 128 张表 `F09591_0 … 127`，路由为 `zlib.crc32(product_no.encode("utf-8")) % NUM_TABLES`。写入用 `INSERT OR REPLACE`，批量补跑按文件名日期升序。
 - **诊断·用户场景对应关系**（`F09633`）：诊断 8 表里唯一带 `product_no` 的表，千万级行，同样按 `product_no` 分 128 张表 `F09633_0 … 127`，分表数用 `F09633_NUM_TABLES` 单独配置。
 - 改列名 / 列顺序只改 `table_schemas.py`，改 AVL 归属 / 解析器只改 `avl_specs.py` 与 `config.py::_AVLS`，改主键只改 `TABLE_PRIMARY_KEYS`，改分表数只改 `.env`；每个 AVL 只有一个 db 文件，不存在跨库路由。分表路由用的 `product_no` 列下标由 `build_layout()` 从注册的表结构推导。
+
+### 商机回捞 / 控损的完整列定义
+
+诊断 8 张表的列清单在第 8 节「诊断 8 张表注册」，这里补齐另两类。`TABLE_SCHEMAS` 的列顺序即 AVL 制表符分隔顺序，也是 `SELECT *` 回来后 `dict(zip(columns, row))` 的组装顺序；在线侧 `services/db_config.py` 声明同列同序。
+
+**`opportunity_recall`（`F09554 / F09555 / F09556` 共用，逻辑 12 列，主键 `product_no`）**
+
+| # | 列名 | 类型 | 说明 |
+|---|---|---|---|
+| 1 | `op_time` | `TEXT` | 数据日期（AVL 第 1 列，不进主键） |
+| 2 | `call_time` | `TEXT` | 通话时间 |
+| 3 | `product_no` | `TEXT NOT NULL` | 手机号，主键 / 查询键 |
+| 4 | `type_dl` | `VARCHAR(50)` | 大类 |
+| 5 | `type_xl` | `VARCHAR(50)` | 小类（商机「用户需求」蓝色前缀） |
+| 6 | `content_abstract` | `TEXT` | 通话总结 |
+| 7 | `cust_demand` | `TEXT` | 用户需求 |
+| 8 | `rec_strategy` | `TEXT` | 已推荐政策 |
+| 9 | `reject_reason` | `TEXT` | 拒绝原因 |
+| 10 | `reason_note` | `TEXT` | 具体表述 |
+| 11 | `refer_strategy` | `TEXT` | 参考策略（在线话术不消费） |
+| 12 | `city_id` | `INTEGER` | 地市；解析器保留文本，由 SQLite 列亲和性转换 |
+
+在线侧只消费第 5、6、7、8、9、10 列，见 [`services/README.md` 第 9 节](../services/README.md)。解析器 `FlatColumnParser`：一行一条、无续行，按 `\t` 切分后补齐或截断到 12 列，所有列原样保留文本；空 `product_no` 跳过。
+
+**`loss_control`（`F09591`，逻辑 5 列，主键 `product_no`，分表键同列）**
+
+| # | 列名 | 类型 | 说明 |
+|---|---|---|---|
+| 1 | `op_time` | `TEXT` | 数据日期 |
+| 2 | `user_id` | `TEXT` | 用户编码 |
+| 3 | `product_no` | `TEXT NOT NULL` | 手机号，主键 / 分表键 / 在线查询键 |
+| 4 | `city_id` | `TEXT` | 地市 |
+| 5 | `strategy_name` | `TEXT` | 含裸换行的自定义标签话术；**在线侧唯一消费列** |
+
+续行解析（`parsers/continuation.py`）：以行首 `YYYY-MM-DD` 判定新记录；`strip_eol()` 只去 `\n`、再只剥**一个** ASCII 反斜杠（不能用 `rstrip('\\')`，否则 GBK 尾字节 `0x5C` 的汉字会被削成乱码）；起始行 `>=5` 列取前 5 列、`==4` 列补空 `strategy_name`、`<4` 列整条跳过；空物理行与文件开头孤立续行跳过；最后一条单独入库。单个 `F09591.db` 内 128 张表 `F09591_0 … 127`，路由 `zlib.crc32(product_no.encode("utf-8")) % NUM_TABLES`，写入用 `INSERT OR REPLACE`，批量补跑按文件名日期升序。
+
+两类库都以主键 + `INSERT OR REPLACE` 保证幂等，`op_time` 不进主键（每日全量覆盖最新批次）；所有 SQLite 连接只设 `PRAGMA journal_mode = WAL` 与 `PRAGMA synchronous = NORMAL`。
 
 ## 8. 诊断 8 张表注册（project = diagnosis）
 
@@ -147,6 +226,8 @@ for t in F09627 F09628 F09629 F09630 F09631 F09632 F09633 F09635; do
     --local-dir io_samples --runtime-dir /tmp/replay
 done
 ```
+
+离线复跑仍走 `python -m sftp_avl2db`，会装配 `TaskLogger`，因此**必须先装 `loguru`**；`--local-dir` 只替换远端源，不绕过日志依赖。未装时退出码 2，报「TaskLogger 默认使用 loguru；请安装 loguru，或注入 logger=InMemoryLogger() / 宿主 logger 对象」。`python -m` 入口本身没有 logger 参数，只有编程式调用 `cli.main(logger=...)` 或 `build_task(logger=InMemoryLogger())` 才能注入替身；`tests/check_diagnosis_offline.py` 走的就是注入路径，所以它不依赖 loguru。
 
 在线业务侧的取数链路见 [`services/README.md`](../services/README.md)。
 
@@ -198,5 +279,7 @@ python -m sftp_avl2db --task F09591 --date 20261110 \
 python tests/check_diagnosis_offline.py   # 端到端自检（写入侧与在线侧配置独立装配）
 python tests/check_purge_rotation.py     # 清理轮转自检
 ```
+
+上面两条 `python -m sftp_avl2db` 命令都需要 `loguru`（见第 8 节末尾的离线复跑说明）；`--local-dir` 只换源，不绕过日志依赖。两个 `tests/check_*.py` 走 `load_profiles()` 与注入 logger，不需要 loguru。
 
 `build_task()` 的 `logger=`、`local_dir=`、`day=`、`now=`、`sleeper=`、`batch_size=`、`table_schema=` 都是显式注入点；`runner.serve_forever()` 另有 `max_rounds` / `date_strings` 测试钩子。离线复跑产出隔离到临时目录，不碰包内 `runtime/`。

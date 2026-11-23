@@ -35,6 +35,8 @@ python -m sftp_avl2db --task F09591 --date 20261110 \
 
 `--local-dir io_samples` 让拉取任务把本目录当成本地 AVL 源，`--runtime-dir` 把产物隔离到临时目录，不碰包内 `sftp_avl2db/runtime/`。生产环境里 AVL 落在 `sftp_avl2db/runtime/files/{项目名}/`，输出的 `{AVL}.db` 落在 `sftp_avl2db/runtime/sqlite_db/{项目名}/`。
 
+注意 `--local-dir` 只替换远程源：命令仍会装配 `TaskLogger`，需先装 `loguru`，未装时退出码 2，报「TaskLogger 默认使用 loguru；请安装 loguru，或注入 logger=InMemoryLogger() / 宿主 logger 对象」（详见 [`sftp_avl2db/README.md` 第 8 节](../sftp_avl2db/README.md)）。
+
 **IOP 响应对照**（只吃那个 `.json`）
 
 `iop_labels_query_raw_response.json` 是排查字段口径时看的原始报文形状；在线链路里 `IOPClient` 会把它解析成 `{ITEMCODE: [名称, 值]}` 的画像 dict，不做打桩、不读这个文件。想验证真实上游用 [`tests/check_iop_direct.py`](../tests/README.md)。

@@ -11,9 +11,11 @@
 | 在线侧 | `python main.py` | 1 | FastAPI 在线 API（`0.0.0.0:8989`），只读业务库与维表，按 `product_id` 拼话术 |
 | 在线侧模块 | `call_stat/` | 0（进程内） | HTTP 访问按天计数，缓冲落 `call_stat/runtime/call_sum.db` |
 
-部署时 14 个进程都要起。在线进程唯一写入是 `call_stat/runtime/call_sum.db`；业务库与维表均由写入侧独立维护。各包配置与运行时产物按 `__file__` 锚在包目录内，与启动 CWD 无关。
+部署时 14 个进程都要起。业务与计数数据的写入边界是：在线进程只写 `call_stat/runtime/call_sum.db`，业务库与维表均由写入侧独立维护；此外在线进程启动时会由 `configure_logging()` 在项目根 `log/` 下写 `INFO_YYYY-MM-DD.log` / `ERROR_YYYY-MM-DD.log`（按天轮转、保留 7 天），这是日志产物，不参与业务数据流。各包配置与运行时产物按 `__file__` 锚在包目录内，与启动 CWD 无关。
 
-依赖：Python 3.10+；在线侧 `fastapi / uvicorn / pydantic / aiohttp / loguru`；写入侧 `paramiko`（SFTP）、`openpyxl`（xlsx）、`portalocker`（可选，单实例锁）；冒烟脚本 `requests`。各包 `import` 本身零 I/O、零第三方依赖，第三方库在入口函数内延迟加载。
+依赖：Python 3.10+；在线侧 `fastapi / uvicorn / pydantic / aiohttp / loguru`；写入侧同样需要 `loguru`（`sftp_avl2db/task_logging.py` 的 `TaskLogger` 默认实现，缺它 `python -m sftp_avl2db` 会直接抛 `RuntimeError`），另有 `paramiko`（SFTP）、`openpyxl`（xlsx）、`portalocker`（可选，单实例锁，缺失时回落 `fcntl`）；冒烟脚本 `requests`。
+
+`import` 边界并非所有包一致：`sftp_avl2db / local_excel2db / call_stat / services` 四个包根零 I/O、零第三方依赖，靠 `__getattr__` 延迟导出，第三方库在入口函数内延迟加载；但 `IOP` 包根在 `__init__.py` 顶层链式导入 `transport / token / client`，三者模块顶层 `import aiohttp`，因此 `import IOP` 必须先装 `aiohttp`（配置仍只在构造 `IOPClient()` 时才读）；`src/log_util.py` 顶层 `from loguru import logger`、`src/exceptions.py` 顶层 `from fastapi import ...`，二者同样在 import 期就要第三方库。
 
 ## 2. 目录结构
 
@@ -42,7 +44,8 @@ excels/*.xlsx ──> local_excel2db ──> runtime/sqlite_db/dimensions.db ─
 IOP 上游 ──> IOPClient（进程级共享）──> 请求级标签 ────────────────────┘        ▲
                                                           services/dimensions.py ─┘（每请求只读 1 次 dimensions.db）
 
-main.py ──> call_stat/runtime/call_sum.db（在线进程唯一写入）
+main.py ──> call_stat/runtime/call_sum.db（在线进程唯一业务写入）
+main.py ──> log/INFO_*.log、log/ERROR_*.log（在线进程日志写入，非业务数据）
 ```
 
 物理布局约定：
@@ -83,7 +86,11 @@ main.py ──> call_stat/runtime/call_sum.db（在线进程唯一写入）
 ```
 
 - `telnum`：非空、11 位数字；`productId`：非空数组，每项 `id` 非空。
-- 违反校验返回 HTTP 200 + `{"res_code": 1, "res_desc": "...", "result": ""}`（`telnumError` / `productIdError`）。
+- 违反校验统一返回 HTTP 200，分三类，处理器都注册在 `src/exceptions.py::register_errors_handlers()`：
+  - `telnumError` → `{"res_code": 1, "res_desc": "电话号输入不正确", "result": ""}`
+  - `productIdError` → `{"res_code": 1, "res_desc": "产品ID输入不正确", "result": ""}`
+  - 请求体字段类型错误（如 `productId` 传字符串而非数组）触发 `RequestValidationError` → `{"res_code": 1, "res_desc": "参数校验错误", "result": "<str(exc) 原文>"}`，**`result` 非空**。
+- 前两类由字段校验器抛出，第三类由 pydantic 抛出；`ProductIds.id` 默认 `""`、`Args.productId` 默认 `[]`，所以「缺 id 字段 / 整个 productId 缺失」会落到 `productIdError`，不会走 `RequestValidationError`。
 
 成功响应：
 
@@ -144,6 +151,15 @@ main.py ──> call_stat/runtime/call_sum.db（在线进程唯一写入）
 - `productName`：诊断取 `record['business_name']` 原文（正常链路为 `F09629.BUSINESS_NAME`，兜底为维表「产品名称」）。
 - 库里所有话术 / 标签列只存原始文本，拆分与解析都在在线读取侧完成，不写回解析结果。
 
+### 实现级规格索引（重建逐字符行为时按此取）
+
+| 规格 | 落点 |
+|---|---|
+| 三类业务对象的 HTML 逐字模板、控损自定义标签解析栈、辅助画像拼接 | [`services/README.md` 第 9 节](services/README.md) |
+| 商机回捞 12 列 / 控损 5 列的完整列名、类型与解析消费字段 | [`sftp_avl2db/README.md` 第 7 节](sftp_avl2db/README.md) |
+| `sftp_avl2db/.env` 67 个键的完整键名与当前取值 | [`sftp_avl2db/README.md` 第 5 节](sftp_avl2db/README.md) |
+| 诊断常量、正则、排序键、7 表关联精确调用、兜底触发原因与话术原文解析 | [`services/README.md` 第 6 节](services/README.md) |
+
 ## 9. 降级总表
 
 | 触发 | 行为 |
@@ -184,13 +200,13 @@ python -m call_stat --month 2026-11 --export                     # 导出 CSV
 python -m call_stat --flush                                      # 落盘未达阈值增量
 ```
 
-离线复跑 / 单测可注入 `--local-dir`、`--runtime-dir`、`--max-rounds`，产出隔离到临时目录。部署时可把各包 `runtime/` 软链到独立数据盘，不要整目录覆盖包目录。改表名、列映射、主键或标签列数后须删除 `dimensions.db` 重建，并同步在线侧 `SELLING_POINTS_*` 声明。
+离线复跑 / 单测可注入 `--local-dir`、`--runtime-dir`、`--max-rounds`，产出隔离到临时目录；但 `python -m sftp_avl2db` 即便走本地目录仍会装配 `TaskLogger`，**必须装好 `loguru`**（`python -m` 入口没有 logger 注入参数；只有编程式调用 `cli.main(logger=...)` 或 `build_task(logger=InMemoryLogger())` 才能绕过，未装时退出码 2）。部署时可把各包 `runtime/` 软链到独立数据盘，不要整目录覆盖包目录。改表名、列映射、主键或标签列数后须删除 `dimensions.db` 重建，并同步在线侧 `SELLING_POINTS_*` 声明。
 
 ## 11. 自检
 
 ```bash
 python -m call_stat --self-check                # 统计模块自检（临时库用完即删）
-python tests/check_diagnosis_offline.py        # 诊断端到端离线自检，结论 ALL PASS
+python tests/check_diagnosis_offline.py        # 诊断端到端离线自检；缺在线依赖时第 7 段 SKIP，末尾仍打印 ALL PASS
 python tests/check_purge_rotation.py           # 库表清理轮转自检，结论 ALL PASS
 python tests/check_online_api.py               # 在线主链路冒烟（需先起服务）
 python tests/check_param_validation.py         # 入参校验冒烟
@@ -199,6 +215,8 @@ python tests/check_iop_direct.py 13900000000   # IOP 上游直连冒烟
 ```
 
 核心断言：`import main` 正常、`app.router.on_startup` 为空（走 lifespan）；四类路由输出符合第 7 节；`code` 按对象类型判定；`F09633` 128 张分表按 `telnum` 精确定位且不广播；维表「标签ID」拆分与商机画像来自维表；诊断兜底输出四段且省略两段；每请求只读一次维表、只有商机触发 IOP 查询；请求间标签 / 画像隔离；调用量阈值落库、重启继续计数、shutdown `flush()` 不丢尾部增量。
+
+`ALL PASS` 有成立条件：`check_diagnosis_offline.py` 的第 1～6 段只用标准库 + 临时 SQLite，缺 `fastapi / pydantic / loguru / aiohttp / uvicorn` 任一都不会报错；第 7 段「在线路由」会打印 `[SKIP] 未加载在线侧 (ModuleNotFoundError: No module named 'uvicorn')`，脚本末尾**仍然输出 `ALL PASS`**。因此 `ALL PASS` 只代表已执行段的断言通过；上面列出的 `import main`、lifespan 注册与在线侧四类路由断言，必须先装齐在线依赖才会真正跑起来。`tests/README.md` 第 4 节也记录了这一跳过条件。
 
 ## 12. 文档索引
 

@@ -10,7 +10,7 @@ async with IOPClient() as client:
 # 返回 {ITEMCODE: [ITEMNAME, ITEMVALUE], ...}
 ```
 
-日常只改 `IOP/.env`：地址、凭据、超时、重试、有效期都在那一个文件里，改完重启进程即可。`import IOP` 不读任何文件，配置在构造客户端时才加载并冻结。
+日常只改 `IOP/.env`：地址、凭据、超时、重试、有效期都在那一个文件里，改完重启进程即可。`import IOP` 不读任何文件，配置在构造客户端时才加载并冻结；但包根 `__init__.py` 顶层导入 `transport / token / client`，三者模块顶层 `import aiohttp`，所以 **`import IOP` 需要 `aiohttp` 已安装**（未装时直接 `ModuleNotFoundError: No module named 'aiohttp'`，不会延后到发请求时）。本包不属于根 README 第 1 节列出的「包根 import 零第三方依赖」那四个包。
 
 `get_customer_labels(tel)` 是唯一业务入口。任何失败统一降级为 `{}`，不返回 `None`：返回 `None` 不会触发上层 `except`，会在调用方按 dict 使用时抛 `TypeError`。成功但 0 标签也返回 `{}`，靠日志区分。
 
