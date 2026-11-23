@@ -12,6 +12,7 @@ _LAZY_EXPORTS = {
     "SellingPointRow": ("dimensions", "SellingPointRow"),
     "split_label_ids": ("dimensions", "split_label_ids"),
     "load_selling_points": ("dimensions", "load_selling_points"),
+    "load_label_name_mapping": ("dimensions", "load_label_name_mapping"),
     # 四类业务对象（业务包按业务名命名，对外用语义化类名）
     "ProductInfoByOpportunityRecall": (
         "opportunity_recall", "ProductInfoByOpportunityRecall"),
@@ -66,6 +67,7 @@ __all__ = [
     "build_auxiliary_portrait",
     # 卖点维表读取侧
     "SellingPointRow", "split_label_ids", "load_selling_points",
+    "load_label_name_mapping",
     # 四类业务对象
     "ProductInfoByOpportunityRecall", "ProductInfoByLossControl",
     "ProductInfoByDiagnosis", "build_diagnosis_record",

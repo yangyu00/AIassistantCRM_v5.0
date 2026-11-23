@@ -180,6 +180,12 @@ SELLING_POINTS_SCHEMA: Final = tuple(
         "fallback_script", "match_result", "product_category",
         "product_subcategory") + SELLING_POINTS_TAG_COLUMNS)
 
+# 「标签转换维表.xlsx」写出的同名表：把 IOP 的 ITEMNAME 换成营销助手显示名字。
+# 写入侧在 registry.json 里声明 label_id / display_name / platform_label_name；
+# 在线侧只读前两列，列名在这里独立声明，不引用写入侧配置。
+LABEL_NAME_MAPPING_TABLE: Final = "label_name_mapping"
+LABEL_NAME_MAPPING_COLUMNS: Final = ("label_id", "display_name")
+
 
 # 四、分表口径与表名（物理布局；写入侧独立实现了同样的规则）
 def shard_index(product_no, num_tables: int) -> int:
@@ -388,6 +394,8 @@ __all__ = [
     "SELLING_POINTS_TABLE", "SELLING_POINTS_PRIMARY_KEY",
     "SELLING_POINTS_REQUIRED_COLUMNS", "SELLING_POINTS_OPTIONAL_COLUMNS",
     "SELLING_POINTS_TAG_COLUMNS", "SELLING_POINTS_SELECT_COLUMNS",
-    "SELLING_POINTS_SCHEMA", "shard_index", "table_name",
+    "SELLING_POINTS_SCHEMA",
+    "LABEL_NAME_MAPPING_TABLE", "LABEL_NAME_MAPPING_COLUMNS",
+    "shard_index", "table_name",
     "DbProfile", "ReadConfig", "load", "default_dimensions_db", "validate",
 ]

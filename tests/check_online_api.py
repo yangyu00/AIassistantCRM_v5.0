@@ -57,7 +57,8 @@ def call(tel: str, product_ids: list[str]) -> int:
     print(json.dumps(body, ensure_ascii=False, indent=2))
 
     # 小结：响应体可能很长，把每条话术的 code 与话术长度摘出来方便一眼扫。
-    # code="0" 表示拼出了业务话术（含诊断不适用后由平级卖点话术模块给出的四段话术）；
+    # code="0" 表示拼出了业务话术（含诊断不适用后由平级卖点话术模块给出的、
+    #         逐字符复现上一版 ProductInfoRewrite 的话术）；
     # code="2" 表示连维表里也没有该 product_id 时的空话术。
     scripts = (body.get("result") or {}).get("allScripts") or []
     print(f"小结：res_code={body.get('res_code')} | 共 {len(scripts)} 条话术")

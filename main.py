@@ -45,8 +45,10 @@ async def lifespan(app: FastAPI):
 # 后台写入侧（sftp_avl2db / local_excel2db）各自独立进程把数据写进磁盘；
 # 本进程只读磁盘上的 db 文件：读哪些库、库里有哪些列、怎么查，全部由
 # services/db_config.py 独立声明，不引用后台写入侧的任何代码或配置。
-# 每请求经 services.dimensions 批量只读一次 dimensions.db（商机标签 ID 子集、
-# 卖点话术模块所需的产品名称 /「兜底话术」/「标签N」原文），经 services.reader
+# 每请求经 services.dimensions 只读 dimensions.db：批量查 selling_points
+# （商机标签 ID 子集、卖点话术模块的产品名称 /「生成话术」/「兜底话术」/
+# 「匹配结果2」/「标签N」原文），再全表读一次 label_name_mapping（标签显示名）。
+# 两次都是 mode=ro、无进程级缓存；经 services.reader
 # 只读业务库；唯一写入是调用量统计（call_stat/runtime/call_sum.db）。
 app = FastAPI(lifespan=lifespan)
 register_errors_handlers(app)
@@ -118,23 +120,29 @@ async def marketAssistant(args: Args):
     # 2. 建立产品对象列表
     # 卖点维表按本次请求的全部 product_id 批量查一次（不缓存、不跨请求共享）：
     # 商机对象的标签 ID 子集来自该行的「标签ID」列，卖点话术模块用该行的产品
-    # 名称 /「兜底话术」/「标签N」原文；库缺失 / 未命中降级为空 dict。
+    # 名称 /「生成话术」/「兜底话术」/「匹配结果2」/「标签N」原文按上一版格式
+    # 拼话术；库缺失 / 未命中降级为空 dict。
     selling_points = dimensions.load_selling_points(
         [one.id for one in args.productId])
+    # 「标签转换维表.xlsx」写出的 label_name_mapping 表：把 IOP 的 ITEMNAME
+    # 换成营销助手显示名字，对应上一版本的 consts.label_name_mapping。
+    # 表缺失 / 列漂移降级 {}，辅助画像直接用 IOP 原名，输出结构不变。
+    label_name_mapping = dimensions.load_label_name_mapping()
     product_obj_list = []
     for one_product_obj in args.productId:
-        # 商机回捞（辅助画像）与诊断链路（话术 #标签名& → IOP 值）都需要标签，
-        # 由业务层 need_labels() 声明；提供者保证整请求最多查一次 IOP，控损
-        # 不触发查询。逐个判断等价于对全部 ID 取并集，不会因首个 ID 不需要而漏查。
-        # 卖点话术模块不消费标签；诊断由 F09629 动态命中，无法在 ID 级别预判是否
-        # 会落到卖点话术，故仍按诊断链路声明，多出的查询由提供者复用、不影响输出。
-        # 「要不要拼画像」不在这里判断：只有商机对象持有画像组件，空标签 / 空标签 ID 子集时它自然返回空串。
+        # 商机回捞（辅助画像）、诊断链路（话术 #标签名& → IOP 值）与卖点话术
+        # 模块（辅助画像 + 命中哪组切入 / 挽留话术）都需要标签，由业务层
+        # need_labels() 声明；提供者保证整请求最多查一次 IOP，控损不触发查询。
+        # 逐个判断等价于对全部 ID 取并集，不会因首个 ID 不需要而漏查。
+        # 「要不要拼画像」不在这里判断：商机对象持有画像组件，卖点话术按维表
+        # 「标签ID」子集自行拼装，空标签 / 空标签 ID 子集时自然返回空串。
         custom_label_info = (await label_provider.labels()
                              if need_labels(one_product_obj.id) else {})
         product_obj_list.append(await build_product_object(
             one_product_obj.id, args.telnum,
             custom_label_info=custom_label_info,
-            selling_points=selling_points))
+            selling_points=selling_points,
+            label_name_mapping=label_name_mapping))
 
     # 3. 输出话术
     # 商机回捞 / 控损 / 诊断 / 卖点话术四类业务对象返回 code=0；其余兜底 code=2。

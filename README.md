@@ -118,11 +118,11 @@ main.py ──> log/INFO_*.log、log/ERROR_*.log（在线进程日志写入，�
 
 1. 模块级创建唯一 `IOPClient`；FastAPI `lifespan` 的 startup / shutdown 分别 `await iop_client.start()` / `await iop_client.aclose()`。
 2. 请求内创建 `IopLabelProvider`（函数局部变量）：标签属于单个手机号，同请求最多查 1 次 IOP，任何失败降级 `{}`，不跨请求共享。
-3. 循环外调一次 `services.dimensions.load_selling_points(全部 productId)`，批量 `IN` 查 `selling_points`（`mode=ro`，每请求 1 次，无进程级缓存），得到 `{product_id: SellingPointRow}`。
-4. 逐个 `productId`：`services.routing.need_labels(id)` 决定是否取标签（商机回捞与诊断链路查，控损不查；诊断无静态 ID 白名单，除控损外均需标签），再调 `services.build_product_object(id, telnum, custom_label_info=..., selling_points=...)` 完成路由、取数与对象构造。提供者保证整请求最多查 1 次 IOP。卖点话术模块不消费标签，但「会不会落到它」要等诊断查完 8 表才知道，故 `need_labels` 仍按诊断链路声明，多出的查询由提供者复用、不影响输出。
+3. 循环外读两次 `dimensions.db`（各 1 次 `mode=ro`、无进程级缓存）：`load_selling_points(全部 productId)` 批量 `IN` 查 `selling_points` 得 `{product_id: SellingPointRow}`；`load_label_name_mapping()` 全表读 `label_name_mapping` 得 `{label_id: 营销助手显示名字}`（由「标签转换维表.xlsx」写出）。
+4. 逐个 `productId`：`services.routing.need_labels(id)` 决定是否取标签（商机回捞、诊断链路与卖点话术都查，控损不查；诊断无静态 ID 白名单，除控损外均需标签），再调 `services.build_product_object(id, telnum, custom_label_info=..., selling_points=..., label_name_mapping=...)` 完成路由、取数与对象构造。提供者保证整请求最多查 1 次 IOP。
 5. 按对象类型组装 `allScripts`；业务库未就绪时商机 / 控损仍按空记录出话术，诊断返回 `None` 后由平级的卖点话术模块接手。
 
-只有商机对象持有 `AuxiliaryPortrait` 组件；控损、诊断、卖点话术、兜底对象都不拼辅助画像。诊断链路会消费请求级 IOP 标签，把三类话术里的 `#标签名&` 换成对应 `ITEMVALUE`，但不持有画像组件；卖点话术模块既不做字段替换，也不持有画像组件。
+只有商机对象持有 `AuxiliaryPortrait` 组件；控损、诊断、兜底不拼画像。诊断链路用请求级 IOP 标签把三类话术里的 `#标签名&` 换成 `ITEMVALUE`；卖点话术不持有画像组件，但会用维表「标签ID」子集 + IOP 返回 + `label_name_mapping` 算出上一版格式的【辅助画像】字符串，并据此选标签专属话术。诊断做话术原文的占位符替换，卖点话术不做。
 
 ## 7. 五类路由（四类业务 + 兜底，顺序不可调换）
 
@@ -148,12 +148,13 @@ main.py ──> log/INFO_*.log、log/ERROR_*.log（在线进程日志写入，�
 | 商机回捞 | 四段【通话总结 / 用户需求 / 已推荐政策 / 拒绝原因】HTML | 记录缺失 / 空值填「无」；末尾按需追加【辅助画像】 |
 | 控损 | `strategy_name` 自定义标签转 HTML | 无记录输出「无历史话术记录」 |
 | 诊断 | 六段【资费名称 / 资费摘要 / 痛点诊断 / 切入话术 / 营销话术 / 挽留话术】HTML | 空值填「无」；资费名称 / 摘要取 `F09629.BUSINESS_NAME` 按【】内外拆分（同时支持 ASCII `[]`）；只认 8 张表 |
-| 卖点维表话术 | 四段【资费名称 / 资费摘要 / 切入话术 / 挽留话术】 | 与诊断平级的独立业务，不读诊断 8 表；产品名称取维表「产品名称」按【】拆分；话术取「兜底话术」列原文，为空时回退第一个非空「标签N」原文；不做字段替换 |
+| 卖点维表话术 | 四段【辅助画像 / 切入话术 / 卖点 / 挽留话术】，空段整段不出现 | 与诊断平级的独立业务，不读诊断 8 表；**输出格式逐字符复现上一版 `ProductInfoRewrite`**：段间真实 `\n`（非 `<br>`）、`【xxx】` 包 `<strong>`、切入 / 挽留前缀蓝色 span、卖点首段标红 + 标题加粗。db 列 → 段：「产品名称」→ 响应 `productName`；「生成话术」→【卖点】；「兜底话术」→【切入话术】/【挽留话术】；「匹配结果2」为空时不输出切入 / 挽留；「标签ID」+ IOP 返回 + `label_name_mapping` →【辅助画像】，IOP 命中「匹配结果2」里的 ID 时改用对应「标签N」话术；不做 `#标签名&` 字段替换 |
 
 - 诊断标签替换：切入 / 营销 / 挽留三段话术里的 `#标签名&`（如 `#客运个性化运营标签34&`）统一替换——按标签名查第 8 张表 `F09635`（主键 `tag_name`）得 `tag_id`，它即 IOP 返回的 `ITEMCODE`，用该 ITEMCODE 对应的 `ITEMVALUE` 替换整个占位符；**只作用于诊断成功 record**。卖点话术模块的原文不存在待替换字段，不收集、不替换、逐字符输出。标签名未登记、`ITEMCODE` 不存在、`ITEMVALUE` 为 `None` 或 IOP 降级 `{}` 时诊断里的占位符原样保留。
-- 辅助画像：`build_auxiliary_portrait()` 按 `标签名: <strong><span style="color:blue;">值</span></strong>; ` 逐项拼接，跳过空值，末尾加 `【辅助画像】` 前缀并 `rstrip`；空输入返回空串，不追加该段。
-- 标签 ID 子集来自卖点维表 `selling_points.label_id`（换行 / 竖线 / 逗号 / 分号及全角变体拆分、去空、保序去重），IOP 返回决定名称与值；维表决定「查哪些 ID」，IOP 决定「叫什么、值是多少」。
-- `productName`：诊断取 `record['business_name']` 原文（即 `F09629.BUSINESS_NAME`）；卖点话术取维表「产品名称」原文。
+- 辅助画像：商机侧 `build_auxiliary_portrait()` 按 `标签名: <strong><span style="color:blue;">值</span></strong>; ` 逐项拼接，跳过空值，末尾加 `【辅助画像】` 前缀并 `rstrip`；卖点话术侧 `selling_point_script.build_auxiliary_portrait()` 额外套用上一版硬编码转换（显示名映射 / `0.00→无` / 加元 / 加 M / 是否 / 降档阈值标红 / 同名去重），HTML 形状一致。空输入返回空串，不追加该段。
+- 标签 ID 子集来自卖点维表 `selling_points.label_id`（换行 / 竖线 / 逗号 / 分号及全角变体拆分、去空、保序去重），IOP 返回决定名称与值；维表决定「查哪些 ID」，IOP 决定「叫什么、值是多少」，`label_name_mapping` 表（由「标签转换维表.xlsx」写出）把 IOP 的 `ITEMNAME` 换成营销助手显示名。
+- `productName`：诊断取 `record['business_name']` 原文（即 `F09629.BUSINESS_NAME`）；卖点话术取维表「产品名称」原文（不拆资费名称 / 摘要，也不进 `output_script`）。
+- 上一版 `product_selling_point_match.py`（Excel → `consts.py`）只用于理解输出来源；这一版不复刻离线解析，直接把 `dimensions.db` 转好的 `TEXT` 原文做格式转换。
 - 库里所有话术 / 标签列只存原始文本，拆分与解析都在在线读取侧完成，不写回解析结果。
 
 ### 实现级规格索引（重建逐字符行为时按此取）
@@ -163,7 +164,7 @@ main.py ──> log/INFO_*.log、log/ERROR_*.log（在线进程日志写入，�
 | 四类业务对象的 HTML 逐字模板、控损自定义标签解析栈、辅助画像拼接 | [`services/README.md` 第 9 节](services/README.md) |
 | 商机回捞 12 列 / 控损 5 列的完整列名、类型与解析消费字段 | [`sftp_avl2db/README.md` 第 7 节](sftp_avl2db/README.md) |
 | `sftp_avl2db/.env` 67 个键的完整键名与当前取值 | [`sftp_avl2db/README.md` 第 5 节](sftp_avl2db/README.md) |
-| 诊断常量、正则、排序键、7 表关联精确调用、诊断不适用条件、卖点话术原文解析与四段组合 | [`services/README.md` 第 6 节](services/README.md) |
+| 诊断常量、正则、排序键、7 表关联精确调用、诊断不适用条件、卖点话术的 db 字段映射与上一版输出格式逐字符规格 | [`services/README.md` 第 6 节](services/README.md) |
 
 ## 9. 降级总表
 
@@ -171,10 +172,10 @@ main.py ──> log/INFO_*.log、log/ERROR_*.log（在线进程日志写入，�
 |---|---|
 | 业务库缺失 / AVL 未注册 / 查询异常 | `reader` 返回 `{}` / `[]`；商机 / 控损按空记录出话术（仍 `code: "0"`），诊断返回 `None` → 卖点话术模块，API 不 500 |
 | 分表 AVL 的 `where` 缺标量 `product_no` | 定位不到分表，返回 `[]`，不广播、不抛异常 |
-| 诊断 7 表关联任一为空 / 场景交集为空 / 六项输出全空 | 诊断返回 `None`；路由改问平级的卖点话术模块，输出四段，`code: "0"` |
+| 诊断 7 表关联任一为空 / 场景交集为空 / 六项输出全空 | 诊断返回 `None`；路由改问平级的卖点话术模块，按上一版格式输出（切入 / 卖点 / 挽留），`code: "0"` |
 | 维表中无该 `product_id` 或产品名称为空 | 卖点话术工厂返回 `None`，落 `ProductInfoRaw`（`code: "2"`） |
-| 卖点话术原文为空 | 回退第一个非空「标签N」原文；全空时切入 / 挽留段填「无」 |
-| 卖点维表库缺失 / 列漂移 / 查询异常 | `dimensions` 降级 `{}`，商机辅助画像为空，卖点话术无行可用 → `code: "2"`，其余话术段照常 |
+| 卖点话术原文为空 /「匹配结果2」为空 | 切入 / 挽留段整段不出现，只留【卖点】；不填「无」、不回退「标签N」（上一版口径） |
+| 卖点维表库缺失 / 列漂移 / 查询异常 | `dimensions` 降级 `{}`，商机辅助画像为空，卖点话术无行可用 → `code: "2"`，其余话术段照常；`label_name_mapping` 表缺失同样降级 `{}`，辅助画像直接用 IOP 原名 |
 | IOP token / 标签超时、连接失败、响应异常、冷却期 | 重试退避后降级 `{}`，不阻塞其它并发请求；商机画像为空，诊断话术里的 `#标签名&` 原样保留；卖点话术不受影响 |
 | 调用量库写入 / 启动读取失败 | 保留 `_PENDING` 下轮重试，或基数按 0 恢复，服务照常启动 |
 | 维表 xlsx 缺失 / 缺必需表头列 | 写入侧告警跳过本表，保留上次成功版本，下轮重试 |
@@ -224,7 +225,7 @@ python tests/check_call_stat.py
 python tests/check_online_api.py
 ```
 
-期望响应基线（业务库为空时）：商机 3 个 ID 返回四段各填「无」的 HTML（`code: "0"`）；控损 `202609180955095402` 返回 `script: "无历史话术记录"`（`code: "0"`）；诊断返回 `None` 后由卖点话术模块接手——维表有该行且产品名称非空时返回四段话术（`code: "0"`），维表无该行或产品名称为空才 `code: "2"`；`res_code` 恒为 `0`，非法入参恒返回 HTTP 200 + `res_code: 1`。在线冒烟脚本只打印结果、结论靠人看，不是自动断言。
+期望响应基线（业务库为空时）：商机 3 个 ID 返回四段各填「无」的 HTML（`code: "0"`）；控损 `202609180955095402` 返回 `script: "无历史话术记录"`（`code: "0"`）；诊断返回 `None` 后由卖点话术模块接手——维表有该行且产品名称非空时返回与上一版逐字符一致的 script（`code: "0"`），维表无该行或产品名称为空才 `code: "2"`；`res_code` 恒为 `0`，非法入参恒返回 HTTP 200 + `res_code: 1`。在线冒烟脚本只打印结果、结论靠人看，不是自动断言。
 
 ### 10.5 常驻进程与维护命令
 
@@ -257,6 +258,7 @@ python -m call_stat --flush                                      # 落盘未达�
 ```bash
 python -m call_stat --self-check                # 统计模块自检（临时库用完即删）
 python tests/check_diagnosis_offline.py        # 诊断端到端离线自检；缺在线依赖时第 7 段 SKIP，末尾仍打印 ALL PASS
+python tests/check_legacy_output_parity.py    # 真实 dimensions.db 全量逐字符对照上一版；库不存在时 SKIP
 python tests/check_purge_rotation.py           # 库表清理轮转自检，结论 ALL PASS
 python tests/check_online_api.py               # 在线主链路冒烟（需先起服务）
 python tests/check_param_validation.py         # 入参校验冒烟
@@ -264,16 +266,16 @@ python tests/check_call_stat.py                # 调用量 GET 冒烟
 python tests/check_iop_direct.py 13900000000   # IOP 上游直连冒烟
 ```
 
-`check_diagnosis_offline.py` 真正断言的是：`F09633` 建满 128 张分表、号码不串表、按 `telnum` 精确定位且缺 `product_no` 时降级 `[]`；写入侧 / 在线侧分表口径一致；维表「标签ID」拆分与库缺失降级；商机画像端到端来自维表 → IOP；诊断 7 表关联与六段话术、诊断不适用返回 `None`；平级卖点话术模块的原文解析、四段组合、降级边界与 `#标签名&` 原样保留；业务库未就绪时商机 / 控损按空记录出话术；五类路由输出与 `code` 按对象类型判定；商机回捞与诊断链路共用请求级 IOP 标签（整请求最多 1 次）、`F09635` 按 `tag_name` 反查并把诊断三类话术里的 `#标签名&` 换成 `ITEMVALUE`（含降级保留）。
+`check_diagnosis_offline.py` 真正断言的是：`F09633` 建满 128 张分表、号码不串表、按 `telnum` 精确定位且缺 `product_no` 时降级 `[]`；写入侧 / 在线侧分表口径一致；维表「标签ID」拆分与库缺失降级；商机画像端到端来自维表 → IOP；诊断 7 表关联与六段话术、诊断不适用返回 `None`；平级卖点话术模块（**把上一版 `ProductInfoRewrite.output_script` 的逐字符期望固化成 `EXPECTED_LEGACY_OUTPUT`**，离线与在线两处断言相等；另用 `tests/legacy_output_reference.py` 直译上一版四个历史文件，对「有 IOP 返回 + `label_name_mapping` + 标签专属话术命中」的完整输出做 golden 逐字符比对；`tests/check_legacy_output_parity.py` 再用真实 `dimensions.db` 全量（当前 1361 个 product_id × 多组 IOP 返回 = 5121 次输出）做独立 oracle 对照，含辅助画像 896 次、不一致 0；切入 / 卖点 / 挽留的蓝 / 红 span 与加粗标题、段间 `\n`、「匹配结果2」为空不输出切入挽留、按标签选话术可选路径、降级边界与 `#标签名&` 原样保留）；业务库未就绪时商机 / 控损按空记录出话术；五类路由输出与 `code` 按对象类型判定；商机回捞与诊断链路共用请求级 IOP 标签（整请求最多 1 次）、`F09635` 按 `tag_name` 反查并把诊断三类话术里的 `#标签名&` 换成 `ITEMVALUE`（含降级保留）。
 
-以下三条**不在任何自检脚本的断言里**，只由代码结构保证、需人工或另行验证，不要把它们算进 `ALL PASS`：`app.router.on_startup` 为空（lifespan 注册）、每请求只读一次 `dimensions.db`、请求间标签 / 画像隔离。调用量阈值落库、重启恢复、shutdown `flush()` 不丢尾部增量则由 `python -m call_stat --self-check` 独立断言，输出 `SELF-CHECK OK`。
+以下三条**不在任何自检脚本的断言里**，只由代码结构保证、需人工或另行验证，不要把它们算进 `ALL PASS`：`app.router.on_startup` 为空（lifespan 注册）、每请求只读 2 次 `dimensions.db`（`selling_points` + `label_name_mapping`）、请求间标签 / 画像隔离。调用量阈值落库、重启恢复、shutdown `flush()` 不丢尾部增量则由 `python -m call_stat --self-check` 独立断言，输出 `SELF-CHECK OK`。
 
 `ALL PASS` 有成立条件：`check_diagnosis_offline.py` 的第 1～6 段只用标准库 + 临时 SQLite，缺 `fastapi / pydantic / loguru / aiohttp / uvicorn` 任一都不会报错；第 7 段「在线路由」会打印全角括号的 `[SKIP] 未加载在线侧（{异常类型}: {异常信息}）`（异常类型随实际缺失的依赖变化，不只是 `uvicorn`），脚本末尾**仍然输出 `ALL PASS`**。因此 `ALL PASS` 只代表已执行段的断言通过；`import main` 与第 7 段的在线侧五类路由断言，必须先装齐在线依赖才会真正跑起来。`tests/README.md` 第 4 节也记录了这一跳过条件。
 
 ## 12. 文档索引
 
 - [`requirements.txt`](requirements.txt)：运行依赖、版本下限与安装命令
-- [`services/README.md`](services/README.md)：在线业务层分层、五类路由、读取配置、诊断 8 表取数与平级卖点话术模块
+- [`services/README.md`](services/README.md)：在线业务层分层、五类路由、读取配置、诊断 8 表取数与平级卖点话术模块（输出格式复现上一版）
 - [`IOP/README.md`](IOP/README.md)：标签客户端的入口、请求链路、上游契约、配置与并发约束
 - [`sftp_avl2db/README.md`](sftp_avl2db/README.md)：AVL 注册、表结构、解析写入、清理轮转
 - [`local_excel2db/README.md`](local_excel2db/README.md)：registry 配置、库表结构与导入流程

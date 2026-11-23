@@ -77,6 +77,41 @@ def _row_to_value(row) -> SellingPointRow:
     )
 
 
+def load_label_name_mapping() -> dict[str, str]:
+    """读「标签转换维表」→ ``{label_id: 营销助手显示名字}``。
+
+    上一版本把这份映射写进 ``consts.label_name_mapping``；db 版由
+    ``local_excel2db`` 把 ``标签转换维表.xlsx`` 落成 ``label_name_mapping``
+    表，在线侧按 ``db_config`` 声明只读两列。表缺失 / 列漂移 / 查询异常一律
+    降级 ``{}``：此时辅助画像直接用 IOP 返回的 ``ITEMNAME``，输出结构不变。
+    """
+    db = _db_path()
+    if not Path(db).is_file():
+        _warn(f"标签名称映射库不存在: {db}")
+        return {}
+    try:
+        cols = list(db_config.LABEL_NAME_MAPPING_COLUMNS)
+        quoted = ", ".join(cols)
+        uri = Path(db).resolve().as_uri() + "?mode=ro"
+        out: dict[str, str] = {}
+        conn = sqlite3.connect(uri, uri=True)
+        try:
+            sql = (f"SELECT {quoted} FROM "
+                   f"{db_config.LABEL_NAME_MAPPING_TABLE}")
+            for row in conn.execute(sql):
+                d = dict(zip(cols, row))
+                label_id = str(d.get("label_id") or "").strip()
+                display_name = str(d.get("display_name") or "").strip()
+                if label_id and display_name:
+                    out[label_id] = display_name
+        finally:
+            conn.close()
+        return out
+    except Exception as e:
+        _error(f"读取标签名称映射失败: {e}")
+        return {}
+
+
 def load_selling_points(product_ids) -> dict[str, SellingPointRow]:
     """按 product_id 批量取卖点维表行。"""
     # 去重保序：同一请求里重复的产品 ID 只查一次
@@ -120,4 +155,4 @@ def load_selling_points(product_ids) -> dict[str, SellingPointRow]:
 
 
 __all__ = ["SellingPointRow", "split_label_ids", "configure",
-           "load_selling_points"]
+           "load_selling_points", "load_label_name_mapping"]

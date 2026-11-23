@@ -45,7 +45,7 @@ python -m sftp_avl2db --task F09591 --date 20261110 \
 
 **维表 Excel**（只吃两个 `.xlsx`，且见下节）
 
-`local_excel2db` 按包内 `registry.json` 的 `source`（纯文件名）从项目根 `excels/` 轮询 xlsx、抽列写入 `local_excel2db/runtime/sqlite_db/dimensions.db`；在线侧经 `services/dimensions.py` 每请求只读一次该库，按 `product_id` 取 `selling_points.label_id`（Excel「标签ID」）拼商机辅助画像；诊断 8 表不适用时，由平级的卖点话术模块取该行的产品名称 /「兜底话术」/「标签N」原文拼四段话术。
+`local_excel2db` 按包内 `registry.json` 的 `source`（纯文件名）从项目根 `excels/` 轮询 xlsx、抽列写入 `local_excel2db/runtime/sqlite_db/dimensions.db`；在线侧经 `services/dimensions.py` 每请求只读一次该库，按 `product_id` 取 `selling_points.label_id`（Excel「标签ID」）拼商机辅助画像；诊断 8 表不适用时，由平级的卖点话术模块把该行的产品名称 /「生成话术」/「兜底话术」/「匹配结果2」/「标签N」原文转换成上一版 `ProductInfoRewrite` 的输出格式。
 
 ## 3. 维表 Excel 的实际目录：`excels/`
 

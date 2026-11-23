@@ -26,13 +26,10 @@ def need_labels(product_id):
     """该 ``product_id`` 是否需要查 IOP 标签。
 
     商机回捞用标签拼【辅助画像】；诊断链路用标签把三类话术里的
-    ``#标签名&`` 换成 IOP 的 ITEMVALUE。诊断由 F09629 动态命中、没有静态
-    ID 白名单，因此除控损外一律返回 True；标签由 main.py 的请求级提供者
+    ``#标签名&`` 换成 IOP 的 ITEMVALUE；卖点话术模块同样要用 IOP 返回拼
+    【辅助画像】并决定命中哪组切入 / 挽留话术。诊断由 F09629 动态命中、没有
+    静态 ID 白名单，因此除控损外一律返回 True；标签由 main.py 的请求级提供者
     保证整请求最多查 1 次 IOP，不会跨请求共享。
-
-    卖点话术模块不消费标签、不做占位符替换。但由于「会不会落到卖点话术」
-    要等诊断查完 8 表才知道，product_id 级别无法预判，故这里仍按诊断链路
-    声明；多查到的那一次由请求级 provider 复用，不影响卖点话术输出。
     """
     return product_id not in LOSS_CONTROL_PRODUCT_IDS
 
@@ -48,7 +45,7 @@ BUSINESS_OBJECT_TYPES = (
 
 
 async def build_product_object(product_id, telnum, *, custom_label_info,
-                               selling_points):
+                               selling_points, label_name_mapping=None):
     """按「四类业务 + 兜底」顺序构造一个产品对象。"""
     # 1. 商机回捞（3 个 ID）：单条记录，即使库里无记录也按空记录出四段话术；
     #    唯一持有辅助画像组件
@@ -71,9 +68,11 @@ async def build_product_object(product_id, telnum, *, custom_label_info,
     if diagnosis_record:
         return ProductInfoByDiagnosis(product_id, diagnosis_record)
 
-    # 4. 卖点维表话术：与商机 / 控损 / 诊断平级的独立业务。只消费维表行，
-    #    不查诊断 8 表、不收 custom_label_info、不做 #标签名& 替换。
-    sp_obj = build_selling_point_object(product_id, selling_points)
+    # 4. 卖点维表话术：与商机 / 控损 / 诊断平级的独立业务。消费维表行 +
+    #    请求级 IOP 返回 + 标签显示名映射，复现上一版本的话术输出格式；
+    #    不查诊断 8 表、不做 #标签名& 替换。
+    sp_obj = build_selling_point_object(
+        product_id, selling_points, custom_label_info, label_name_mapping)
     if sp_obj is not None:
         return sp_obj
 
