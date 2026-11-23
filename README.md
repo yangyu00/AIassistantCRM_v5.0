@@ -53,6 +53,7 @@ main.py ──> log/INFO_*.log、log/ERROR_*.log（在线进程日志写入，�
 - 固定表名 = `{AVL}`，分表名 = `{AVL}_{分表号}`，分表号 `zlib.crc32(str(product_no)) % NUM_TABLES`。
 - `F09591`（控损）与 `F09633`（诊断·用户场景对应关系）按 `product_no` 分表，默认 128 张；`F09633` 是千万级表，分表键与在线查询键一致，一次请求只命中一张分表。
 - 写入侧与在线侧各自独立声明库路径、表字段与分表数，代码 / 配置互不引用；唯一交集是磁盘上的 db 文件。改列顺序、分表数或库路径必须同步两侧声明（写入侧 `sftp_avl2db/table_schemas.py`、`avl_specs.py`、`.env`；在线侧 `services/db_config.py`、`services/.env`）。改分表数须重灌对应 AVL 全量数据。
+- 每个 `{AVL}.db` 内另有 `_avl_meta` 批次水位表（写入侧维护、在线侧按同名只读），用于把查询限定在最近 `N` 个 `op_time` 批次；不参与分表与过期清理。
 - 商机、控损、诊断的 AVL 归属与库文件见 [`sftp_avl2db/README.md`](sftp_avl2db/README.md) 与 [`services/README.md`](services/README.md)。
 
 ## 4. 配置来源
@@ -62,7 +63,7 @@ main.py ──> log/INFO_*.log、log/ERROR_*.log（在线进程日志写入，�
 | IOP 客户端 | `IOP/.env`（20 键） | `IOPConfig.load()` | 回落 `config.py` 内置默认值 |
 | SFTP 写入 | `sftp_avl2db/.env`（67 键） | `load_profiles()` | 缺任一键直接 fail-fast |
 | 调用量统计 | `call_stat/.env`（4 键） | `load_config()` | 回落 `config.py` 内置默认值并告警 |
-| 在线读取 | `services/.env`（4 键） | `db_config.load()` | 回落 `db_config.py` 代码内默认值 |
+| 在线读取 | `services/.env`（5 键） | `db_config.load()` | 回落 `db_config.py` 代码内默认值 |
 | 维表写入 | `local_excel2db/registry.json` | `load_registry()` | 配置损坏退出码 2 |
 | 在线服务 | `main.py` 顶部常量 | — | `LOG_DIR`、`FASTAPI_CONFIG`、`MARKET_ASSISTANT_URL`、`MARKET_ASSISTANT_USERS` |
 
@@ -71,7 +72,7 @@ main.py ──> log/INFO_*.log、log/ERROR_*.log（在线进程日志写入，�
 关键键名：
 
 - `IOP/.env`：`IOP_TOKEN_HOST/PORT/ID/SECRET`、`IOP_CUSTINFO_HOST/PORT/VERSION/TYPE`、`IOP_TIMEOUT_TOTAL/CONNECT/SOCK_READ`、`IOP_RETRY_MAX_ATTEMPTS/BACKOFF_BASE/BACKOFF_FACTOR/BACKOFF_MAX/COOLDOWN`、`IOP_LIFETIME_DEFAULT_EXPIRES_IN/REFRESH_BUFFER/MIN_LIFETIME/MAX_EXPIRES_IN`。
-- `services/.env`：`AVL_DB_ROOT`、`DIMENSIONS_DB`、`LOSS_CONTROL_NUM_TABLES`、`F09633_NUM_TABLES`。
+- `services/.env`：`AVL_DB_ROOT`、`DIMENSIONS_DB`、`LOSS_CONTROL_NUM_TABLES`、`F09633_NUM_TABLES`、`AVL_FRESHNESS_WINDOW_DAYS`（默认 `2`，`0` 关闭新鲜度过滤）。
 - `call_stat/.env`：`CALL_STAT_FLUSH_THRESHOLD`（默认 100）、`CALL_STAT_QUERY_PATH`（默认 `/api/callStat`）、`CALL_STAT_DB_FILENAME`（默认 `call_sum.db`）、`CALL_STAT_EXPORT_DIRNAME`（默认 `export`）。
 - `sftp_avl2db/.env`：SFTP 公共 5 项 + 每个 AVL 的 `<AVL>_BATCH_SIZE / _DATA_EXPIRE_DAYS / _LOCAL_FILE_EXPIRE_DAYS / _POLL_INTERVAL_SECONDS / _PURGE_CYCLE_DAYS`，分表 AVL 另加 `<AVL>_NUM_TABLES`；无项目级键。
 

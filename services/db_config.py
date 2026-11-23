@@ -25,6 +25,16 @@ NUM_TABLES_ENV_KEYS: Final = {
 }
 NUM_TABLES_DEFAULTS: Final = {"F09591": 128, "F09633": 128}
 
+# 业务表的时间列（排序 / 新鲜度过滤都只认这一个静态列名，不接受外部字符串）。
+TIME_COLUMN: Final = "op_time"
+# 写入侧在每个 {AVL}.db 内维护的批次元数据表；在线侧按同名只读。
+# 两侧各自声明，磁盘上的 db 文件是唯一交集。
+AVL_META_TABLE: Final = "_avl_meta"
+# 新鲜度窗口：只召回 op_time 落在 [最新批次-(N-1)天, 最新批次] 的数据。
+# N=0 表示关闭（保持旧行为）；N=1 表示只要最新一批。
+DEFAULT_FRESHNESS_WINDOW_DAYS: Final = 2
+FRESHNESS_WINDOW_ENV_KEY: Final = "AVL_FRESHNESS_WINDOW_DAYS"
+
 # 一、各业务库的表字段（与写入侧建表 DDL 对齐；冗余声明便于在线侧独立理解）
 #     key = schema 名；值 = ((列名, 类型), ...)，顺序即 SELECT * 的列顺序
 TABLE_SCHEMAS: Final[Mapping[str, tuple[tuple[str, str], ...]]] = {
@@ -214,6 +224,8 @@ class ReadConfig:
     avl_db_root: Path
     dimensions_db: Path
     profiles: Mapping[str, DbProfile]
+    # 0 = 关闭新鲜度过滤；N >= 1 = 只召回最近 N 个 op_time 日期的批次。
+    freshness_window_days: int = DEFAULT_FRESHNESS_WINDOW_DAYS
 
 
 def _read_env(path) -> dict[str, str]:
@@ -242,6 +254,16 @@ def _positive_int(raw: str, key: str) -> int:
     return n
 
 
+def _nonnegative_int(raw: str, key: str) -> int:
+    try:
+        n = int(raw)
+    except ValueError as e:
+        raise ValueError(f"{key} 必须是非负整数，当前为 {raw!r}") from e
+    if n < 0:
+        raise ValueError(f"{key} 必须是非负整数，当前为 {n}")
+    return n
+
+
 def _resolve_path(raw: str | None, default: Path) -> Path:
     """没配就用代码常量。"""
     if raw is None or not str(raw).strip():
@@ -251,7 +273,8 @@ def _resolve_path(raw: str | None, default: Path) -> Path:
 
 
 def _build(root: Path, dimensions_db: Path,
-           num_tables: Mapping[str, int]) -> ReadConfig:
+           num_tables: Mapping[str, int],
+           freshness_window_days: int = DEFAULT_FRESHNESS_WINDOW_DAYS) -> ReadConfig:
     profiles = {}
     for name, spec in AVL_DB_SPECS.items():
         cols = TABLE_SCHEMAS[spec.schema]
@@ -269,7 +292,8 @@ def _build(root: Path, dimensions_db: Path,
             num_tables=num_tables.get(name, 0) if spec.sharded else 0,
         )
     return ReadConfig(avl_db_root=root, dimensions_db=dimensions_db,
-                      profiles=profiles)
+                      profiles=profiles,
+                      freshness_window_days=freshness_window_days)
 
 
 def _from_env(env_path: Path) -> ReadConfig:
@@ -281,7 +305,11 @@ def _from_env(env_path: Path) -> ReadConfig:
     for avl, key in NUM_TABLES_ENV_KEYS.items():
         if key in v:
             nts[avl] = _positive_int(v[key], key)
-    return _build(root, dimensions_db, nts)
+    window = (DEFAULT_FRESHNESS_WINDOW_DAYS
+              if FRESHNESS_WINDOW_ENV_KEY not in v
+              else _nonnegative_int(v[FRESHNESS_WINDOW_ENV_KEY],
+                                    FRESHNESS_WINDOW_ENV_KEY))
+    return _build(root, dimensions_db, nts, window)
 
 
 @lru_cache(maxsize=1)
@@ -291,10 +319,10 @@ def _defaults() -> ReadConfig:
 
 
 def load(*, avl_db_root=None, dimensions_db=None, num_tables=None,
-         env_path=None) -> ReadConfig:
+         env_path=None, freshness_window_days=None) -> ReadConfig:
     """装配在线侧读取配置。"""
     if (env_path is None and avl_db_root is None and dimensions_db is None
-            and num_tables is None):
+            and num_tables is None and freshness_window_days is None):
         return _defaults()
     base = (_defaults() if env_path is None
             else _from_env(Path(env_path)))
@@ -307,7 +335,10 @@ def load(*, avl_db_root=None, dimensions_db=None, num_tables=None,
     if num_tables:
         nts.update({k: _positive_int(str(v), f"{k}_NUM_TABLES")
                     for k, v in num_tables.items()})
-    return _build(root, dim, nts)
+    window = (base.freshness_window_days if freshness_window_days is None
+              else _nonnegative_int(str(freshness_window_days),
+                                    FRESHNESS_WINDOW_ENV_KEY))
+    return _build(root, dim, nts, window)
 
 
 def default_dimensions_db() -> Path:
@@ -318,12 +349,18 @@ def default_dimensions_db() -> Path:
 def validate(config) -> None:
     """在线侧自己的契约校验：列 / 查询键 / 排序 / 分表声明逐一核对。"""
     profiles = config.profiles if isinstance(config, ReadConfig) else config
+    if (isinstance(config, ReadConfig)
+            and config.freshness_window_days < 0):
+        raise ValueError(
+            f"freshness_window_days 不能为负：{config.freshness_window_days}")
     if set(profiles) != set(AVL_DB_SPECS):
         raise ValueError(
             "读取配置的 AVL 集合与 AVL_DB_SPECS 不一致；"
             f"spec={sorted(AVL_DB_SPECS)} config={sorted(profiles)}")
     for name, p in profiles.items():
         cols = set(p.columns)
+        if TIME_COLUMN not in cols:
+            raise ValueError(f"{name}: 表结构缺少 {TIME_COLUMN} 列")
         for col in p.where:
             if col not in cols:
                 raise ValueError(
@@ -343,6 +380,8 @@ def validate(config) -> None:
 
 __all__ = [
     "ENV_PATH", "DEFAULT_AVL_DB_ROOT", "DEFAULT_DIMENSIONS_DB",
+    "TIME_COLUMN", "AVL_META_TABLE", "DEFAULT_FRESHNESS_WINDOW_DAYS",
+    "FRESHNESS_WINDOW_ENV_KEY",
     "TABLE_SCHEMAS", "TABLE_PRIMARY_KEYS", "AVL_DB_SPECS", "AvlDbSpec",
     "SELLING_POINTS_TABLE", "SELLING_POINTS_PRIMARY_KEY",
     "SELLING_POINTS_REQUIRED_COLUMNS", "SELLING_POINTS_OPTIONAL_COLUMNS",

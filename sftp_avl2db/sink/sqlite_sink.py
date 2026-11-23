@@ -2,12 +2,19 @@
 """SQLite 写入层：建表 / 流式分批写 / 过期清理。"""
 from __future__ import annotations
 
+import re
 import sqlite3
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
-from .schema import TableSchema
+from .schema import (
+    TableSchema, create_meta_table_sql, upsert_meta_sql,
+)
+
+# 远程文件名 {AVL}{YYYYMMDD}000000.AVL：取末尾 000000 之前的 8 位日期。
+_FILE_DATE_RE = re.compile(r"(\d{8})000000$")
 
 
 def _configure(conn: sqlite3.Connection) -> sqlite3.Cursor:
@@ -27,6 +34,7 @@ class WriteStats:
     commits: int = 0          # commit 次数
     connections: int = 0      # 打开的 sqlite 连接数
     purged: int = 0           # 最近一次 purge_expired 删除的行数
+    max_op_time: str = ""     # 本文件写入记录里最大的 op_time（原样文本）
     errors: list[tuple[str, str]] = field(default_factory=list)  # [(库路径, 异常文本)]
 
 
@@ -62,6 +70,8 @@ class SqliteSink:
                 cur = _configure(conn)
                 for t in tables:
                     cur.execute(self.schema.create_table_sql(t))
+                # 元数据表与业务表同库，但不进 layout，不参与分表 / 过期清理。
+                cur.execute(create_meta_table_sql())
                 conn.commit()
             finally:
                 conn.close()
@@ -80,10 +90,57 @@ class SqliteSink:
         self.stats.batches += 1
         self.stats.commits += 1
 
+    def _time_index(self) -> int:
+        """``op_time`` 列下标；表结构没有时间列时返回 -1（不收集水位）。"""
+        try:
+            return self.schema.column_names.index(self.schema.time_column)
+        except ValueError:
+            return -1
+
+    @staticmethod
+    def _file_date(filename: str) -> str:
+        """从 ``{AVL}{YYYYMMDD}000000.AVL`` 取文件名日期；无法识别返回空串。"""
+        m = _FILE_DATE_RE.search(Path(filename).stem)
+        return m.group(1) if m else ""
+
+    def _record_metadata(self, filename: str, layout) -> None:
+        """入库成功后推进 ``_avl_meta`` 水位。
+
+        元数据写失败只记 ``stats.errors``：不回滚业务数据，也不阻断
+        ``runner`` 登记清单（否则会触发无意义的重复拉取）。
+        """
+        file_date = self._file_date(filename)
+        if not file_date:
+            return
+        targets = list(layout.all_targets())
+        if not targets:
+            return
+        db_path = Path(targets[0][0])
+        try:
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(str(db_path))
+            try:
+                _configure(conn)
+                # 幂等：即使调用方没先跑 ensure_schema() 也能登记。
+                conn.execute(create_meta_table_sql())
+                conn.execute(upsert_meta_sql(), (
+                    self.profile.name,
+                    file_date,
+                    self.stats.max_op_time,
+                    Path(filename).name,
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                ))
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as e:
+            self.stats.errors.append((str(db_path), f"meta: {e}"))
+
     def write(self, filename: str, rows: Iterable[tuple], layout=None) -> int:
-        """把解析器产出的记录按布局分桶、逐桶满批提交。"""
+        """把解析器产出的记录按布局分桶、逐桶满批提交，并登记批次水位。"""
         layout = self.layout if layout is None else layout
         self.stats = WriteStats()
+        time_index = self._time_index()
 
         conns: dict[str, sqlite3.Connection] = {}
         batches: dict[tuple[str, str], list] = {}
@@ -92,6 +149,10 @@ class SqliteSink:
             for row in rows:
                 row = tuple(row)
                 self.schema.validate_row(row)
+                if time_index >= 0:
+                    op_time = str(row[time_index])
+                    if op_time > self.stats.max_op_time:
+                        self.stats.max_op_time = op_time
                 db_path, table = layout.target(filename, row)
                 db_path = Path(db_path)
                 db_key = str(db_path)
@@ -112,8 +173,6 @@ class SqliteSink:
                 if batch:
                     self._flush(conns[db_key], table, batch)
                     batch.clear()
-
-            return self.stats.rows
         except Exception:
             for conn in conns.values():
                 try:
@@ -126,6 +185,10 @@ class SqliteSink:
                 conn.close()
             conns.clear()
             batches.clear()
+
+        # 业务数据已全部提交且没有异常：才推进水位。
+        self._record_metadata(filename, layout)
+        return self.stats.rows
 
     def purge_expired(self, cutoff: str,
                       tables: Iterable[str] | None = None) -> int:

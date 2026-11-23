@@ -3,7 +3,7 @@
 部署后 / 联调时手动跑的冒烟脚本，不是 pytest 单元测试：没有 `test_` 开头的函数、没有 fixture，文件名也故意不叫 `test_*.py`，避免被 pytest 收集。按是否联网分两类：
 
 - **在线冒烟**：`check_online_api.py` / `check_param_validation.py` / `check_call_stat.py` / `check_iop_direct.py` —— 跑一次、发真实请求、打印响应，不打桩、不 mock，会真实访问在线服务或 IOP 上游，结论靠人看；
-- **离线自检**：`check_diagnosis_offline.py` / `check_purge_rotation.py` —— 不打任何服务，用临时 SQLite + 内存桩 / 桩时钟跑断言，打印 `ALL PASS`，临时产物跑完即删。
+- **离线自检**：`check_diagnosis_offline.py` / `check_purge_rotation.py` / `check_avl_freshness.py` —— 不打任何服务，用临时 SQLite + 内存桩 / 桩时钟跑断言，打印 `ALL PASS`，临时产物跑完即删。
 
 ## 1. 前置条件
 
@@ -29,6 +29,7 @@ export CRM_SMOKE_BASE_URL=http://10.0.0.5:8989
 | `check_iop_direct.py` | IOP 上游（不经在线服务） | 单独查标签画像，用来区分「上游挂了」还是「在线编排有问题」 |
 | `check_diagnosis_offline.py` | 不打任何服务（临时 SQLite + 内存桩） | 诊断端到端自检：注册 / 解析 / 入库 → `F09633` 分表（128 张、号码不串表、按 telnum 定位）→ 卖点维表 → 商机标签 ID / 辅助画像 → 业务包命名与商机 / 控损话术输出 → 业务库未就绪时按空记录出话术 → 诊断兜底（话术原文解析、「兜底话术」优先、db 查空 / 交集空 / 话术原文全空三种触发、四段输出；只有商机回捞触发 IOP 查询）→ `services.reader` 多行查询 → 7 表关联 → 话术拼装 → 路由（含兜底 `code=0`），结论 `ALL PASS` |
 | `check_purge_rotation.py` | 不打任何服务（临时 SQLite + 桩时钟） | 库表清理轮转自检：AVL 粒度配置（缺键 fail-fast / 逐 AVL 独立取值）/ 7 组并集覆盖 128 张表且组间互斥 / `cycle=0` 行为 / 固定表每日全清 / 每天只触发一次 `purge_expired()` / 跨 7 天过期行全清而新鲜行保留 / 单次补跑一次全量清，结论 `ALL PASS` |
+| `check_avl_freshness.py` | 不打任何服务（临时 SQLite） | AVL 批次新鲜度窗口自检：`_avl_meta` 水位登记 / 补跑旧文件不回退 / 窗口下界 / 单条倒序取最新 / 多条收敛到最新批次 / `N=0` 与元数据表缺失降级，结论 `ALL PASS` |
 
 ## 3. 运行
 
@@ -58,6 +59,9 @@ python tests/check_diagnosis_offline.py
 
 # 库表清理轮转自检：不写包内 runtime/，临时库跑完即删
 python tests/check_purge_rotation.py
+
+# AVL 批次新鲜度窗口自检：不写包内 runtime/，临时库跑完即删
+python tests/check_avl_freshness.py
 ```
 
 ## 4. 副作用与注意

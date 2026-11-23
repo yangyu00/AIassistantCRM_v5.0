@@ -159,7 +159,8 @@ runtime/
 
 ## 7. AVL 与库表契约
 
-- 业务数据日期 `op_time` 取自 AVL 第 1 列，代码不做日期改写；文件名 `YYYYMMDD` 是文件生成日。补跑时 `--date` 填文件名日期，过期清理按 `op_time` 列。
+- 业务数据日期 `op_time` 取自 AVL 第 1 列，代码不做日期改写；文件名 `YYYYMMDD` 是文件生成日。补跑时 `--date` 填文件名日期，过期清理按 `op_time` 列。**当前样例数据里 `op_time` 全是文件名日期 - 1 天，但这只是上游事实，不是代码约束**：写入侧不按文件名推算、也不改写日期，在线侧的新鲜度窗口同样以数据里的 `op_time` 为基准。
+- 每个 `{AVL}.db` 另有一张 `_avl_meta`（不进 layout、不参与分表路由与过期清理）：`SqliteSink.write()` 成功提交后按文件名日期登记 `latest_file_date` / `latest_op_time`，只在日期不早于已记录值时推进，补跑旧文件不回退；在线侧按同名只读，用来限定查询的新鲜度窗口（见 `services/README.md` 第 4.1 节）。元数据写失败只记 `stats.errors`，不回滚业务数据、不阻断清单登记。
 - 表名不用声明：固定表 = `{AVL}`，分表 = `{AVL}_{分表号}`，由 `avl_specs.table_name()` 统一派生。
 - **回捞商机**（`F09554/55/56`）：一行一条、无续行，逻辑 12 列；`product_no` 为 `TEXT NOT NULL` 主键，为空跳过；列数不足补空串、超出截断，所有列原样保留文本（末列 `city_id` 声明为 INTEGER，由 SQLite 列亲和性转换）。
 - **控损**（`F09591`）：逻辑 5 列，`strategy_name` 含裸换行需续行拼接；`product_no` 为主键与分表键。单个 `F09591.db` 内 128 张表 `F09591_0 … 127`，路由为 `zlib.crc32(product_no.encode("utf-8")) % NUM_TABLES`。写入用 `INSERT OR REPLACE`，批量补跑按文件名日期升序。

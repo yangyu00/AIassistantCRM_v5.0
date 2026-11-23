@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from datetime import datetime, timedelta
 
 from services import db_config
 
@@ -23,7 +24,8 @@ def configure(config) -> None:
         _CONFIG = db_config.ReadConfig(
             avl_db_root=db_config.DEFAULT_AVL_DB_ROOT,
             dimensions_db=db_config.default_dimensions_db(),
-            profiles=config)
+            profiles=config,
+            freshness_window_days=_CONFIG.freshness_window_days)
     db_config.validate(_CONFIG)
     PROFILES = _CONFIG.profiles
 
@@ -34,6 +36,40 @@ def _warn(msg):
 
 def _error(msg):
     print(f"ERROR:: {msg}", flush=True)
+
+
+def _latest_op_time(conn, avl):
+    """同连接读写入侧登记的批次水位。
+
+    元数据表缺失 / 无行 / 窗口关闭都返回 ``None``，此时查询完全退回旧行为，
+    保证没有升级写入侧的库、离线自检临时库都能正常工作。
+    """
+    if _CONFIG.freshness_window_days <= 0:
+        return None
+    try:
+        row = conn.execute(
+            f"SELECT latest_op_time FROM {db_config.AVL_META_TABLE} "
+            "WHERE avl = ?", (avl,)).fetchone()
+    except sqlite3.Error:
+        return None
+    return row[0] if row and row[0] else None
+
+
+def _cutoff(latest_op_time):
+    """窗口下界 = 最新数据日期 - (N-1) 天。
+
+    N 表示「保留最近 N 个 op_time 日期」：N=2、最新 21 日 → 下界 20 日。
+    以数据里的 ``op_time`` 为基准，不依赖「op_time = 文件日期 - 1」这一
+    当前事实；日期文本不是 YYYY-MM-DD 时降级不做过滤，避免误杀。
+    """
+    window = _CONFIG.freshness_window_days
+    if window <= 0 or not latest_op_time:
+        return None
+    try:
+        day = datetime.strptime(str(latest_op_time)[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
+    return (day - timedelta(days=window - 1)).isoformat()
 
 
 def _shard(conf, where):
@@ -66,8 +102,8 @@ def _build_where(columns, where):
     return clauses, values
 
 
-def _resolve(avl, key):
-    """单条查询：由 AVL 前缀算出 (db_path, sql, columns, values)。"""
+def _resolve(avl, key, cutoff=None):
+    """单条查询：倒序取最新一条；有水位时先按窗口滤掉过时批次。"""
     conf = PROFILES[avl]
     db_path = conf.db_path
     where_values = {col: key for col in conf.where}
@@ -75,15 +111,19 @@ def _resolve(avl, key):
     # 固定表的 _shard 直接返回 None。分表键与查询键由 db_config.validate() 保证一致。
     table = db_config.table_name(avl, _shard(conf, where_values))
     columns = list(conf.columns)
+    clauses = [f"{col} = ?" for col in conf.where]
     values = [where_values[col] for col in conf.where]
-    where_sql = " AND ".join(f"{col} = ?" for col in conf.where)
+    if cutoff:
+        clauses.append(f"{db_config.TIME_COLUMN} >= ?")
+        values.append(cutoff)
+    where_sql = " AND ".join(clauses)
     order_sql = f" ORDER BY {conf.order_by}" if conf.order_by else ""
     sql = f"SELECT * FROM {table} WHERE {where_sql}{order_sql} LIMIT 1"
     return db_path, sql, columns, values
 
 
-def _resolve_many(avl, where, limit=None):
-    """多行查询：由 AVL 前缀与条件算出 (db_path, sql, columns, values)。"""
+def _resolve_many(avl, where, limit=None, cutoff=None):
+    """多行查询：有水位时只返回窗口内 ``op_time`` 最大的那一批。"""
     conf = PROFILES[avl]
     db_path = conf.db_path
     table = db_config.table_name(avl, _shard(conf, where))
@@ -94,9 +134,18 @@ def _resolve_many(avl, where, limit=None):
         return None
     clauses, values = built
 
-    sql = f"SELECT * FROM {table}"
-    if clauses:
-        sql += " WHERE " + " AND ".join(clauses)
+    if cutoff:
+        # 先框窗口，再在结果集内收敛到最新批次；CTE 避免重复拼接 where 条件。
+        clauses.append(f"{db_config.TIME_COLUMN} >= ?")
+        values.append(cutoff)
+        inner = " AND ".join(clauses) if clauses else "1"
+        t = db_config.TIME_COLUMN
+        sql = (f"WITH base AS (SELECT * FROM {table} WHERE {inner}) "
+               f"SELECT * FROM base WHERE {t} = (SELECT MAX({t}) FROM base)")
+    else:
+        sql = f"SELECT * FROM {table}"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
     # 排序常量来自 db_config 的静态声明，不接受外部字符串。
     if conf.order_by:
         sql += f" ORDER BY {conf.order_by}"
@@ -107,13 +156,15 @@ def _resolve_many(avl, where, limit=None):
 
 
 def _query(avl, key):
-    db_path, sql, columns, values = _resolve(avl, key)
+    db_path = PROFILES[avl].db_path
     if not os.path.isfile(db_path):
         _warn(f"数据库文件不存在: {db_path}")
         return {}
     try:
         conn = sqlite3.connect(str(db_path))
         try:
+            cutoff = _cutoff(_latest_op_time(conn, avl))
+            _, sql, columns, values = _resolve(avl, key, cutoff=cutoff)
             row = conn.execute(sql, tuple(values)).fetchone()
         finally:
             conn.close()
@@ -124,16 +175,18 @@ def _query(avl, key):
 
 
 def _query_many(avl, where, limit=None):
-    resolved = _resolve_many(avl, where, limit=limit)
-    if resolved is None:
-        return []
-    db_path, sql, columns, values = resolved
+    db_path = PROFILES[avl].db_path
     if not os.path.isfile(db_path):
         _warn(f"数据库文件不存在: {db_path}")
         return []
     try:
         conn = sqlite3.connect(str(db_path))
         try:
+            cutoff = _cutoff(_latest_op_time(conn, avl))
+            resolved = _resolve_many(avl, where, limit=limit, cutoff=cutoff)
+            if resolved is None:
+                return []
+            _, sql, columns, values = resolved
             rows = conn.execute(sql, tuple(values)).fetchall()
         finally:
             conn.close()

@@ -78,6 +78,21 @@
 - 模块级 `_CONFIG = db_config.load()` + `db_config.validate(...)` 在首次 import 本模块时装配；`db_config` 支持没有 `services/.env` 的干净检出。
 - 离线打桩：`reader.configure(db_config.load(avl_db_root=临时目录, dimensions_db=临时维表库))`。
 
+#### 4.1 AVL 批次新鲜度窗口
+
+`INSERT OR REPLACE` 只覆盖「本批出现过的主键」，上游不再下发的主键会带着旧 `op_time` 留在库里。在线侧用一个变量把这些过时行挡在查询外：
+
+| 项 | 位置 | 说明 |
+|---|---|---|
+| 批次水位 | 写入侧在每个 `{AVL}.db` 内维护的 `_avl_meta` 表 | 一行 / AVL：`latest_file_date`（文件名日期）、`latest_op_time`（该批数据最大 `op_time`）、`last_filename`、`updated_at`；只在「新文件日期 ≥ 已记录日期」时推进，补跑旧文件不回退 |
+| 变量 `AVL_FRESHNESS_WINDOW_DAYS` | `services/.env`（默认 `2`，`0` 关闭） | `N` = 只召回 `op_time ∈ [最新批次-(N-1)天, 最新批次]` 的数据。以数据里的 `op_time` 为基准，不依赖「`op_time` = 文件日期 - 1」这一当前事实 |
+
+- **单条** `query()`：`op_time >= 下界` + `ORDER BY op_time DESC LIMIT 1`（窗口内取最新一条）。
+- **多条** `query_many()` / `query_in()`：先按窗口过滤，再在**结果集内**收敛到 `op_time = MAX(op_time)` 的那一批。例：最新批次 21 日、`N=2`（下界 20 日），结果里同时有 20 / 21 日 → 只返回 21 日集合。
+- 下界由 `_cutoff()` 按 `YYYY-MM-DD` 计算；水位表缺失 / 无行 / 日期格式异常 / `N=0` 一律降级为不过滤，旧库与离线自检临时库无需改动。
+- 水位与业务查询在**同一个 sqlite 连接**里读取，每请求不增加额外连接；`_avl_meta` 不进分表布局，也不被 `purge_expired()` 清理。
+- 自检：`python tests/check_avl_freshness.py`。
+
 两个分表 AVL：
 
 | AVL | 业务 | 分表键 | 在线查询键 | 分表数（`db_config` 声明） |

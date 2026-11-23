@@ -3,7 +3,40 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Final, Iterable
+
+
+# 每个 {AVL}.db 内的批次元数据表（写入侧维护，在线侧按同名只读）。
+# 表名带下划线前缀，不与业务表 {AVL} / {AVL}_{分表号} 冲突；它不进
+# layout.all_targets()，因此不参与分表路由、也不被 purge_expired() 清理。
+AVL_META_TABLE: Final[str] = "_avl_meta"
+
+
+def create_meta_table_sql() -> str:
+    """批次元数据表：一个 AVL 一行，记录「最新成功入库的文件日期 / 数据日期」。"""
+    return (
+        f"CREATE TABLE IF NOT EXISTS {AVL_META_TABLE} ("
+        "avl TEXT PRIMARY KEY, "
+        "latest_file_date TEXT NOT NULL, "   # YYYYMMDD，来自文件名
+        "latest_op_time TEXT NOT NULL, "     # 该批数据里最大的 op_time（原样文本）
+        "last_filename TEXT NOT NULL, "
+        "updated_at TEXT NOT NULL)"
+    )
+
+
+def upsert_meta_sql() -> str:
+    """只在新文件日期不早于已记录日期时推进，避免补跑旧文件把水位拉回去。"""
+    return (
+        f"INSERT INTO {AVL_META_TABLE} "
+        "(avl, latest_file_date, latest_op_time, last_filename, updated_at) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(avl) DO UPDATE SET "
+        "latest_file_date = excluded.latest_file_date, "
+        "latest_op_time = excluded.latest_op_time, "
+        "last_filename = excluded.last_filename, "
+        "updated_at = excluded.updated_at "
+        f"WHERE excluded.latest_file_date >= {AVL_META_TABLE}.latest_file_date"
+    )
 
 
 @dataclass(frozen=True)
@@ -68,4 +101,6 @@ class TableSchema:
             )
 
 
-__all__ = ["TableSchema"]
+__all__ = [
+    "TableSchema", "AVL_META_TABLE", "create_meta_table_sql", "upsert_meta_sql",
+]
