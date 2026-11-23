@@ -1,0 +1,27 @@
+# AIassistantCRM v5.0 · 运行依赖
+#
+# 安装：python -m venv .venv && . .venv/bin/activate
+#       python -m pip install -r requirements.txt
+#
+# 运行平台：仅 Linux / Unix（local_excel2db 直接用 fcntl，见根 README 第 1 节）。
+# Python：3.10+（代码使用 `X | None` 联合类型注解）。
+#
+# 下面写的是「版本下限」，由代码实际调用到的 API 推出，不是精确锁定版本；
+# 生产环境请在验证通过后用 `pip freeze > requirements.lock.txt` 固化一次。
+
+# ---- 在线侧：python main.py ----
+fastapi>=0.100.0        # FastAPI(lifespan=...)；>=0.100 才完整支持 pydantic v2
+pydantic>=2.0           # @field_validator 是 v2 API；装 v1 会在 import 期直接失败
+uvicorn>=0.20.0         # uvicorn.run(app="main:app", **FASTAPI_CONFIG)
+aiohttp>=3.8.0          # IOP：ClientSession / ClientTimeout(sock_read=) / skip_auto_headers
+loguru>=0.6.0           # src/log_util.py 顶层 import；sftp_avl2db/TaskLogger 默认实现
+
+# ---- 写入侧：python -m sftp_avl2db / python -m local_excel2db ----
+# loguru 同上：未装且未注入 logger 时，python -m sftp_avl2db 抛 RuntimeError、退出码 2
+paramiko>=3.0.0         # SFTP 远程源（remote.py 内延迟导入）
+openpyxl>=3.0.0         # 读 excels/*.xlsx（read_only=True, data_only=True，延迟导入）
+portalocker>=2.0.0      # 可选：仅 sftp_avl2db/state.py 的锁优先用，缺失回落 fcntl
+                        # 注意：local_excel2db 只用 fcntl，没有 portalocker 回落
+
+# ---- 离线复跑与冒烟脚本：tests/ ----
+requests>=2.28.0        # check_online_api / check_param_validation / check_call_stat

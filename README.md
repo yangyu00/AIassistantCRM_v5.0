@@ -13,7 +13,9 @@
 
 部署时 14 个进程都要起。业务与计数数据的写入边界是：在线进程只写 `call_stat/runtime/call_sum.db`，业务库与维表均由写入侧独立维护；此外在线进程启动时会由 `configure_logging()` 在项目根 `log/` 下写 `INFO_YYYY-MM-DD.log` / `ERROR_YYYY-MM-DD.log`（按天轮转、保留 7 天），这是日志产物，不参与业务数据流。各包配置与运行时产物按 `__file__` 锚在包目录内，与启动 CWD 无关。
 
-依赖：Python 3.10+；在线侧 `fastapi / uvicorn / pydantic / aiohttp / loguru`；写入侧同样需要 `loguru`（`sftp_avl2db/task_logging.py` 的 `TaskLogger` 默认实现，缺它 `python -m sftp_avl2db` 会直接抛 `RuntimeError`），另有 `paramiko`（SFTP）、`openpyxl`（xlsx）、`portalocker`（可选，单实例锁，缺失时回落 `fcntl`）；冒烟脚本 `requests`。
+依赖清单与安装命令见 [`requirements.txt`](requirements.txt)（`python -m pip install -r requirements.txt`）：Python 3.10+；在线侧 `fastapi>=0.100 / uvicorn / pydantic>=2 / aiohttp / loguru`；写入侧同样需要 `loguru`（`sftp_avl2db/task_logging.py` 的 `TaskLogger` 默认实现，缺它 `python -m sftp_avl2db` 会直接抛 `RuntimeError`、退出码 2），另有 `paramiko`（SFTP）、`openpyxl`（xlsx）、`portalocker`（可选）、`requests`（冒烟脚本）。`@field_validator` 是 pydantic v2 API，装 v1 会在 import 期直接失败；`FastAPI(lifespan=...)` 需较新 FastAPI。
+
+**仅支持 Linux / Unix**：`local_excel2db/watcher.py` 在拿锁时直接 `import fcntl`，没有其它回落，Windows 上 `python -m local_excel2db` 会抛 `ModuleNotFoundError`；`portalocker` 的「可选、缺失回落 `fcntl`」只对 `sftp_avl2db/state.py` 生效。两个写入侧进程都依赖 Unix 文件锁，部署前先确认目标平台。
 
 `import` 边界并非所有包一致：`sftp_avl2db / local_excel2db / call_stat / services` 四个包根零 I/O、零第三方依赖，靠 `__getattr__` 延迟导出，第三方库在入口函数内延迟加载；但 `IOP` 包根在 `__init__.py` 顶层链式导入 `transport / token / client`，三者模块顶层 `import aiohttp`，因此 `import IOP` 必须先装 `aiohttp`（配置仍只在构造 `IOPClient()` 时才读）；`src/log_util.py` 顶层 `from loguru import logger`、`src/exceptions.py` 顶层 `from fastapi import ...`，二者同样在 import 期就要第三方库。
 
@@ -62,7 +64,7 @@ main.py ──> log/INFO_*.log、log/ERROR_*.log（在线进程日志写入，�
 |---|---|---|---|
 | IOP 客户端 | `IOP/.env`（20 键） | `IOPConfig.load()` | 回落 `config.py` 内置默认值 |
 | SFTP 写入 | `sftp_avl2db/.env`（67 键） | `load_profiles()` | 缺任一键直接 fail-fast |
-| 调用量统计 | `call_stat/.env`（4 键） | `load_config()` | 回落 `config.py` 内置默认值并告警 |
+| 调用量统计 | `call_stat/.env`（4 键） | `load_config()` | 缺文件告警；缺键静默回落 `config.py` 内置默认值，仅显式写了非法值才告警 |
 | 在线读取 | `services/.env`（5 键） | `db_config.load()` | 回落 `db_config.py` 代码内默认值 |
 | 维表写入 | `local_excel2db/registry.json` | `load_registry()` | 配置损坏退出码 2 |
 | 在线服务 | `main.py` 顶部常量 | — | `LOG_DIR`、`FASTAPI_CONFIG`、`MARKET_ASSISTANT_URL`、`MARKET_ASSISTANT_USERS` |
@@ -135,7 +137,7 @@ main.py ──> log/INFO_*.log、log/ERROR_*.log（在线进程日志写入，�
 
 - `product_id → AVL 前缀` 的两张静态表集中在 `services/routing.py`；`reader.py` 只认 AVL 前缀，不知道产品 ID。
 - 商机 / 控损命中即返回；`reader.query` 返回 `{}` 时按空记录出话术，不落到诊断 / 兜底。
-- 诊断的 `F09629`（`DIM_MARKET_PRODUCT_BUSINESS_ONCE`）本身即「产品ID → 策略 / 产品」映射表；诊断走 7 表关联，任一查询空、场景交集为空或六项输出全空时用卖点维表兜底，仍返回 `ProductInfoByDiagnosis`（`code: "0"`）；连维表也无该 `product_id` 时才落第 4 类。
+- 诊断的 `F09629`（`DIM_MARKET_PRODUCT_BUSINESS_ONCE`）本身即「产品ID → 策略 / 产品」映射表；诊断走 7 表关联，任一查询空、场景交集为空或六项输出全空时用卖点维表兜底，仍返回 `ProductInfoByDiagnosis`（`code: "0"`）；**维表中无该 `product_id`，或有该行但 `product_name`（产品名称）为空时**兜底失败，才落第 4 类（`code: "2"`）。边界实现见 `services/diagnosis/fallback.py::build_fallback_record()`，与第 9 节降级总表一致。
 - `selling_points` 不参与路由判定，只作为数据透传给对象工厂。
 
 ## 8. 业务话术规则
@@ -179,6 +181,51 @@ main.py ──> log/INFO_*.log、log/ERROR_*.log（在线进程日志写入，�
 
 ## 10. 部署与运行
 
+### 10.1 安装
+
+```bash
+python -m venv .venv && . .venv/bin/activate
+python -m pip install -r requirements.txt
+```
+
+平台要求见第 1 节（仅 Linux / Unix）。`requirements.txt` 给的是版本下限，生产环境验证通过后建议 `pip freeze > requirements.lock.txt` 固化。
+
+### 10.2 凭据替换（首次部署必做）
+
+仓库随附的 `.env` 与 `.env.example` **逐键同值**；`IOP/config.py::_SPECS` 里还内置了一份实际生效的 token 端点地址与凭据。因此直接 `cp .env.example .env` 会原样带入仓库里的明文串，必须逐项替换：
+
+| 文件 | 要替换的键 |
+|---|---|
+| `sftp_avl2db/.env` 与 `.env.example` | `SFTP_HOST` / `SFTP_PORT` / `SFTP_USERNAME` / `SFTP_PASSWORD` / `SFTP_REMOTE_PATH` |
+| `IOP/.env` 与 `.env.example` | `IOP_TOKEN_HOST` / `IOP_TOKEN_PORT` / `IOP_TOKEN_ID` / `IOP_TOKEN_SECRET` / `IOP_CUSTINFO_HOST` / `IOP_CUSTINFO_PORT` |
+| `IOP/config.py::_SPECS` | 与上一行对应的内置默认值 |
+
+最后一处不能漏：`.env` 缺键、空值或写成 `<...>` 占位符时会**回落到 `_SPECS` 的内置值**（见 `IOP/README.md` 第 4 节），只改 `.env` 并不能保证生效值已换掉。仓库内原有明文凭据应视为已泄露并轮换；生产环境不要把 `.env` 再提交进版本库。改完配置重启对应进程生效（配置对象首次加载后冻结）。
+
+### 10.3 首次上线顺序
+
+1. **先建维表库**：`python -m local_excel2db --once`。输入是仓库根 `excels/` 已预置的两张 xlsx，确认产出 `local_excel2db/runtime/sqlite_db/dimensions.db` 且 `selling_points` 有行。
+2. **再灌业务库**：12 个 AVL 各跑一次带 `--date` 的单次补跑（按上游实际文件日期逐个补），产出 `sftp_avl2db/runtime/sqlite_db/{project}/{AVL}.db` 与库内 `_avl_meta` 批次水位。改过分表数（`F09591` / `F09633`）必须重灌对应 AVL 全量。
+3. **最后起常驻进程**：`python main.py`，加上 §10.5 代码块里的 12 个 `--task` 常驻进程与 `python -m local_excel2db`（共 14 个，见第 1 节）。
+4. 业务库尚未就绪也允许先起在线服务：商机 / 控损按空记录出话术（仍 `code: "0"`），诊断走卖点维表兜底，API 不会 500。
+
+### 10.4 验收（重建成功的判定）
+
+```bash
+python -m call_stat --self-check              # SELF-CHECK OK
+python tests/check_diagnosis_offline.py      # ALL PASS（成立条件见第 11 节）
+python tests/check_purge_rotation.py         # ALL PASS
+python tests/check_avl_freshness.py          # ALL PASS
+# 起服务后：
+python tests/check_param_validation.py
+python tests/check_call_stat.py
+python tests/check_online_api.py
+```
+
+期望响应基线（业务库为空时）：商机 3 个 ID 返回四段各填「无」的 HTML（`code: "0"`）；控损 `202609180955095402` 返回 `script: "无历史话术记录"`（`code: "0"`）；诊断类 ID 在维表有该行且产品名称非空时返回四段兜底话术（`code: "0"`），维表无该行或产品名称为空才 `code: "2"`；`res_code` 恒为 `0`，非法入参恒返回 HTTP 200 + `res_code: 1`。在线冒烟脚本只打印结果、结论靠人看，不是自动断言。
+
+### 10.5 常驻进程与维护命令
+
 ```bash
 # 写入侧：12 个 AVL 各起一个常驻进程
 python -m sftp_avl2db --task F09554
@@ -215,12 +262,15 @@ python tests/check_call_stat.py                # 调用量 GET 冒烟
 python tests/check_iop_direct.py 13900000000   # IOP 上游直连冒烟
 ```
 
-核心断言：`import main` 正常、`app.router.on_startup` 为空（走 lifespan）；四类路由输出符合第 7 节；`code` 按对象类型判定；`F09633` 128 张分表按 `telnum` 精确定位且不广播；维表「标签ID」拆分与商机画像来自维表；诊断兜底输出四段且省略两段；每请求只读一次维表、只有商机触发 IOP 查询；请求间标签 / 画像隔离；调用量阈值落库、重启继续计数、shutdown `flush()` 不丢尾部增量。
+`check_diagnosis_offline.py` 真正断言的是：`F09633` 建满 128 张分表、号码不串表、按 `telnum` 精确定位且缺 `product_no` 时降级 `[]`；写入侧 / 在线侧分表口径一致；维表「标签ID」拆分与库缺失降级；商机画像端到端来自维表 → IOP；诊断 7 表关联、六段话术、三种兜底触发、四段输出且省略两段；业务库未就绪时商机 / 控损按空记录出话术；四类路由输出与 `code` 按对象类型判定；只有商机回捞触发 IOP 查询（整请求 1 次）。
 
-`ALL PASS` 有成立条件：`check_diagnosis_offline.py` 的第 1～6 段只用标准库 + 临时 SQLite，缺 `fastapi / pydantic / loguru / aiohttp / uvicorn` 任一都不会报错；第 7 段「在线路由」会打印 `[SKIP] 未加载在线侧 (ModuleNotFoundError: No module named 'uvicorn')`，脚本末尾**仍然输出 `ALL PASS`**。因此 `ALL PASS` 只代表已执行段的断言通过；上面列出的 `import main`、lifespan 注册与在线侧四类路由断言，必须先装齐在线依赖才会真正跑起来。`tests/README.md` 第 4 节也记录了这一跳过条件。
+以下三条**不在任何自检脚本的断言里**，只由代码结构保证、需人工或另行验证，不要把它们算进 `ALL PASS`：`app.router.on_startup` 为空（lifespan 注册）、每请求只读一次 `dimensions.db`、请求间标签 / 画像隔离（脚本里只有「每请求只读一次的等价物」注释与单次请求调用）。调用量阈值落库、重启恢复、shutdown `flush()` 不丢尾部增量则由 `python -m call_stat --self-check` 独立断言，输出 `SELF-CHECK OK`。
+
+`ALL PASS` 有成立条件：`check_diagnosis_offline.py` 的第 1～6 段只用标准库 + 临时 SQLite，缺 `fastapi / pydantic / loguru / aiohttp / uvicorn` 任一都不会报错；第 7 段「在线路由」会打印全角括号的 `[SKIP] 未加载在线侧（{异常类型}: {异常信息}）`（异常类型随实际缺失的依赖变化，不只是 `uvicorn`），脚本末尾**仍然输出 `ALL PASS`**。因此 `ALL PASS` 只代表已执行段的断言通过；`import main` 与第 7 段的在线侧四类路由断言，必须先装齐在线依赖才会真正跑起来。`tests/README.md` 第 4 节也记录了这一跳过条件。
 
 ## 12. 文档索引
 
+- [`requirements.txt`](requirements.txt)：运行依赖、版本下限与安装命令
 - [`services/README.md`](services/README.md)：在线业务层分层、路由、读取配置、诊断取数与兜底
 - [`IOP/README.md`](IOP/README.md)：标签客户端的入口、请求链路、上游契约、配置与并发约束
 - [`sftp_avl2db/README.md`](sftp_avl2db/README.md)：AVL 注册、表结构、解析写入、清理轮转

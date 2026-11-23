@@ -52,7 +52,7 @@
 | 4 | 其余 | — | `ProductInfoRaw`（兜底） |
 
 - 业务库未就绪（`reader.query` 返回 `{}`）时按空记录出话术：商机仍输出四段（各段填「无」），控损输出「无历史话术记录」，都不落到诊断 / 兜底，也不抛 500。
-- 诊断不维护静态映射：`F09629`（`DIM_MARKET_PRODUCT_BUSINESS_ONCE`）本身即「产品ID → 策略 / 产品」映射表。7 表关联任一环节失败时用卖点维表兜底，仍返回 `ProductInfoByDiagnosis`（`code: "0"`）；只有连维表也没有该 `product_id` 时才落第 4 类 `code: "2"`。
+- 诊断不维护静态映射：`F09629`（`DIM_MARKET_PRODUCT_BUSINESS_ONCE`）本身即「产品ID → 策略 / 产品」映射表。7 表关联任一环节失败时用卖点维表兜底，仍返回 `ProductInfoByDiagnosis`（`code: "0"`）；只有维表里没有该 `product_id`，**或有该行但 `product_name` 为空**时，才落第 4 类 `code: "2"`（边界见第 6 节 `fallback.py`）。
 - `product_id → AVL 前缀` 的两张静态表在 `routing.py` 唯一维护；`reader` 只按 `db_config` 声明的 `{project}/{AVL}.db` 定位。
 - `selling_points` 由 `main.py` 在循环外调一次 `dimensions.load_selling_points()` 批量查回，只透传给对象工厂，不参与路由判定。
 
@@ -62,7 +62,7 @@
 
 - `AVL_DB_SPECS`：12 个 AVL 各自的 `db_file`（如 `diagnosis/F09633.db`）、schema 名、单条查询键 `where`、固定 `order_by`、是否分表。
 - `TABLE_SCHEMAS` / `TABLE_PRIMARY_KEYS`：各表列顺序 / 类型（与写入侧建表 DDL 对齐）与主键；`SELECT *` 回来的 dict 按此列顺序组装。
-- `services/.env`：`AVL_DB_ROOT`、`DIMENSIONS_DB`、`LOSS_CONTROL_NUM_TABLES`、`F09633_NUM_TABLES`；缺文件 / 缺键用 `db_config.py` 顶部代码内默认值（默认指向 `sftp_avl2db/runtime/sqlite_db` 等）。
+- `services/.env`：共 5 键——`AVL_DB_ROOT`、`DIMENSIONS_DB`、`LOSS_CONTROL_NUM_TABLES`、`F09633_NUM_TABLES`、`AVL_FRESHNESS_WINDOW_DAYS`（默认 `2`，`0` 关闭新鲜度过滤，见第 4.1 节）；缺文件 / 缺键用 `db_config.py` 顶部代码内默认值（默认指向 `sftp_avl2db/runtime/sqlite_db` 等）。与根 README 第 4 节的 5 键口径一致。
 - `shard_index()` / `table_name()`：分表号 `crc32(product_no) % NUM_TABLES`，表名 `{AVL}_{分表号}`；固定表名为 `{AVL}`。
 
 三个入口都是 `async`、内部同步 `sqlite3`，列名走 `DbProfile.columns` 白名单、值一律参数绑定，排序固定取静态声明：
@@ -183,7 +183,8 @@
 | `SMALLER_RN_HIGHER_PRIORITY` | `True`（RN 越小优先级越高） |
 | `ALLOW_ENTRY_SCRIPT_FALLBACK` | `True`（允许无 RN 的交集场景按原顺序补位） |
 | `EMPTY_TEXT` | `无` |
-| `FALLBACK_OMIT_SECTIONS` | `("痛点诊断", "营销话术")`（整段不输出，不是填「无」） |
+
+`FALLBACK_OMIT_SECTIONS = ("痛点诊断", "营销话术")` **不在 `constants.py`**：它定义在 `services/diagnosis/fallback.py`，由 `diagnosis/__init__.py` 从 `fallback` 延迟导出；`ProductInfoByDiagnosis` 在兜底 record 时用它把两段整段省略（不是填「无」）。要改兜底段落请改 `fallback.py`。
 
 两条正则本身含竖线，放在表格外以免与 Markdown 列分隔符冲突：
 
@@ -248,7 +249,7 @@ record 字段固定为 `product_id / telnum / business_name / business_type / fe
 | 分表 AVL 的 `where` 缺标量 `product_no` | `reader` 返回 `[]`（不广播、不抛异常） |
 | `F09633` 分表数改动但未重灌全量 | 号码落到其它分表查不到 → 走维表兜底 |
 | 诊断 7 个查询任一为空 / 交集为空 / 六项全空 | `query.py` 走维表兜底，输出四段，`code: "0"` |
-| 维表里也没有该 `product_id` | 兜底失败 → 落 `code: "2"` |
+| 维表里没有该 `product_id`，或该行产品名称为空 | 兜底失败 → 落 `code: "2"` |
 | 兜底话术原文为空 | 回退第一个非空「标签N」原文；都为空白切入 / 挽留段填「无」 |
 | IOP 标签失败 | `main.py` 降级 `{}` 注入；只影响商机画像，诊断链路不查 IOP |
 | 卖点维表库缺失 / 表或列漂移 / 查询异常 | `dimensions` 降级 `{}`，商机辅助画像为空，话术其余段照常 |
