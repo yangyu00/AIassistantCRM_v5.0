@@ -21,7 +21,7 @@ MARKET_ASSISTANT_URL = "/api/speechQryService"
 
 # 业务路由（product_id → AVL 前缀、是否查 IOP 标签、产品对象工厂）统一在
 # services/routing.py，由 services/__init__.py 导出；本文件只保留在线服务的
-# 运行参数与请求级编排。分层与四类路由见 services/README.md。
+# 运行参数与请求级编排。分层与「四类业务 + 兜底」路由见 services/README.md。
 
 configure_logging(LOG_DIR)
 
@@ -45,8 +45,8 @@ async def lifespan(app: FastAPI):
 # 后台写入侧（sftp_avl2db / local_excel2db）各自独立进程把数据写进磁盘；
 # 本进程只读磁盘上的 db 文件：读哪些库、库里有哪些列、怎么查，全部由
 # services/db_config.py 独立声明，不引用后台写入侧的任何代码或配置。
-# 每请求经 services.dimensions 批量只读一次 dimensions.db（商机标签 ID 子集与
-# 诊断兜底所需的产品名称 /「兜底话术」/「标签N」原文），经 services.reader
+# 每请求经 services.dimensions 批量只读一次 dimensions.db（商机标签 ID 子集、
+# 卖点话术模块所需的产品名称 /「兜底话术」/「标签N」原文），经 services.reader
 # 只读业务库；唯一写入是调用量统计（call_stat/runtime/call_sum.db）。
 app = FastAPI(lifespan=lifespan)
 register_errors_handlers(app)
@@ -117,7 +117,8 @@ async def marketAssistant(args: Args):
 
     # 2. 建立产品对象列表
     # 卖点维表按本次请求的全部 product_id 批量查一次（不缓存、不跨请求共享）：
-    # 商机对象的标签 ID 子集来自该行的「标签ID」列，库缺失/未命中降级为空 dict。
+    # 商机对象的标签 ID 子集来自该行的「标签ID」列，卖点话术模块用该行的产品
+    # 名称 /「兜底话术」/「标签N」原文；库缺失 / 未命中降级为空 dict。
     selling_points = dimensions.load_selling_points(
         [one.id for one in args.productId])
     product_obj_list = []
@@ -125,6 +126,8 @@ async def marketAssistant(args: Args):
         # 商机回捞（辅助画像）与诊断链路（话术 #标签名& → IOP 值）都需要标签，
         # 由业务层 need_labels() 声明；提供者保证整请求最多查一次 IOP，控损
         # 不触发查询。逐个判断等价于对全部 ID 取并集，不会因首个 ID 不需要而漏查。
+        # 卖点话术模块不消费标签；诊断由 F09629 动态命中，无法在 ID 级别预判是否
+        # 会落到卖点话术，故仍按诊断链路声明，多出的查询由提供者复用、不影响输出。
         # 「要不要拼画像」不在这里判断：只有商机对象持有画像组件，空标签 / 空标签 ID 子集时它自然返回空串。
         custom_label_info = (await label_provider.labels()
                              if need_labels(one_product_obj.id) else {})
@@ -134,7 +137,7 @@ async def marketAssistant(args: Args):
             selling_points=selling_points))
 
     # 3. 输出话术
-    # 商机回捞 / 控损 / 诊断三类业务对象返回 code=0；其余兜底 code=2。
+    # 商机回捞 / 控损 / 诊断 / 卖点话术四类业务对象返回 code=0；其余兜底 code=2。
     # 这里按对象类型判定，不能靠 product_name 是否为空：兜底对象也可能因
     # 维表残留拿到非空名称，只看它会返回 code=0 + 空话术，看起来成功、实际无内容。
     allScripts = []

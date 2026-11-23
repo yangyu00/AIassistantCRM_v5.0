@@ -93,7 +93,7 @@ class AuxiliaryPortrait(object):
 
 
 class ProductInfoRaw(ProductInfoBase):
-    """第 4 类兜底对象（``code: "2"``）：不取数、不拼画像。"""
+    """第 5 类兜底对象（四类业务之后，``code: "2"``）：不取数、不拼画像。"""
 
     def __init__(self, product_id, selling_point_rows=None):
         row = (selling_point_rows or {}).get(product_id)

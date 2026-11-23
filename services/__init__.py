@@ -1,4 +1,4 @@
-"""``services``：在线话术业务层（读取 + 路由 + 三类业务的话术重组）。"""
+"""``services``：在线话术业务层（读取 + 路由 + 四类业务的话术重组）。"""
 from __future__ import annotations
 
 # 延迟导出：(模块名, 属性名)。模块名可含点号（子包内的模块）。
@@ -12,13 +12,17 @@ _LAZY_EXPORTS = {
     "SellingPointRow": ("dimensions", "SellingPointRow"),
     "split_label_ids": ("dimensions", "split_label_ids"),
     "load_selling_points": ("dimensions", "load_selling_points"),
-    # 三类业务对象（业务包按业务名命名，对外用语义化类名）
+    # 四类业务对象（业务包按业务名命名，对外用语义化类名）
     "ProductInfoByOpportunityRecall": (
         "opportunity_recall", "ProductInfoByOpportunityRecall"),
     "ProductInfoByLossControl": (
         "loss_control", "ProductInfoByLossControl"),
     "ProductInfoByDiagnosis": ("diagnosis", "ProductInfoByDiagnosis"),
     "build_diagnosis_record": ("diagnosis", "build_diagnosis_record"),
+    "ProductInfoBySellingPoint": (
+        "selling_point_script", "ProductInfoBySellingPoint"),
+    "build_selling_point_object": (
+        "selling_point_script", "build_selling_point_object"),
     # 路由与 IOP 查询依赖
     "need_labels": ("routing", "need_labels"),
     "build_product_object": ("routing", "build_product_object"),
@@ -32,7 +36,8 @@ _LAZY_EXPORTS = {
 
 
 _SUBMODULES = ("reader", "dimensions", "routing",
-               "opportunity_recall", "loss_control", "diagnosis")
+               "opportunity_recall", "loss_control", "diagnosis",
+               "selling_point_script")
 
 
 def __getattr__(name):
@@ -55,14 +60,16 @@ __all__ = [
     # 子模块
     "reader", "dimensions", "routing",
     "opportunity_recall", "loss_control", "diagnosis",
+    "selling_point_script",
     # 公共基类、画像组件与兜底对象
     "ProductInfoBase", "AuxiliaryPortrait", "ProductInfoRaw",
     "build_auxiliary_portrait",
     # 卖点维表读取侧
     "SellingPointRow", "split_label_ids", "load_selling_points",
-    # 三类业务对象
+    # 四类业务对象
     "ProductInfoByOpportunityRecall", "ProductInfoByLossControl",
     "ProductInfoByDiagnosis", "build_diagnosis_record",
+    "ProductInfoBySellingPoint", "build_selling_point_object",
     # 路由与 IOP 查询依赖
     "need_labels", "build_product_object", "BUSINESS_OBJECT_TYPES",
     "OPPORTUNITY_RECALL_AVLS", "LOSS_CONTROL_AVLS",

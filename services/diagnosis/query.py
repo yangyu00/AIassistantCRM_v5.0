@@ -1,4 +1,8 @@
-"""诊断取数：按「产品ID + 手机号」关联 7 张维表，产出结构化 record。
+"""诊断取数：按「产品ID + 手机号」关联 8 张维表，产出结构化 record。
+
+本模块只认诊断自己的 8 张表，不读卖点维表、不做维表兜底：7 表关联任一
+环节失败、场景交集为空或六项输出全空时一律返回 ``None``，由
+``services/routing.py`` 继续询问与诊断平级的卖点话术模块。
 
 三类话术（切入 / 营销 / 挽留）里的 ``#标签名&`` 在此统一替换：先按标签名查
 第 8 张表 F09635（主键 tag_name）拿到 tag_id，它即 IOP 返回的 ITEMCODE，
@@ -19,12 +23,6 @@ from .constants import (
     AVL_SCENE_RANK,
     AVL_TAGID_TAGNAME,
 )
-from .fallback import (
-    REASON_DB_EMPTY,
-    REASON_EMPTY_INTERSECTION,
-    REASON_EMPTY_OUTPUT,
-    build_fallback_record,
-)
 from .logic import (
     apply_tag_values,
     collect_tag_names,
@@ -36,6 +34,17 @@ from .logic import (
     order_scenes_by_priority,
     split_fee_name,
 )
+
+# 诊断链路不适用时的原因（只写日志，不带进任何业务对象）
+MISS_REASON_DB_EMPTY = "db_empty"
+MISS_REASON_EMPTY_INTERSECTION = "empty_intersection"
+MISS_REASON_EMPTY_OUTPUT = "empty_output"
+
+
+def _miss(reason):
+    """诊断不适用：留一行排查日志，返回 None 让路由层继续往下走。"""
+    print(f"WARNING:: 诊断未命中（{reason}），交由卖点话术模块处理", flush=True)
+    return None
 
 
 async def _load_tag_values(tag_names, custom_label_info):
@@ -72,14 +81,16 @@ async def _load_tag_values(tag_names, custom_label_info):
     return values
 
 
-async def build_diagnosis_record(product_id, telnum, *, selling_points=None,
-                                 custom_label_info=None):
-    """组装诊断话术所需的全部字段，并把话术里的标签占位符换成 IOP 值。"""
-    sp = selling_points or {}
+async def build_diagnosis_record(product_id, telnum, *, custom_label_info=None):
+    """只按诊断 8 表组装 record，并把话术里的标签占位符换成 IOP 值。
+
+    命中且六项输出有内容 → record dict；任一环节为空 → ``None``。诊断不消费
+    ``selling_points``，是否改用卖点维表话术完全由 ``routing`` 决定。
+    """
     labels = custom_label_info or {}
 
     async def finalize(record):
-        """正常 record 与兜底 record 走同一个替换出口。"""
+        """成功 record 的统一出口：#标签名& → ITEMVALUE。"""
         if not record:
             return record
         tag_names = collect_tag_names(record)
@@ -88,19 +99,14 @@ async def build_diagnosis_record(product_id, telnum, *, selling_points=None,
         tag_values = await _load_tag_values(tag_names, labels)
         return apply_tag_values(record, tag_values)
 
-    async def fallback(reason):
-        """统一的兜底出口。"""
-        return await finalize(build_fallback_record(
-            product_id, telnum, selling_points=sp, reason=reason))
-
-    async def db_empty(avl):
-        return await fallback(f"{REASON_DB_EMPTY}:{avl}")
+    def db_empty(avl):
+        return _miss(f"{MISS_REASON_DB_EMPTY}:{avl}")
 
     # ① 产品ID → 策略(BUSINESS_NAME) / 产品(BUSINESS_TYPE)
     business_rows = await reader.query_many(
         AVL_PRODUCT_BUSINESS, where={"product_id": product_id}, limit=1)
     if not business_rows:
-        return await db_empty(AVL_PRODUCT_BUSINESS)
+        return db_empty(AVL_PRODUCT_BUSINESS)
 
     business = business_rows[0]
     business_name = str(business.get("business_name") or "").strip()
@@ -114,7 +120,7 @@ async def build_diagnosis_record(product_id, telnum, *, selling_points=None,
     product_scenes = dedup(
         [str(row.get("scene") or "").strip() for row in product_scene_rows])
     if not product_scene_rows or not product_scenes:
-        return await db_empty(AVL_PRODUCT_SCENE)
+        return db_empty(AVL_PRODUCT_SCENE)
 
     # ③ 用户场景 + 痛点诊断（F09633，多行；单元格多值按位置配对）
     # F09633 千万级行、按 product_no 分 128 张表；这里带的标量 product_no
@@ -123,24 +129,24 @@ async def build_diagnosis_record(product_id, telnum, *, selling_points=None,
         AVL_CONF_USER_SCENE, where={"product_no": telnum})
     user_pairs = expand_user_scenes(user_scene_rows)
     if not user_scene_rows or not user_pairs:
-        return await db_empty(AVL_CONF_USER_SCENE)
+        return db_empty(AVL_CONF_USER_SCENE)
 
-    # ④ 交集：痛点诊断保留全部交集场景的 REASON；交集为空即兜底
+    # ④ 交集：痛点诊断保留全部交集场景的 REASON；交集为空即诊断不适用
     matched_scenes, pain_points = intersect_scenes(user_pairs, product_scenes)
     if not matched_scenes:
-        return await fallback(REASON_EMPTY_INTERSECTION)
+        return _miss(MISS_REASON_EMPTY_INTERSECTION)
 
     # ⑤ 切入话术：交集场景按 RN 排优先级，取第一个能查到话术的场景
     rank_rows = await reader.query_in(
         AVL_SCENE_RANK, "scene", matched_scenes)
     if not rank_rows:
-        return await db_empty(AVL_SCENE_RANK)
+        return db_empty(AVL_SCENE_RANK)
     ordered_scenes, ranked_set = order_scenes_by_priority(
         matched_scenes, rank_rows)
     qr_rows = await reader.query_in(
         AVL_SCENE_QRHUASHU, "scene", ordered_scenes)
     if not qr_rows:
-        return await db_empty(AVL_SCENE_QRHUASHU)
+        return db_empty(AVL_SCENE_QRHUASHU)
     qr_map = {
         str(row.get("scene") or "").strip(): str(row.get("qr_huashu") or "").strip()
         for row in qr_rows if row.get("qr_huashu")
@@ -157,14 +163,14 @@ async def build_diagnosis_record(product_id, telnum, *, selling_points=None,
         AVL_PRODUCT_YXHUASHU, where={"business_type": business_type})
     marketing_scripts = extract_scripts(yx_rows, "yx_huashu")
     if not yx_rows or not marketing_scripts:
-        return await db_empty(AVL_PRODUCT_YXHUASHU)
+        return db_empty(AVL_PRODUCT_YXHUASHU)
 
     # ⑦ 挽留话术（F09632，拒绝原因 / 话术各自拆分后按位置配对）
     wl_rows = await reader.query_many(
         AVL_PRODUCT_WLHUASHU, where={"business_type": business_type})
     retain_pairs = expand_retain_pairs(wl_rows)
     if not wl_rows or not retain_pairs:
-        return await db_empty(AVL_PRODUCT_WLHUASHU)
+        return db_empty(AVL_PRODUCT_WLHUASHU)
 
     record = {
         "product_id": product_id,
@@ -184,11 +190,10 @@ async def build_diagnosis_record(product_id, telnum, *, selling_points=None,
         "retain_pairs": retain_pairs,
     }
 
-    # 命中了产品ID 但六个输出字段全空：改用卖点维表兜底，避免
-    # code=0 + 一屏「无」；维表无该行时 fallback() 返回 None → code=2。
+    # 命中了产品ID 但六个输出字段全空：诊断同样不适用，避免 code=0 + 一屏「无」
     if not any([fee_name, fee_summary, pain_points, entry_script,
                 marketing_scripts, retain_pairs]):
-        return await fallback(REASON_EMPTY_OUTPUT)
+        return _miss(MISS_REASON_EMPTY_OUTPUT)
     return await finalize(record)
 
 

@@ -1,11 +1,11 @@
-"""诊断：取数、纯逻辑、业务对象、口径常量与卖点维表兜底。"""
+"""诊断：8 表取数、纯逻辑、六段话术对象、口径常量。
+
+卖点维表话术已抽离为平级业务包 ``services/selling_point_script/``，
+本包不再导出任何兜底话术相关符号。
+"""
 _LAZY_EXPORTS = {
     "build_diagnosis_record": ("query", "build_diagnosis_record"),
     "ProductInfoByDiagnosis": ("rewrite", "ProductInfoByDiagnosis"),
-    "build_fallback_record": ("fallback", "build_fallback_record"),
-    "pick_script_text": ("fallback", "pick_script_text"),
-    "parse_tag_script": ("fallback", "parse_tag_script"),
-    "FALLBACK_OMIT_SECTIONS": ("fallback", "FALLBACK_OMIT_SECTIONS"),
     "collect_tag_names": ("logic", "collect_tag_names"),
     "replace_tag_placeholders": ("logic", "replace_tag_placeholders"),
     "apply_tag_values": ("logic", "apply_tag_values"),
@@ -26,7 +26,5 @@ def __dir__():
 
 __all__ = [
     "build_diagnosis_record", "ProductInfoByDiagnosis",
-    "build_fallback_record", "pick_script_text", "parse_tag_script",
-    "FALLBACK_OMIT_SECTIONS",
     "collect_tag_names", "replace_tag_placeholders", "apply_tag_values",
 ]

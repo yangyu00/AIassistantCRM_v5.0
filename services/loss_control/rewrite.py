@@ -68,7 +68,7 @@ class ProductInfoByLossControl(ProductInfoBase):
     def _build_output_script(self):
         raw = (self.record or {}).get("strategy_name", "")
         if not raw:
-            # 业务库未就绪 / 查无记录：按空记录出话术，不落到诊断 / 兜底
+            # 业务库未就绪 / 查无记录：按空记录出话术，不落到诊断 / 卖点话术 / 兜底
             return "无历史话术记录"
         return parse_custom_tags(raw).strip().replace("\n", "<br>")
 

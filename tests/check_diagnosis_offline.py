@@ -38,8 +38,12 @@ from sftp_avl2db.sink.router import build_layout        # noqa: E402
 from sftp_avl2db.sink.schema import TableSchema         # noqa: E402
 import services.diagnosis.logic as logic                # noqa: E402
 from services.diagnosis import (                        # noqa: E402
-    FALLBACK_OMIT_SECTIONS, ProductInfoByDiagnosis, build_diagnosis_record,
-    build_fallback_record, pick_script_text, parse_tag_script,
+    ProductInfoByDiagnosis, build_diagnosis_record,
+)
+from services.selling_point_script import (             # noqa: E402
+    SELLING_POINT_SECTIONS, ProductInfoBySellingPoint,
+    build_selling_point_object, extract_selling_point_fields,
+    parse_tag_script, pick_script_text,
 )
 from dataclasses import replace                          # noqa: E402
 
@@ -64,8 +68,8 @@ BT = "套餐焕新融宽直点"              # F09628 样例已有的 BUSINESS_T
 TEL = "15054675009"                 # F09633 样例已有的手机号
 BIZ_NAME = "【五福套餐】流量放心用，月费58元"
 
-FALLBACK_PID = "202611210000000099"       # F09629 无此 ID → db 查空兜底
-NO_INTERSECT_PID = "202611210000000098"   # F09629 有映射，但用户场景无交集
+FALLBACK_PID = "202611210000000099"       # F09629 无此 ID → 诊断不适用 → 卖点话术
+NO_INTERSECT_PID = "202611210000000098"   # 有映射但场景无交集 → 诊断不适用 → 卖点话术
 TEL_NO_INTERSECT = "15000000099"          # F09633 里只有不相干场景
 MATCH_IDS = ("SCENE_LABEL_0", "SCENE_LABEL_1", "SCENE_LABEL_2")
 TAG_TEXTS = (
@@ -296,7 +300,7 @@ def main():
     check("product_selling_point_match_dict 属性不存在",
           not hasattr(opp_obj, "product_selling_point_match_dict"))
 
-    print("=== 1e. 卖点维表兜底：话术原文解析 /「兜底话术」优先 ===")
+    print("=== 1e. 卖点话术模块：原文解析 /「兜底话术」优先 / 四段组合 ===")
     entry, pairs = parse_tag_script(TAG_TEXTS[1])
     check("原文解析「切入话术」", "切入B" in entry, entry)
     check("原文解析「拒绝原因：挽留话术」并去 **",
@@ -307,8 +311,7 @@ def main():
     check("「兜底话术」为空时回退第一个非空「标签N」原文",
           pick_script_text(sp[PID]) == TAG_TEXTS[0],
           pick_script_text(sp[PID])[:40])
-    rec0 = build_fallback_record(
-        FALLBACK_PID, TEL, selling_points=sp, reason="unit")
+    rec0 = extract_selling_point_fields(FALLBACK_PID, sp[FALLBACK_PID])
     check("产品名称按【】拆出资费名称 / 摘要",
           rec0["fee_name"] == "兜底套餐" and
           rec0["fee_summary"] == "兜底摘要",
@@ -319,14 +322,16 @@ def main():
     check("拒绝原因 / 挽留话术来自同一份原文",
           rec0["retain_pairs"] == [("担心合约", "挽留B")],
           str(rec0["retain_pairs"]))
-    check("兜底省略痛点诊断 / 营销话术",
-          FALLBACK_OMIT_SECTIONS == ("痛点诊断", "营销话术"))
-    fb_obj = ProductInfoByDiagnosis(FALLBACK_PID, rec0)
-    for seg in ("资费名称", "资费摘要", "切入话术", "挽留话术"):
-        check(f"兜底输出含【{seg}】", f"【{seg}】" in fb_obj.output_script)
+    check("卖点话术固定四段（痛点 / 营销无维表来源）",
+          SELLING_POINT_SECTIONS ==
+          ("资费名称", "资费摘要", "切入话术", "挽留话术"))
+    fb_obj = ProductInfoBySellingPoint(FALLBACK_PID, rec0)
+    for seg in SELLING_POINT_SECTIONS:
+        check(f"卖点话术输出含【{seg}】", f"【{seg}】" in fb_obj.output_script)
     for seg in ("痛点诊断", "营销话术"):
-        check(f"兜底输出不含【{seg}】", f"【{seg}】" not in fb_obj.output_script)
-    check("兜底 productName 取维表产品名称原文",
+        check(f"卖点话术输出不含【{seg}】",
+              f"【{seg}】" not in fb_obj.output_script)
+    check("卖点话术 productName 取维表产品名称原文",
           fb_obj.product_name == "【兜底套餐】兜底摘要", fb_obj.product_name)
 
     dimensions.configure(TMP / "no_such_dimensions.db")
@@ -346,7 +351,8 @@ def main():
     from services.opportunity_recall import rewrite as opp_rewrite
     check("业务包子模块可经 services 访问",
           services.opportunity_recall.__name__.endswith("opportunity_recall") and
-          services.loss_control.__name__.endswith("loss_control"))
+          services.loss_control.__name__.endswith("loss_control") and
+          services.selling_point_script.__name__.endswith("selling_point_script"))
     check("ProductInfoRewrite 别名不存在",
           not hasattr(opp_rewrite, "ProductInfoRewrite") and
           not hasattr(loss_rewrite, "ProductInfoRewrite"))
@@ -354,7 +360,9 @@ def main():
           services.opportunity_recall.ProductInfoByOpportunityRecall
           is ProductInfoByOpportunityRecall and
           services.loss_control.ProductInfoByLossControl
-          is ProductInfoByLossControl)
+          is ProductInfoByLossControl and
+          services.selling_point_script.ProductInfoBySellingPoint
+          is ProductInfoBySellingPoint)
 
     opp_rec = {
         "content_abstract": "通话摘要", "type_xl": "资费", "cust_demand": "想降费",
@@ -406,20 +414,26 @@ def main():
     portrait_attrs = ("portrait", "_portrait", "custom_label_info",
                       "selling_point_rows", "queried_label_ids",
                       "queried_label_nvs", "auxiliary_portrait")
-    for label, obj in (("控损", loss_obj), ("诊断", fb_obj),
+    diag_empty = ProductInfoByDiagnosis(PID, {})
+    for label, obj in (("控损", loss_obj), ("诊断", diag_empty),
+                       ("卖点话术", fb_obj),
                        ("兜底", ProductInfoRaw("x", sp))):
         check(f"{label}不持有画像 / 标签 / 维表 / 实例缓存字段",
               all(not hasattr(obj, attr) for attr in portrait_attrs),
               str([a for a in portrait_attrs if hasattr(obj, a)]))
         check(f"{label}仍继承极简公共基类", isinstance(obj, ProductInfoBase))
-    check("诊断日志不含画像行",
+    check("卖点话术日志不含画像行",
           "auxiliary_portrait" not in str(fb_obj) and
           "queried_label_ids" not in str(fb_obj))
+    check("卖点话术对象不收标签 / 诊断 8 表字段",
+          all(not hasattr(fb_obj, a) for a in
+              ("custom_label_info", "selling_point_rows", "portrait",
+               "business_type", "matched_scenes")))
     check("控损构造只需 (product_id, record)",
           ProductInfoByLossControl("x", {"strategy_name": "A"}).output_script
           == "A")
 
-    print("=== 1h. 业务库未就绪：商机 / 控损按空记录出话术 ===")
+    print("=== 1h. 业务库未就绪：商机 / 控损空记录、诊断不适用 → 卖点话术 ===")
     from services.routing import (                       # noqa: E402
         BUSINESS_OBJECT_TYPES, build_product_object)
     empty_root = TMP / "no_business_db"
@@ -445,6 +459,17 @@ def main():
         check("控损库空 → 空记录话术「无历史话术记录」",
               loss_empty.output_script == "无历史话术记录",
               loss_empty.output_script)
+        sp_route = asyncio.run(build_product_object(
+            FALLBACK_PID, TEL, custom_label_info={}, selling_points=sp))
+        check("业务库未就绪 → 诊断返回 None，路由落到平级卖点话术对象",
+              isinstance(sp_route, ProductInfoBySellingPoint) and
+              not isinstance(sp_route, ProductInfoByDiagnosis) and
+              isinstance(sp_route, BUSINESS_OBJECT_TYPES))
+        raw_route = asyncio.run(build_product_object(
+            "999999999999999999", TEL,
+            custom_label_info={}, selling_points={}))
+        check("维表也无该 ID → ProductInfoRaw（code=2）",
+              isinstance(raw_route, ProductInfoRaw))
     finally:
         reader.configure(read_config)
 
@@ -523,13 +548,16 @@ def main():
     check("query() 单条查询回归", bool(rec) and rec["product_no"] == key,
           str(rec.get("product_no")))
 
-    print("=== 5. 诊断取数（7 张表关联） ===")
-    record = asyncio.run(build_diagnosis_record(
-        PID, TEL, selling_points=sp))
+    print("=== 5. 诊断取数（8 张表：7 表关联 + F09635 标签反查）===")
+    import inspect                                       # noqa: E402
+    check("诊断取数不再接收 selling_points 参数",
+          "selling_points" not in
+          inspect.signature(build_diagnosis_record).parameters)
+    record = asyncio.run(build_diagnosis_record(PID, TEL))
     check("命中 F09629 → record", record is not None)
-    check("正常链路不触发兜底",
-          record is not None and record.get("is_fallback") is not True,
-          str(record.get("fallback_reason")) if record else "record=None")
+    check("正常链路 record 不含任何兜底标记",
+          record is not None and "is_fallback" not in record and
+          "fallback_reason" not in record)
     if record:
         check("资费名称来自 PRODUCT_BUSINESS 的 name【】内",
               record["fee_name"] == "五福套餐", record["fee_name"])
@@ -554,74 +582,87 @@ def main():
                ("标签原因#客运个性化运营标签34&",
                 "挽留话术标签#互联网融合标签94&")],
               str(record["retain_pairs"]))
-    check("未命中 F09629 且维表也无该 ID → None",
-          asyncio.run(build_diagnosis_record(
-              "NO_SUCH_ID", TEL, selling_points=sp)) is None)
+    check("未命中 F09629 → None（诊断不自行兜底，交由路由层）",
+          asyncio.run(build_diagnosis_record("NO_SUCH_ID", TEL)) is None)
 
-    print("=== 5b. 诊断兜底：db 查空 / 交集为空 / 话术原文为空 ===")
+    print("=== 5b. 诊断不适用 → 平级卖点话术模块 ===")
 
     # ① 任一 db 查询返回空（F09629 无 FALLBACK_PID）
-    fb_db = asyncio.run(build_diagnosis_record(
-        FALLBACK_PID, TEL, selling_points=sp))
-    check("db 查空 → 兜底 record",
-          fb_db is not None and fb_db.get("is_fallback") is True)
-    if fb_db:
-        check("db 查空原因带 AVL 名",
-              fb_db["fallback_reason"] == "db_empty:F09629",
-              fb_db["fallback_reason"])
+    fb_db = asyncio.run(build_diagnosis_record(FALLBACK_PID, TEL))
+    check("db 查空 → 诊断返回 None，不再自己拼兜底", fb_db is None)
+    sp_db = build_selling_point_object(FALLBACK_PID, sp)
+    check("db 查空 → 由平级模块给出卖点话术对象",
+          isinstance(sp_db, ProductInfoBySellingPoint))
+    if sp_db:
         check("db 查空仍按【】拆维表产品名",
-              fb_db["fee_name"] == "兜底套餐" and
-              fb_db["fee_summary"] == "兜底摘要",
-              f'{fb_db["fee_name"]} / {fb_db["fee_summary"]}')
+              sp_db.record["fee_name"] == "兜底套餐" and
+              sp_db.record["fee_summary"] == "兜底摘要",
+              f'{sp_db.record["fee_name"]} / {sp_db.record["fee_summary"]}')
         check("db 查空仍取「兜底话术」原文的切入话术",
-              "切入B" in fb_db["entry_script"] and
-              "切入A" not in fb_db["entry_script"],
-              fb_db["entry_script"][:40])
+              "切入B" in sp_db.record["entry_script"] and
+              "切入A" not in sp_db.record["entry_script"],
+              sp_db.record["entry_script"][:40])
 
     # ② 场景交集为空：「兜底话术」列为空 → 回退第一个非空「标签N」原文
     fb_inter = asyncio.run(build_diagnosis_record(
-        NO_INTERSECT_PID, TEL_NO_INTERSECT, selling_points=sp))
-    check("场景交集为空 → 兜底 record",
-          fb_inter is not None and fb_inter.get("fallback_reason")
-          == "empty_intersection",
-          str(fb_inter.get("fallback_reason")) if fb_inter else "None")
+        NO_INTERSECT_PID, TEL_NO_INTERSECT))
+    check("场景交集为空 → 诊断返回 None", fb_inter is None)
+    sp_inter = build_selling_point_object(NO_INTERSECT_PID, sp)
     check("交集空也按【】拆维表产品名",
-          fb_inter is not None and fb_inter["fee_name"] == "交集空套餐",
-          str(fb_inter.get("fee_name")) if fb_inter else "None")
+          sp_inter is not None and
+          sp_inter.record["fee_name"] == "交集空套餐",
+          str(sp_inter.record["fee_name"]) if sp_inter else "None")
     check("无「兜底话术」时回退「标签N」原文",
-          fb_inter is not None and "切入A" in fb_inter["entry_script"],
-          str(fb_inter.get("entry_script"))[:40] if fb_inter else "None")
+          sp_inter is not None and
+          "切入A" in sp_inter.record["entry_script"],
+          str(sp_inter.record["entry_script"])[:40] if sp_inter else "None")
 
     # ③ 话术原文全空：仍输出四段，切入 / 挽留填「无」
     empty_row = replace(sp[FALLBACK_PID], fallback_script="",
                         tag_texts=("",) * len(sp[FALLBACK_PID].tag_texts))
-    fb_empty = build_fallback_record(
-        FALLBACK_PID, TEL,
-        selling_points={FALLBACK_PID: empty_row}, reason="unit")
+    sp_empty = build_selling_point_object(
+        FALLBACK_PID, {FALLBACK_PID: empty_row})
     check("话术原文全空 → 切入 / 挽留为空，不抛异常",
-          fb_empty is not None and fb_empty["entry_script"] == "" and
-          fb_empty["retain_pairs"] == [])
-    fb_empty_obj = ProductInfoByDiagnosis(FALLBACK_PID, fb_empty)
+          sp_empty is not None and sp_empty.record["entry_script"] == "" and
+          sp_empty.record["retain_pairs"] == [])
     check("无话术时仍输出四段（切入 / 挽留填「无」）",
-          "<strong>【切入话术】</strong>无" in fb_empty_obj.output_script and
-          "<strong>【挽留话术】</strong>无" in fb_empty_obj.output_script,
-          fb_empty_obj.output_script)
+          sp_empty is not None and
+          "<strong>【切入话术】</strong>无" in sp_empty.output_script and
+          "<strong>【挽留话术】</strong>无" in sp_empty.output_script,
+          sp_empty.output_script if sp_empty else "None")
 
-    # ④ 兜底对象输出：四段、无痛点诊断 / 营销话术
-    fb_obj2 = ProductInfoByDiagnosis(FALLBACK_PID, fb_db)
-    check("兜底 productName 取维表产品名称原文",
-          fb_obj2.product_name == "【兜底套餐】兜底摘要", fb_obj2.product_name)
-    for seg in ("资费名称", "资费摘要", "切入话术", "挽留话术"):
-        check(f"兜底 output_script 含【{seg}】",
-              f"【{seg}】" in fb_obj2.output_script)
+    # ④ 降级边界：维表无该行 / 产品名称为空 → 模块返回 None → 路由落 code=2
+    check("维表无该 product_id → 卖点话术模块返回 None",
+          build_selling_point_object("NO_SUCH_ID", sp) is None)
+    check("产品名称为空 → 卖点话术模块返回 None",
+          build_selling_point_object(
+              FALLBACK_PID,
+              {FALLBACK_PID: replace(sp[FALLBACK_PID], product_name="")})
+          is None)
+
+    # ⑤ 维度隔离：卖点话术四段、诊断六段，且卖点话术不做字段替换
+    for seg in SELLING_POINT_SECTIONS:
+        check(f"卖点话术 output_script 含【{seg}】",
+              sp_db is not None and f"【{seg}】" in sp_db.output_script)
     for seg in ("痛点诊断", "营销话术"):
-        check(f"兜底 output_script 不含【{seg}】",
-              f"【{seg}】" not in fb_obj2.output_script)
+        check(f"卖点话术 output_script 不含【{seg}】",
+              sp_db is not None and f"【{seg}】" not in sp_db.output_script)
     check("正常诊断对象仍是六段",
           all(f"【{seg}】" in ProductInfoByDiagnosis(
               PID, record).output_script
               for seg in ("资费名称", "资费摘要", "痛点诊断", "切入话术",
                           "营销话术", "挽留话术")))
+    tagged_row = replace(
+        sp[FALLBACK_PID],
+        fallback_script="切入话术\n客户#客运个性化运营标签34&专属\n"
+                        "拒绝挽留话术\n价格高：挽留#互联网融合标签94&")
+    tagged_obj = build_selling_point_object(
+        FALLBACK_PID, {FALLBACK_PID: tagged_row})
+    check("卖点话术原文里的 #标签名& 原样保留（本业务无待替换字段）",
+          tagged_obj is not None and
+          "#客运个性化运营标签34&" in tagged_obj.output_script and
+          "#互联网融合标签94&" in tagged_obj.output_script,
+          tagged_obj.output_script[:160] if tagged_obj else "None")
 
     print("=== 5c. 话术标签占位符替换：#标签名& → F09635 tag_id → IOP ITEMVALUE ===")
     demo = {
@@ -651,7 +692,7 @@ def main():
           "#客运个性化运营标签34&" in demo["entry_script"])
 
     tagged = asyncio.run(build_diagnosis_record(
-        PID, TEL, selling_points=sp, custom_label_info=iop_stub))
+        PID, TEL, custom_label_info=iop_stub))
     check("正常链路：按标签名查 F09635 得 tag_id=ITEMCODE，切入话术换成 ITEMVALUE",
           tagged is not None and "值34" in tagged["entry_script"] and
           "#客运个性化运营标签34&" not in tagged["entry_script"],
@@ -671,19 +712,11 @@ def main():
           "#客运个性化运营标签34&" in record["entry_script"],
           str(record["entry_script"])[:80] if record else "None")
 
-    fb_tagged = asyncio.run(build_diagnosis_record(
-        FALLBACK_PID, TEL,
-        selling_points={FALLBACK_PID: replace(
-            sp[FALLBACK_PID],
-            fallback_script="切入话术\n客户#客运个性化运营标签34&专属\n"
-                            "拒绝挽留话术\n价格高：挽留#互联网融合标签94&")},
-        custom_label_info=iop_stub))
-    check("兜底话术同样走标签替换",
-          fb_tagged is not None and
-          "客户值34专属" in fb_tagged["entry_script"] and
-          any("挽留值94" in huashu
-              for _, huashu in fb_tagged["retain_pairs"]),
-          str(fb_tagged["entry_script"])[:80] if fb_tagged else "None")
+    from services import selling_point_script as sp_pkg   # noqa: E402
+    check("标签替换只属于诊断模块：卖点话术包不导出任何替换函数",
+          not hasattr(sp_pkg, "collect_tag_names") and
+          not hasattr(sp_pkg, "replace_tag_placeholders") and
+          not hasattr(sp_pkg, "apply_tag_values"))
 
     print("=== 6. 业务对象拼装 ===")
     obj = ProductInfoByDiagnosis(PID, record)
@@ -712,7 +745,7 @@ def main():
             main.ProductIds(id=PID),
             main.ProductIds(id="202608041615335173"),   # 商机回捞
             main.ProductIds(id="202609180955095402"),   # 控损（业务库空 → 空记录话术）
-            main.ProductIds(id=FALLBACK_PID),           # db 查空 → 卖点维表兜底
+            main.ProductIds(id=FALLBACK_PID),           # db 查空 → 平级卖点话术模块
             main.ProductIds(id="999999999999999999"),   # 未命中 → 兜底
         ])
         resp = asyncio.run(main.marketAssistant(args))
@@ -742,15 +775,15 @@ def main():
               "【辅助画像】" not in (d.get("script") or ""))
         fb_resp = by_id.get(FALLBACK_PID, {})
         fb_script = fb_resp.get("script") or ""
-        check("db 查空 → 在线侧 code=0（不是 code=2）",
+        check("db 查空 → 在线侧 code=0（平级卖点话术，不是 code=2）",
               fb_resp.get("code") == "0", str(fb_resp.get("code")))
-        check("兜底 productName 取维表产品名称原文",
+        check("卖点话术 productName 取维表产品名称原文",
               fb_resp.get("productName") == "【兜底套餐】兜底摘要",
               str(fb_resp.get("productName")))
-        check("兜底 script 含「兜底话术」原文的切入话术",
+        check("卖点话术 script 含「兜底话术」原文的切入话术",
               "切入B" in fb_script and "切入A" not in fb_script,
               fb_script[:120])
-        check("兜底 script 含四段、不含痛点/营销",
+        check("卖点话术 script 含四段、不含痛点/营销",
               all(f"【{seg}】" in fb_script for seg in
                   ("资费名称", "资费摘要", "切入话术", "挽留话术")) and
               all(f"【{seg}】" not in fb_script for seg in

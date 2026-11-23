@@ -41,11 +41,11 @@ python -m sftp_avl2db --task F09591 --date 20261110 \
 
 `iop_labels_query_raw_response.json` 是排查字段口径时看的原始报文形状；在线链路里 `IOPClient` 会把它解析成 `{ITEMCODE: [名称, 值]}` 的画像 dict，不做打桩、不读这个文件。想验证真实上游用 [`tests/check_iop_direct.py`](../tests/README.md)。
 
-`F09630` / `F09631` / `F09632` 的话术样例里含 `#客运个性化运营标签34&`、`#客运个性化运营标签82&`、`#互联网融合标签94&` 这类占位符：在线诊断链路按标签名查 `F09635` 拿 `tag_id`（= `ITEMCODE`），再用 IOP 返回的 `ITEMVALUE` 替换。样例里的标签名与 `F09635` / JSON 样例均为脱敏数据、不相互对应，仅供格式对照。
+`F09630` / `F09631` / `F09632` 的话术样例里含 `#客运个性化运营标签34&`、`#客运个性化运营标签82&`、`#互联网融合标签94&` 这类占位符：在线诊断链路按标签名查 `F09635` 拿 `tag_id`（= `ITEMCODE`），再用 IOP 返回的 `ITEMVALUE` 替换；平级的卖点话术模块不做这类替换。样例里的标签名与 `F09635` / JSON 样例均为脱敏数据、不相互对应，仅供格式对照。
 
 **维表 Excel**（只吃两个 `.xlsx`，且见下节）
 
-`local_excel2db` 按包内 `registry.json` 的 `source`（纯文件名）从项目根 `excels/` 轮询 xlsx、抽列写入 `local_excel2db/runtime/sqlite_db/dimensions.db`；在线侧经 `services/dimensions.py` 每请求只读一次该库，按 `product_id` 取 `selling_points.label_id`（Excel「标签ID」）拼商机辅助画像；诊断 7 表关联失败时还取该行的产品名称 /「兜底话术」/「标签N」原文拼四段兜底话术。
+`local_excel2db` 按包内 `registry.json` 的 `source`（纯文件名）从项目根 `excels/` 轮询 xlsx、抽列写入 `local_excel2db/runtime/sqlite_db/dimensions.db`；在线侧经 `services/dimensions.py` 每请求只读一次该库，按 `product_id` 取 `selling_points.label_id`（Excel「标签ID」）拼商机辅助画像；诊断 8 表不适用时，由平级的卖点话术模块取该行的产品名称 /「兜底话术」/「标签N」原文拼四段话术。
 
 ## 3. 维表 Excel 的实际目录：`excels/`
 
