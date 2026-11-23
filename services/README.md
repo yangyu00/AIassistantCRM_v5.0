@@ -126,21 +126,21 @@
 - 库不存在 / 表缺失 / 必需列漂移 / 查询异常 → 打日志并降级 `{}`；未命中的 `product_id` 不在返回 dict 中。商机辅助画像为空，诊断无法兜底（维持 `code: "2"`），不抛给在线接口。
 - 离线打桩：`dimensions.configure(临时 dimensions.db)`，传 `None` 还原默认路径。
 
-分工：商机侧由维表 `label_id` 决定「查哪些 ID」、IOP 返回的 `custom_label_info` 决定「名称与值」；诊断兜底侧不查 IOP，只取维表「兜底话术」原文（为空时回退第一个非空「标签N」原文）解析成话术。写入侧配置见 [`local_excel2db/README.md`](../local_excel2db/README.md)，在线侧列映射不取自它。
+分工：商机侧由维表 `label_id` 决定「查哪些 ID」、IOP 返回的 `custom_label_info` 决定「名称与值」；诊断兜底侧不拼画像，只取维表「兜底话术」原文（为空时回退第一个非空「标签N」原文）解析成话术，解析出的四段话术同样会做 `#标签名&` → IOP `ITEMVALUE` 替换（见第 6 节）。写入侧配置见 [`local_excel2db/README.md`](../local_excel2db/README.md)，在线侧列映射不取自它。
 
 ## 6. 诊断（`services/diagnosis/`）
 
-8 个 AVL（`F09627`～`F09633` / `F09635`）在 `db_config.AVL_DB_SPECS` 里各有一份在线侧声明；主链路用其中 7 张表，`F09635`（标签ID-标签名）不进链路。`F09633` 是唯一带 `product_no` 的表，按手机号分 128 张表。
+8 个 AVL（`F09627`～`F09633` / `F09635`）在 `db_config.AVL_DB_SPECS` 里各有一份在线侧声明；主链路用其中 7 张表关联取话术，第 8 张 `F09635`（标签ID-标签名，主键 `tag_name`）按需按标签名反查 `tag_id`（= IOP 的 `ITEMCODE`），配合请求级 IOP 标签替换话术里的 `#标签名&`。`F09633` 是唯一带 `product_no` 的表，按手机号分 128 张表。
 
 | 文件 | 职责 |
 |---|---|
-| `constants.py` | 8 个 AVL 前缀、多值分隔符、括号正则、RN 方向、切入话术降级开关 |
-| `logic.py` | 纯函数零 I/O：括号拆分、多值拆分、按位置配对、场景交集、优先级排序、HTML 拼装（`build_output_script(..., omit=())` 可整段省略） |
-| `query.py` | `build_diagnosis_record(product_id, telnum, *, selling_points)`，async，7 表关联 + 兜底触发，不查 IOP |
+| `constants.py` | 8 个 AVL 前缀、多值分隔符、括号正则、标签占位符正则、RN 方向、切入话术降级开关 |
+| `logic.py` | 纯函数零 I/O：括号拆分、多值拆分、按位置配对、场景交集、优先级排序、标签占位符收集 / 替换（`collect_tag_names` / `replace_tag_placeholders` / `apply_tag_values`）、HTML 拼装（`build_output_script(..., omit=())` 可整段省略） |
+| `query.py` | `build_diagnosis_record(product_id, telnum, *, selling_points, custom_label_info)`，async，7 表关联 + 第 8 张表 F09635 反查 + IOP 值替换 + 兜底触发；不 import IOP，标签由编排层注入 |
 | `fallback.py` | 卖点维表兜底：`pick_script_text()` / `parse_tag_script()` / `build_fallback_record()`，纯函数零 I/O |
 | `rewrite.py` | `ProductInfoByDiagnosis`，把 record 拼成 `output_script`；兜底 record 省略两段 |
 
-### 7 表关联取数顺序
+### 7 表关联取数 + 话术标签值替换
 
 1. `F09629` 按 `product_id` 取 `BUSINESS_NAME` / `BUSINESS_TYPE`；`BUSINESS_NAME` 按【】内外拆成资费名称 / 资费摘要。
 2. `F09628` 按 `business_type` 取产品场景集合（多行）。
@@ -149,6 +149,8 @@
 5. 交集场景按 `F09627` 的 RN 排优先级（默认 RN 越小优先级越高），取第一个能取到 `F09630` 切入话术的场景；`ALLOW_ENTRY_SCRIPT_FALLBACK` 开启时允许无 RN 的交集场景按原顺序补位。
 6. `F09631` 按 `business_type` 取营销话术（多行，去重）。
 7. `F09632` 取 `reject_reason` / `wl_huashu`，多值按位置配对成挽留话术列表。
+
+**话术标签值替换（正常 record 与兜底 record 共用 `query.py` 的 `finalize()` 出口）**：`collect_tag_names()` 从「切入话术 / 营销话术 / 挽留话术（拒绝原因 + 话术）」里收集 `#标签名&`，去重后一次 `query_many(F09635, where={"tag_name": [...]})` 拿到 `{标签名: tag_id}`；`tag_id` 即 IOP 的 `ITEMCODE`，用 `custom_label_info[tag_id]` 的 `[ITEMNAME, ITEMVALUE]` 取 `ITEMVALUE`，再由 `apply_tag_values()` 写回 record 的三个话术字段。标签名未登记、ITEMCODE 不存在、`ITEMVALUE` 为 `None` 或 IOP 整体降级 `{}` 时，该占位符原样保留，不静默吞掉。`F09635` 主键与在线查询键均为 `tag_name`，与写入侧声明一致。
 
 正常链路输出六段固定：`【资费名称 / 资费摘要 / 痛点诊断 / 切入话术 / 营销话术 / 挽留话术】`，空值填「无」。
 
@@ -179,17 +181,19 @@
 
 | 项 | 值 |
 |---|---|
-| 8 个 AVL 前缀 | `F09627` 场景优先级、`F09628` 产品-场景、`F09629` 产品策略、`F09630` 场景-切入话术、`F09631` 产品-营销话术、`F09632` 产品-挽留话术、`F09633` 用户场景（分表）、`F09635` 标签ID-标签名（不进链路） |
+| 8 个 AVL 前缀 | `F09627` 场景优先级、`F09628` 产品-场景、`F09629` 产品策略、`F09630` 场景-切入话术、`F09631` 产品-营销话术、`F09632` 产品-挽留话术、`F09633` 用户场景（分表）、`F09635` 标签ID-标签名（主键 / 查询键 `tag_name`，按标签名反查 `tag_id` 供话术占位符替换） |
+| `TAG_PLACEHOLDER_RE` | `#([^#&]+)&`（`#` 开头、`&` 结尾包裹标签名；中间不含 `#` / `&`，避免跨占位符贪婪匹配） |
 | `SMALLER_RN_HIGHER_PRIORITY` | `True`（RN 越小优先级越高） |
 | `ALLOW_ENTRY_SCRIPT_FALLBACK` | `True`（允许无 RN 的交集场景按原顺序补位） |
 | `EMPTY_TEXT` | `无` |
 
 `FALLBACK_OMIT_SECTIONS = ("痛点诊断", "营销话术")` **不在 `constants.py`**：它定义在 `services/diagnosis/fallback.py`，由 `diagnosis/__init__.py` 从 `fallback` 延迟导出；`ProductInfoByDiagnosis` 在兜底 record 时用它把两段整段省略（不是填「无」）。要改兜底段落请改 `fallback.py`。
 
-两条正则本身含竖线，放在表格外以免与 Markdown 列分隔符冲突：
+两条含竖线的正则放在表格外以免与 Markdown 列分隔符冲突；`TAG_PLACEHOLDER_RE` 见上表，这里一并列出：
 
 - `MULTI_VALUE_SPLIT_RE` = `[|｜\n]+`（竖线 / 全角竖线 / 单元格内换行；**不含逗号、分号**）
 - `FEE_BRACKET_RE` = `【([^】]*)】|\[([^\[\]]*)\]`（同时支持 ASCII `[]`）
+- `TAG_PLACEHOLDER_RE` = `#([^#&]+)&`（`#` / `&` 包裹标签名；中间不含 `#` / `&`）
 
 **纯函数口径（`logic.py`）**
 
@@ -202,6 +206,8 @@
 - `build_output_script(record, omit=())`：每段 `line(label, value)` = `<strong>【{label}】</strong>{value or 无}`；痛点 / 营销为多行 `<br>` 拼接；挽留每行 `<strong><span style="color:blue;">{reason or 无}：</span></strong>{huashu or 无}`；六段按固定顺序 `<br>` 连接，`omit` 中的段整段不出现。
 
 **7 表关联的精确调用（`query.py`）**
+
+标签值替换走同一模块的 `_load_tag_values()` / `finalize()`：按 `tag_name` 查 F09635 后对齐 IOP 的 `ITEMCODE`，不计入下面 7 步关联，正常 record 与兜底 record 都在返回前经过它。
 
 | 步 | 调用 | 空结果处理 |
 |---|---|---|
@@ -235,11 +241,11 @@ record 字段固定为 `product_id / telnum / business_name / business_type / fe
 
 本层不 import `IOP`。请求内编排在 `main.py`：
 
-1. `need_labels(product_id)`（本层 `routing.py`）决定该 ID 是否查标签，只有商机回捞 3 个 ID 返回 `True`。
-2. `IopLabelProvider` 在请求内惰性取一次标签，任何失败降级 `{}`。
-3. 循环外调一次 `dimensions.load_selling_points(所有 productId)`，把 `{product_id: SellingPointRow}` 作为 `selling_points` 传给 `build_product_object()`；工厂按分支只转发：商机对象收标签与维表行并交给 `AuxiliaryPortrait`，诊断取数只收维表行，控损只收 `record`，兜底只收维表行用于日志。
+1. `need_labels(product_id)`（本层 `routing.py`）决定该 ID 是否查标签：商机回捞与诊断链路返回 `True`，控损返回 `False`。诊断由 `F09629` 动态命中、没有静态 ID 白名单，因此除控损外一律需要标签；诊断对象不拼画像，标签只用于话术里的 `#标签名&` 替换。
+2. `IopLabelProvider` 在请求内惰性取一次标签，任何失败降级 `{}`；同请求商机 / 诊断共用这一份，最多查 1 次 IOP。
+3. 循环外调一次 `dimensions.load_selling_points(所有 productId)`，把 `{product_id: SellingPointRow}` 作为 `selling_points` 传给 `build_product_object()`；工厂按分支只转发：商机对象收标签与维表行并交给 `AuxiliaryPortrait`，诊断取数收标签与维表行（标签经 `build_diagnosis_record(..., custom_label_info=...)` 注入 `query.py`），控损只收 `record`，兜底只收维表行用于日志。
 
-只有商机对象持有 `AuxiliaryPortrait`，工厂不给其它分支传画像参数，编排层也不建请求级画像缓存。组件按维表行的 `label_ids` 对齐 `queried_label_ids` / `queried_label_nvs`（名称与值取自 `custom_label_info`），标签子集与画像都是懒执行；画像结果只缓存在当前组件实例上。维表未命中 / 库缺失 / IOP 降级 → 标签子集为空，`build_auxiliary_portrait()` 返回空串，商机话术不追加 `【辅助画像】`。
+只有商机对象持有 `AuxiliaryPortrait`，工厂不给其它分支传画像参数，编排层也不建请求级画像缓存。组件按维表行的 `label_ids` 对齐 `queried_label_ids` / `queried_label_nvs`（名称与值取自 `custom_label_info`），标签子集与画像都是懒执行；画像结果只缓存在当前组件实例上。维表未命中 / 库缺失 / IOP 降级 → 标签子集为空，`build_auxiliary_portrait()` 返回空串，商机话术不追加 `【辅助画像】`；诊断侧则是占位符原样保留，不追加画像段。
 
 ## 8. 降级速查
 
@@ -251,7 +257,7 @@ record 字段固定为 `product_id / telnum / business_name / business_type / fe
 | 诊断 7 个查询任一为空 / 交集为空 / 六项全空 | `query.py` 走维表兜底，输出四段，`code: "0"` |
 | 维表里没有该 `product_id`，或该行产品名称为空 | 兜底失败 → 落 `code: "2"` |
 | 兜底话术原文为空 | 回退第一个非空「标签N」原文；都为空白切入 / 挽留段填「无」 |
-| IOP 标签失败 | `main.py` 降级 `{}` 注入；只影响商机画像，诊断链路不查 IOP |
+| IOP 标签失败 | `main.py` 降级 `{}` 注入；商机画像为空，诊断三类话术里的 `#标签名&` 原样保留（不抛异常、不静默删字） |
 | 卖点维表库缺失 / 表或列漂移 / 查询异常 | `dimensions` 降级 `{}`，商机辅助画像为空，话术其余段照常 |
 | `product_id` 未命中维表 / 「标签ID」为空 | 标签子集为空、辅助画像为空串，不 500 |
 | 维表写入侧故障 | 保留上次成功版本，在线侧下次读到的仍是它；不会让 API 500 |
@@ -316,14 +322,14 @@ python tests/check_diagnosis_offline.py      # 零第三方依赖主体，不连
 python -m call_stat --self-check            # 调用量统计组件自检
 ```
 
-`check_diagnosis_offline.py` 用 8 个样例 AVL 建临时库并补一组业务键自洽数据，断言：注册 / 解析 / 入库、单一 flat 解析器、`F09633` 分表（128 张表、号码不串表、按 telnum 精确定位、缺 `product_no` 降级 `[]`、两侧分表口径一致）、卖点维表 → 商机标签 ID（按 `db_config` 声明建临时 `dimensions.db`、换行 / 竖线拆分、库缺失降级）、诊断兜底（话术原文解析 /「兜底话术」优先 / db 查空、交集空、话术原文全空三种触发、四段输出且无痛点 / 营销、维表无该 ID 仍 `code: "2"`）、多行查询、7 表关联、六段话术、业务库未就绪时商机 / 控损按空记录出话术、只有商机回捞触发 IOP 查询、在线侧 `code=0` 四段兜底，结论 `ALL PASS`。
+`check_diagnosis_offline.py` 用 8 个样例 AVL 建临时库并补一组业务键自洽数据，断言：注册 / 解析 / 入库、单一 flat 解析器、`F09633` 分表（128 张表、号码不串表、按 telnum 精确定位、缺 `product_no` 降级 `[]`、两侧分表口径一致）、卖点维表 → 商机标签 ID（按 `db_config` 声明建临时 `dimensions.db`、换行 / 竖线拆分、库缺失降级）、诊断兜底（话术原文解析 /「兜底话术」优先 / db 查空、交集空、话术原文全空三种触发、四段输出且无痛点 / 营销、维表无该 ID 仍 `code: "2"`）、多行查询、7 表关联、六段话术、业务库未就绪时商机 / 控损按空记录出话术、商机 / 诊断共用请求级 IOP 标签（整请求 1 次）、`F09635` 主键 `tag_name` 与三类话术 `#标签名&` → `ITEMVALUE` 替换（含兜底链路 / 降级保留）、在线侧 `code=0` 四段兜底，结论 `ALL PASS`。
 
 脚本里写入侧配置（`load_profiles(runtime_dir=TMP)`）与在线侧配置（`db_config.load(avl_db_root=TMP/sqlite_db, ...)`）各自独立装配，共同指向同一批临时 db 文件；临时 `sftp_avl2db/.env` 只服务写入侧，结束后删除；维表库用临时路径注入，不写包内 `runtime/`。
 
 ## 11. 新增一类业务
 
 1. 写入侧注册 AVL / 表结构（见 `sftp_avl2db/README.md`）；同时在 `services/db_config.py` 补在线侧声明：`TABLE_SCHEMAS` 加列顺序、`AVL_DB_SPECS` 加 `db_file` / 查询键 / 排序 / 分表（分表数还要写进 `.env` 与 `.env.example`）。两侧各自维护，但列顺序与分表口径必须一致。
-2. 在 `services/` 下按业务名加一个包，`rewrite.py` 里继承 `ProductInfoBase` 实现话术重组，构造只收本业务真正消费的参数；需要辅助画像才组合 `AuxiliaryPortrait`（只有商机回捞在 `need_labels()` 里声明查 IOP）。`__init__.py` 显式导出语义化类名。
+2. 在 `services/` 下按业务名加一个包，`rewrite.py` 里继承 `ProductInfoBase` 实现话术重组，构造只收本业务真正消费的参数；需要辅助画像才组合 `AuxiliaryPortrait`（商机回捞与诊断链路在 `need_labels()` 里声明查 IOP，控损不查）。`__init__.py` 显式导出语义化类名。
 3. `routing.py`：加静态映射（若需要）、在 `build_product_object()` 里按序插入分支、把新对象类加进 `BUSINESS_OBJECT_TYPES`。
 4. `services/__init__.py` 加一条延迟导出。
 5. 若新业务需要标签子集，在卖点维表 `selling_points` 里给对应 `product_id` 配好「标签ID」列；若也要诊断兜底，再配「产品名称」「兜底话术」与「标签N」原文。

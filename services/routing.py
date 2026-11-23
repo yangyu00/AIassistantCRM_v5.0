@@ -20,8 +20,14 @@ LOSS_CONTROL_PRODUCT_IDS = frozenset(LOSS_CONTROL_AVLS)
 
 
 def need_labels(product_id):
-    """该 ``product_id`` 是否需要查 IOP 标签。"""
-    return product_id in OPPORTUNITY_RECALL_PRODUCT_IDS
+    """该 ``product_id`` 是否需要查 IOP 标签。
+
+    商机回捞用标签拼【辅助画像】；诊断链路用标签把三类话术里的
+    ``#标签名&`` 换成 IOP 的 ITEMVALUE。诊断由 F09629 动态命中、没有静态
+    ID 白名单，因此除控损外一律返回 True；标签由 main.py 的请求级提供者
+    保证整请求最多查 1 次 IOP，不会跨请求共享。
+    """
+    return product_id not in LOSS_CONTROL_PRODUCT_IDS
 
 
 # 前三类对象返回 code "0"，其余（ProductInfoRaw 兜底）返回 code "2"。
@@ -50,10 +56,12 @@ async def build_product_object(product_id, telnum, *, custom_label_info,
         record = await reader.query(avl, telnum)
         return ProductInfoByLossControl(product_id, record)
 
-    # 3. 诊断：7 表关联，任一环节为空由 build_diagnosis_record 走维表兜底；
-    #    对象只拿结构化 record，维表行在这里消费完毕
+    # 3. 诊断：7 表关联 + F09635/IOP 标签值替换，任一环节为空由
+    #    build_diagnosis_record 走维表兜底；对象只拿结构化 record，
+    #    维表行与请求级标签在这里消费完毕
     diagnosis_record = await build_diagnosis_record(
-        product_id, telnum, selling_points=selling_points)
+        product_id, telnum, selling_points=selling_points,
+        custom_label_info=custom_label_info)
     if diagnosis_record:
         return ProductInfoByDiagnosis(product_id, diagnosis_record)
 

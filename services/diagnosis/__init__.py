@@ -6,6 +6,9 @@ _LAZY_EXPORTS = {
     "pick_script_text": ("fallback", "pick_script_text"),
     "parse_tag_script": ("fallback", "parse_tag_script"),
     "FALLBACK_OMIT_SECTIONS": ("fallback", "FALLBACK_OMIT_SECTIONS"),
+    "collect_tag_names": ("logic", "collect_tag_names"),
+    "replace_tag_placeholders": ("logic", "replace_tag_placeholders"),
+    "apply_tag_values": ("logic", "apply_tag_values"),
 }
 
 
@@ -25,4 +28,5 @@ __all__ = [
     "build_diagnosis_record", "ProductInfoByDiagnosis",
     "build_fallback_record", "pick_script_text", "parse_tag_script",
     "FALLBACK_OMIT_SECTIONS",
+    "collect_tag_names", "replace_tag_placeholders", "apply_tag_values",
 ]

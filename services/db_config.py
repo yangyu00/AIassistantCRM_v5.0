@@ -106,7 +106,9 @@ TABLE_PRIMARY_KEYS: Final[Mapping[str, tuple[str, ...]]] = {
     "product_yxhuashu": ("business_type", "yx_huashu"),
     "product_wlhuashu": ("business_type", "reject_reason", "wl_huashu"),
     "conf_user_scene": ("product_no", "scene"),
-    "tagid_tagname": ("tag_id",),
+    # 诊断按话术里的「#标签名&」反查 tag_id（= IOP 的 ITEMCODE），
+    # 故 F09635 以标签名为主键，与写入侧声明保持一致。
+    "tagid_tagname": ("tag_name",),
 }
 
 
@@ -153,8 +155,9 @@ AVL_DB_SPECS: Final[Mapping[str, AvlDbSpec]] = {
     "F09633": AvlDbSpec("F09633", "diagnosis", "diagnosis/F09633.db",
                         "conf_user_scene", ("product_no",), "op_time DESC",
                         sharded=True, num_tables_env_key="F09633_NUM_TABLES"),
+    # F09635 按「标签名」查 tag_id（= IOP 的 ITEMCODE），主键 / 查询键均为 tag_name
     "F09635": AvlDbSpec("F09635", "diagnosis", "diagnosis/F09635.db",
-                        "tagid_tagname", ("tag_id",), "op_time DESC"),
+                        "tagid_tagname", ("tag_name",), "op_time DESC"),
 }
 
 

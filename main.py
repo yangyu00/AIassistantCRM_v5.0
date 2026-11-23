@@ -122,9 +122,9 @@ async def marketAssistant(args: Args):
         [one.id for one in args.productId])
     product_obj_list = []
     for one_product_obj in args.productId:
-        # 只有商机回捞查标签，由业务层 need_labels() 声明；提供者保证整请求
-        # 最多查一次 IOP，诊断 / 控损 / 兜底都不触发查询。
-        # 逐个判断等价于对全部 ID 取并集，不会因首个 ID 不需要而漏查。
+        # 商机回捞（辅助画像）与诊断链路（话术 #标签名& → IOP 值）都需要标签，
+        # 由业务层 need_labels() 声明；提供者保证整请求最多查一次 IOP，控损
+        # 不触发查询。逐个判断等价于对全部 ID 取并集，不会因首个 ID 不需要而漏查。
         # 「要不要拼画像」不在这里判断：只有商机对象持有画像组件，空标签 / 空标签 ID 子集时它自然返回空串。
         custom_label_info = (await label_provider.labels()
                              if need_labels(one_product_obj.id) else {})

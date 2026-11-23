@@ -77,10 +77,11 @@ TABLE_SCHEMAS: Final[Mapping[str, tuple[tuple[str, str], ...]]] = {
     # F09635 / 标签ID-标签名（io_samples/README.md 标为 TAGID_TAGNAME）
     # xls 未给该表 DDL：末两列含义未确认，按 sftp_avl2db/README.md 的注册口径
     # 用占位名 unknown1 / unknown2；上游给出正式 DDL 后再复核列名。
+    # 主键调整为 tag_name：诊断话术里出现的是标签名，按名反查 tag_id。
     "tagid_tagname": (
         ("op_time", "TEXT"),
-        ("tag_id", "VARCHAR(64)"),          # 标签ID（32 位 MD5）
-        ("tag_name", "VARCHAR(255)"),       # 标签名称
+        ("tag_id", "VARCHAR(64)"),          # 标签ID（32 位 MD5，= IOP 的 ITEMCODE）
+        ("tag_name", "VARCHAR(255)"),       # 标签名称（主键）
         ("unknown1", "VARCHAR(100)"),       # 未确认列 1
         ("unknown2", "VARCHAR(100)"),       # 未确认列 2
     ),
@@ -108,8 +109,9 @@ TABLE_PRIMARY_KEYS: Final[Mapping[str, tuple[str, ...]]] = {
     "product_wlhuashu": ("business_type", "reject_reason", "wl_huashu"),
     # 一个号码多个场景需多行；SCENE 与 REASON 按位置一一对应
     "conf_user_scene": ("product_no", "scene"),
-    # 标签ID 唯一映射标签名与两列未确认字段
-    "tagid_tagname": ("tag_id",),
+    # 标签名唯一映射标签ID（= IOP 的 ITEMCODE）与两列未确认字段；
+    # 诊断按「#标签名&」用 tag_name 反查 tag_id，故以标签名为主键
+    "tagid_tagname": ("tag_name",),
 }
 
 

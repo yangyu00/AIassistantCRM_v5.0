@@ -119,10 +119,10 @@ main.py ──> log/INFO_*.log、log/ERROR_*.log（在线进程日志写入，�
 1. 模块级创建唯一 `IOPClient`；FastAPI `lifespan` 的 startup / shutdown 分别 `await iop_client.start()` / `await iop_client.aclose()`。
 2. 请求内创建 `IopLabelProvider`（函数局部变量）：标签属于单个手机号，同请求最多查 1 次 IOP，任何失败降级 `{}`，不跨请求共享。
 3. 循环外调一次 `services.dimensions.load_selling_points(全部 productId)`，批量 `IN` 查 `selling_points`（`mode=ro`，每请求 1 次，无进程级缓存），得到 `{product_id: SellingPointRow}`。
-4. 逐个 `productId`：`services.routing.need_labels(id)` 决定是否取标签（仅商机回捞 3 个 ID 查），再调 `services.build_product_object(id, telnum, custom_label_info=..., selling_points=...)` 完成路由、取数与对象构造。
+4. 逐个 `productId`：`services.routing.need_labels(id)` 决定是否取标签（商机回捞与诊断链路查，控损不查；诊断无静态 ID 白名单，除控损外均需标签），再调 `services.build_product_object(id, telnum, custom_label_info=..., selling_points=...)` 完成路由、取数与对象构造。提供者保证整请求最多查 1 次 IOP。
 5. 按对象类型组装 `allScripts`；业务库未就绪时商机 / 控损仍按空记录出话术，诊断走卖点维表兜底。
 
-只有商机对象持有 `AuxiliaryPortrait` 组件；控损、诊断、兜底对象不持有画像相关属性，也不查 IOP 标签。
+只有商机对象持有 `AuxiliaryPortrait` 组件；控损、诊断、兜底对象都不拼辅助画像。诊断链路会消费请求级 IOP 标签，把三类话术里的 `#标签名&` 换成对应 `ITEMVALUE`，但不持有画像组件。
 
 ## 7. 四类路由（顺序不可调换）
 
@@ -149,6 +149,7 @@ main.py ──> log/INFO_*.log、log/ERROR_*.log（在线进程日志写入，�
 | 诊断（正常） | 六段【资费名称 / 资费摘要 / 痛点诊断 / 切入话术 / 营销话术 / 挽留话术】HTML | 空值填「无」；资费名称 / 摘要取 `F09629.BUSINESS_NAME` 按【】内外拆分（同时支持 ASCII `[]`） |
 | 诊断（维表兜底） | 四段【资费名称 / 资费摘要 / 切入话术 / 挽留话术】 | 省略【痛点诊断】【营销话术】两段；产品名称取维表「产品名称」按【】拆分；话术取「兜底话术」列原文，为空时回退第一个非空「标签N」原文 |
 
+- 诊断标签替换：切入 / 营销 / 挽留三段话术里的 `#标签名&`（如 `#客运个性化运营标签34&`）统一替换——按标签名查第 8 张表 `F09635`（主键 `tag_name`）得 `tag_id`，它即 IOP 返回的 `ITEMCODE`，用该 ITEMCODE 对应的 `ITEMVALUE` 替换整个占位符；正常链路与维表兜底链路都生效。标签名未登记、`ITEMCODE` 不存在、`ITEMVALUE` 为 `None` 或 IOP 降级 `{}` 时占位符原样保留。
 - 辅助画像：`build_auxiliary_portrait()` 按 `标签名: <strong><span style="color:blue;">值</span></strong>; ` 逐项拼接，跳过空值，末尾加 `【辅助画像】` 前缀并 `rstrip`；空输入返回空串，不追加该段。
 - 标签 ID 子集来自卖点维表 `selling_points.label_id`（换行 / 竖线 / 逗号 / 分号及全角变体拆分、去空、保序去重），IOP 返回决定名称与值；维表决定「查哪些 ID」，IOP 决定「叫什么、值是多少」。
 - `productName`：诊断取 `record['business_name']` 原文（正常链路为 `F09629.BUSINESS_NAME`，兜底为维表「产品名称」）。
@@ -173,7 +174,7 @@ main.py ──> log/INFO_*.log、log/ERROR_*.log（在线进程日志写入，�
 | 维表中无该 `product_id` 或产品名称为空 | 兜底失败，落 `code: "2"` |
 | 兜底话术原文为空 | 回退第一个非空「标签N」原文；全空时切入 / 挽留段填「无」 |
 | 卖点维表库缺失 / 列漂移 / 查询异常 | `dimensions` 降级 `{}`，商机辅助画像为空，其余话术段照常 |
-| IOP token / 标签超时、连接失败、响应异常、冷却期 | 重试退避后降级 `{}`，不阻塞其它并发请求 |
+| IOP token / 标签超时、连接失败、响应异常、冷却期 | 重试退避后降级 `{}`，不阻塞其它并发请求；商机画像为空，诊断话术里的 `#标签名&` 原样保留 |
 | 调用量库写入 / 启动读取失败 | 保留 `_PENDING` 下轮重试，或基数按 0 恢复，服务照常启动 |
 | 维表 xlsx 缺失 / 缺必需表头列 | 写入侧告警跳过本表，保留上次成功版本，下轮重试 |
 
@@ -262,7 +263,7 @@ python tests/check_call_stat.py                # 调用量 GET 冒烟
 python tests/check_iop_direct.py 13900000000   # IOP 上游直连冒烟
 ```
 
-`check_diagnosis_offline.py` 真正断言的是：`F09633` 建满 128 张分表、号码不串表、按 `telnum` 精确定位且缺 `product_no` 时降级 `[]`；写入侧 / 在线侧分表口径一致；维表「标签ID」拆分与库缺失降级；商机画像端到端来自维表 → IOP；诊断 7 表关联、六段话术、三种兜底触发、四段输出且省略两段；业务库未就绪时商机 / 控损按空记录出话术；四类路由输出与 `code` 按对象类型判定；只有商机回捞触发 IOP 查询（整请求 1 次）。
+`check_diagnosis_offline.py` 真正断言的是：`F09633` 建满 128 张分表、号码不串表、按 `telnum` 精确定位且缺 `product_no` 时降级 `[]`；写入侧 / 在线侧分表口径一致；维表「标签ID」拆分与库缺失降级；商机画像端到端来自维表 → IOP；诊断 7 表关联、六段话术、三种兜底触发、四段输出且省略两段；业务库未就绪时商机 / 控损按空记录出话术；四类路由输出与 `code` 按对象类型判定；商机回捞与诊断链路共用请求级 IOP 标签（整请求最多 1 次）、`F09635` 按 `tag_name` 反查并把三类话术里的 `#标签名&` 换成 `ITEMVALUE`（含兜底链路与降级保留）。
 
 以下三条**不在任何自检脚本的断言里**，只由代码结构保证、需人工或另行验证，不要把它们算进 `ALL PASS`：`app.router.on_startup` 为空（lifespan 注册）、每请求只读一次 `dimensions.db`、请求间标签 / 画像隔离。调用量阈值落库、重启恢复、shutdown `flush()` 不丢尾部增量则由 `python -m call_stat --self-check` 独立断言，输出 `SELF-CHECK OK`。
 

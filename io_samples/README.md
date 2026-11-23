@@ -17,7 +17,7 @@
 | `F0963120261120000000.AVL` | `sftp_avl2db` | `PRODUCT_YXHUASHU` 样例，10 行 |
 | `F0963220261120000000.AVL` | `sftp_avl2db` | `PRODUCT_WLHUASHU` 样例，10 行，含拒绝原因维度 |
 | `F0963320261120000000.AVL` | `sftp_avl2db` | `CONF_USER_SCENE` 样例，10 行，含痛点诊断文本；该 AVL 按 `product_no` 分 128 张表，样例行会分散到不同 `F09633_{i}` |
-| `F0963520261120000000.AVL` | `sftp_avl2db` | `TAGID_TAGNAME` 样例，10 行 |
+| `F0963520261120000000.AVL` | `sftp_avl2db` | `TAGID_TAGNAME` 样例，10 行（表主键 = `tag_name`，供诊断按标签名反查 `tag_id`） |
 | `iop_labels_query_raw_response.json` | `IOP` | 标签查询接口的原始响应样例：`res_code` / `res_desc` / `result.BUSIINFO[]`，每项含 `ITEMCODE` / `ITEMNAME` / `ITEMVALUE` |
 | `卖点维表.xlsx` | `local_excel2db` | `selling_points` 表的格式样例（业务 ID 表头 → 库列 `product_id`、话术、标签 ID、`标签0…标签27` 等） |
 | `标签转换维表.xlsx` | `local_excel2db` | `label_name_mapping` 表的格式样例，取名为「标签名称--标签ID」的 sheet |
@@ -40,6 +40,8 @@ python -m sftp_avl2db --task F09591 --date 20261110 \
 **IOP 响应对照**（只吃那个 `.json`）
 
 `iop_labels_query_raw_response.json` 是排查字段口径时看的原始报文形状；在线链路里 `IOPClient` 会把它解析成 `{ITEMCODE: [名称, 值]}` 的画像 dict，不做打桩、不读这个文件。想验证真实上游用 [`tests/check_iop_direct.py`](../tests/README.md)。
+
+`F09630` / `F09631` / `F09632` 的话术样例里含 `#客运个性化运营标签34&`、`#客运个性化运营标签82&`、`#互联网融合标签94&` 这类占位符：在线诊断链路按标签名查 `F09635` 拿 `tag_id`（= `ITEMCODE`），再用 IOP 返回的 `ITEMVALUE` 替换。样例里的标签名与 `F09635` / JSON 样例均为脱敏数据、不相互对应，仅供格式对照。
 
 **维表 Excel**（只吃两个 `.xlsx`，且见下节）
 

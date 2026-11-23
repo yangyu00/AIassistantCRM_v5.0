@@ -140,10 +140,16 @@ def main():
           f'{type(old_p).__name__} cols={old_p.column_count} pk={old_p.primary_key_indexes}')
     for avl, expect in [("F09627", (1,)), ("F09628", (1, 2)),
                         ("F09629", (2,)), ("F09633", (2, 3)),
-                        ("F09635", (1,))]:
+                        ("F09635", (2,))]:
         p = build_parser(write_profiles[avl])
         check(f"{avl} 主键下标按注册换算", p.primary_key_indexes == expect,
               f'{p.primary_key_indexes} expect={expect}')
+    check("F09635 主键 / 在线查询键均为 tag_name",
+          write_profiles["F09635"].primary_key == ("tag_name",) and
+          db_config.TABLE_PRIMARY_KEYS["tagid_tagname"] == ("tag_name",) and
+          db_config.AVL_DB_SPECS["F09635"].where == ("tag_name",),
+          f'write={write_profiles["F09635"].primary_key} '
+          f'online={db_config.TABLE_PRIMARY_KEYS["tagid_tagname"]}')
     # 末列原样保留文本：商机 "3" 由 SQLite 亲和性转整数，切入话术保持全文
     qr_first = next(build_parser(write_profiles["F09630"]).parse(
         SAMPLES / "F0963020261120000000.AVL"))
@@ -264,6 +270,10 @@ def main():
         "DIM_LABEL_A": ("维度标签A", "值A"),
         "DIM_LABEL_B": ("维度标签B", "值B"),
         "DIM_LABEL_C": ("维度标签C", "值C"),
+        # 下面三行模拟 IOP 返回的 ITEMCODE：与 F09635 补的 tag_id 一一对应
+        "c8fbbddc4337da705ee054ad4946f905": ("客运个性化运营标签34", "值34"),
+        "28f7d17f23ba86e761a47d0182982272": ("客运个性化运营标签82", "值82"),
+        "3de853e341b4a5f4e4e5cbc6e882530": ("互联网融合标签94", "值94"),
     }
     opp_obj = ProductInfoByOpportunityRecall(
         "202608041615335173", iop_stub, sp_opp, record={})
@@ -456,11 +466,23 @@ def main():
         ("2026-11-20", BT, "营销话术A"),
         ("2026-11-20", BT, "营销话术B"),
         ("2026-11-20", BT, "营销话术A"),     # 重复行，验证去重
+        ("2026-11-20", BT, "营销话术标签#客运个性化运营标签82&"),
     ])
     append_rows("F09632", [
         ("2026-11-20", BT, "价格贵|流量够用", "挽留话术A|挽留话术B"),
+        ("2026-11-20", BT, "标签原因#客运个性化运营标签34&",
+         "挽留话术标签#互联网融合标签94&"),
     ])
-    print("  已补：F09629 / F09633 / F09627 / F09631 / F09632")
+    # F09635 按标签名反查：tag_id 即 IOP 的 ITEMCODE（主键 = tag_name）
+    append_rows("F09635", [
+        ("2026-11-20", "c8fbbddc4337da705ee054ad4946f905",
+         "客运个性化运营标签34", "", ""),
+        ("2026-11-20", "28f7d17f23ba86e761a47d0182982272",
+         "客运个性化运营标签82", "", ""),
+        ("2026-11-20", "3de853e341b4a5f4e4e5cbc6e882530",
+         "互联网融合标签94", "", ""),
+    ])
+    print("  已补：F09629 / F09633 / F09627 / F09631 / F09632 / F09635")
 
     print("=== 3. 纯逻辑 ===")
     check("【】拆分", logic.split_fee_name(BIZ_NAME) == ("五福套餐", "流量放心用，月费58元"),
@@ -524,9 +546,13 @@ def main():
               record["top_scene_source"] == "rank" and bool(record["entry_script"]),
               f'{record["top_scene"]} / {record["top_scene_source"]}')
         check("营销话术多行且去重", record["marketing_scripts"] ==
-              ["营销话术A", "营销话术B"], str(record["marketing_scripts"]))
+              ["营销话术A", "营销话术B",
+               "营销话术标签#客运个性化运营标签82&"],
+              str(record["marketing_scripts"]))
         check("挽留话术多值按位置配对", record["retain_pairs"] ==
-              [("价格贵", "挽留话术A"), ("流量够用", "挽留话术B")],
+              [("价格贵", "挽留话术A"), ("流量够用", "挽留话术B"),
+               ("标签原因#客运个性化运营标签34&",
+                "挽留话术标签#互联网融合标签94&")],
               str(record["retain_pairs"]))
     check("未命中 F09629 且维表也无该 ID → None",
           asyncio.run(build_diagnosis_record(
@@ -597,6 +623,68 @@ def main():
               for seg in ("资费名称", "资费摘要", "痛点诊断", "切入话术",
                           "营销话术", "挽留话术")))
 
+    print("=== 5c. 话术标签占位符替换：#标签名& → F09635 tag_id → IOP ITEMVALUE ===")
+    demo = {
+        "entry_script": "超出后#客运个性化运营标签34&收费较高",
+        "marketing_scripts": ["办套餐#客运个性化运营标签82&"],
+        "retain_pairs": [("标签原因#客运个性化运营标签34&",
+                          "不如这个#互联网融合标签94&合适")],
+    }
+    check("收集三类话术里的标签名（保序去重）",
+          logic.collect_tag_names(demo) ==
+          ["客运个性化运营标签34", "客运个性化运营标签82", "互联网融合标签94"],
+          str(logic.collect_tag_names(demo)))
+    check("替换纯函数：查不到值的占位符原样保留",
+          logic.replace_tag_placeholders(
+              "#客运个性化运营标签34&/#未登记标签&",
+              {"客运个性化运营标签34": "值34"}) == "值34/#未登记标签&")
+    applied = logic.apply_tag_values(
+        demo, {"客运个性化运营标签34": "值34",
+               "客运个性化运营标签82": "值82",
+               "互联网融合标签94": "值94"})
+    check("apply_tag_values 覆盖切入 / 营销 / 挽留（含拒绝原因）",
+          applied["entry_script"] == "超出后值34收费较高" and
+          applied["marketing_scripts"] == ["办套餐值82"] and
+          applied["retain_pairs"] == [("标签原因值34", "不如这个值94合适")],
+          str(applied))
+    check("apply_tag_values 不改原 record",
+          "#客运个性化运营标签34&" in demo["entry_script"])
+
+    tagged = asyncio.run(build_diagnosis_record(
+        PID, TEL, selling_points=sp, custom_label_info=iop_stub))
+    check("正常链路：按标签名查 F09635 得 tag_id=ITEMCODE，切入话术换成 ITEMVALUE",
+          tagged is not None and "值34" in tagged["entry_script"] and
+          "#客运个性化运营标签34&" not in tagged["entry_script"],
+          str(tagged["entry_script"])[:80] if tagged else "None")
+    check("正常链路：营销话术换成 ITEMVALUE",
+          tagged is not None and
+          any("值82" in x and "#客运个性化运营标签82&" not in x
+              for x in tagged["marketing_scripts"]),
+          str(tagged["marketing_scripts"]) if tagged else "None")
+    check("正常链路：挽留话术（原因 + 话术）换成 ITEMVALUE",
+          tagged is not None and
+          any("值34" in reason and "值94" in huashu
+              for reason, huashu in tagged["retain_pairs"]),
+          str(tagged["retain_pairs"]) if tagged else "None")
+    check("IOP 降级 / 未注入标签 → 占位符原样保留，不静默吞掉",
+          record is not None and
+          "#客运个性化运营标签34&" in record["entry_script"],
+          str(record["entry_script"])[:80] if record else "None")
+
+    fb_tagged = asyncio.run(build_diagnosis_record(
+        FALLBACK_PID, TEL,
+        selling_points={FALLBACK_PID: replace(
+            sp[FALLBACK_PID],
+            fallback_script="切入话术\n客户#客运个性化运营标签34&专属\n"
+                            "拒绝挽留话术\n价格高：挽留#互联网融合标签94&")},
+        custom_label_info=iop_stub))
+    check("兜底话术同样走标签替换",
+          fb_tagged is not None and
+          "客户值34专属" in fb_tagged["entry_script"] and
+          any("挽留值94" in huashu
+              for _, huashu in fb_tagged["retain_pairs"]),
+          str(fb_tagged["entry_script"])[:80] if fb_tagged else "None")
+
     print("=== 6. 业务对象拼装 ===")
     obj = ProductInfoByDiagnosis(PID, record)
     check("productName = business_name 原文", obj.product_name == BIZ_NAME, obj.product_name)
@@ -630,7 +718,7 @@ def main():
         resp = asyncio.run(main.marketAssistant(args))
         scripts = resp["result"]["allScripts"]
         check("返回 5 条", len(scripts) == 5, str(len(scripts)))
-        check("只有商机回捞触发 IOP 查询（整请求 1 次）",
+        check("商机 / 诊断共用请求级标签，整请求仅查 1 次 IOP",
               len(iop_calls) == 1, str(iop_calls))
         by_id = {x["productId"]: x for x in scripts}
         d = by_id.get(PID, {})
@@ -639,6 +727,10 @@ def main():
               str(d.get("productName")))
         check("诊断 script 非空且含资费名称",
               "【资费名称】" in (d.get("script") or ""))
+        check("在线诊断 script 里 #标签名& 已换成 IOP ITEMVALUE",
+              "值34" in (d.get("script") or "") and
+              "#客运个性化运营标签34&" not in (d.get("script") or ""),
+              (d.get("script") or "")[:160])
         check("商机回捞仍 code=0",
               by_id.get("202608041615335173", {}).get("code") == "0")
         opp_script = by_id.get("202608041615335173", {}).get("script") or ""
