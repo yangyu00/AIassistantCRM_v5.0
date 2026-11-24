@@ -77,7 +77,7 @@ TABLE_SCHEMAS: Final[Mapping[str, tuple[tuple[str, str], ...]]] = {
     # F09635 / 标签ID-标签名（io_samples/README.md 标为 TAGID_TAGNAME）
     # xls 未给该表 DDL：末两列含义未确认，按 sftp_avl2db/README.md 的注册口径
     # 用占位名 unknown1 / unknown2；上游给出正式 DDL 后再复核列名。
-    # 主键调整为 tag_name：诊断话术里出现的是标签名，按名反查 tag_id。
+    # 主键为 tag_name：诊断话术里出现的是标签名，按名反查 tag_id。
     "tagid_tagname": (
         ("op_time", "TEXT"),
         ("tag_id", "VARCHAR(64)"),          # 标签ID（32 位 MD5，= IOP 的 ITEMCODE）

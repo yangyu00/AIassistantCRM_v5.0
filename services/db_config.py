@@ -189,7 +189,7 @@ LABEL_NAME_MAPPING_COLUMNS: Final = ("label_id", "display_name")
 
 # 四、分表口径与表名（物理布局；写入侧独立实现了同样的规则）
 def shard_index(product_no, num_tables: int) -> int:
-    """分表号：``zlib.crc32(str(product_no)) % NUM_TABLES``。"""
+    """分表号：``zlib.crc32(str(product_no).encode("utf-8")) % NUM_TABLES``。"""
     p_no = product_no if product_no else "NULL"
     return zlib.crc32(str(p_no).encode("utf-8")) % num_tables
 

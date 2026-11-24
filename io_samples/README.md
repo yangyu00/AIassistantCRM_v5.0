@@ -39,7 +39,7 @@ python -m sftp_avl2db --task F09591 --date 20261110 \
 
 **IOP 响应对照**（只吃那个 `.json`）
 
-`iop_labels_query_raw_response.json` 是排查字段口径时看的原始报文形状；在线链路里 `IOPClient` 会把它解析成 `{ITEMCODE: [名称, 值]}` 的画像 dict，不做打桩、不读这个文件。想验证真实上游用 [`tests/check_iop_direct.py`](../tests/README.md)。
+`iop_labels_query_raw_response.json` 是排查字段口径时看的原始报文形状；在线链路里 `IOPClient` 会把它解析成 `{ITEMCODE: [名称, 值]}` 的画像 dict，不做打桩、不读这个文件。想验证真实上游用 [`tests/check_iop_direct.py`](../tests/check_iop_direct.py)。
 
 `F09630` / `F09631` / `F09632` 的话术样例里含 `#客运个性化运营标签34&`、`#客运个性化运营标签82&`、`#互联网融合标签94&` 这类占位符：在线诊断链路按标签名查 `F09635` 拿 `tag_id`（= `ITEMCODE`），再用 IOP 返回的 `ITEMVALUE` 替换；平级的卖点话术模块不做这类替换。样例里的标签名与 `F09635` / JSON 样例均为脱敏数据、不相互对应，仅供格式对照。
 

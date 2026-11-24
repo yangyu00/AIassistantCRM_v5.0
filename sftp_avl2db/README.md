@@ -217,7 +217,7 @@ runtime/
 | `F09633` | 用户场景对应关系（**分表**） | `conf_user_scene` | `op_time, user_id, product_no, scene, reason` | `product_no, scene` |
 | `F09635` | 标签ID-标签名 | `tagid_tagname` | `op_time, tag_id, tag_name, unknown1, unknown2` | `tag_name` |
 
-主键口径：`op_time` 不进主键，维表每日全量按主键 `INSERT OR REPLACE` 覆盖最新批次；主键列自动补 `NOT NULL`。`F09635` 以 `tag_name` 为主键（在线侧查询键同）：诊断话术里出现的是 `#标签名&`，按标签名反查 `tag_id`（= IOP 的 `ITEMCODE`）才能取到 `ITEMVALUE`，写入侧与在线侧 `TABLE_PRIMARY_KEYS` 同步。**部署提示**：`CREATE TABLE IF NOT EXISTS` 不会改写已有表的主键，从旧版（主键 `tag_id`）升级时须删除 `diagnosis/F09635.db` 重灌该 AVL 全量，否则按 `tag_name` 的唯一性不生效。`F09631` / `F09632` 把话术全文纳入主键，避免重复行或「同一产品 + 同一拒绝原因对应两条不同挽留话术」被 REPLACE 丢行。`F09633` 主键 `(product_no, scene)` 与分表键共用 `product_no`，同一号码一定落在同一分表。`F09629` 的 `business_name` 含【】内外文本，业务侧按【】内为资费名称、【】外为资费摘要拆分。
+主键口径：`op_time` 不进主键，维表每日全量按主键 `INSERT OR REPLACE` 覆盖最新批次；主键列自动补 `NOT NULL`。`F09635` 以 `tag_name` 为主键（在线侧查询键同）：诊断话术里出现的是 `#标签名&`，按标签名反查 `tag_id`（= IOP 的 `ITEMCODE`）才能取到 `ITEMVALUE`，写入侧与在线侧 `TABLE_PRIMARY_KEYS` 同步。**部署提示**：`CREATE TABLE IF NOT EXISTS` 不会改写已有表的主键。`F09631` / `F09632` 把话术全文纳入主键，避免重复行或「同一产品 + 同一拒绝原因对应两条不同挽留话术」被 REPLACE 丢行。`F09633` 主键 `(product_no, scene)` 与分表键共用 `product_no`，同一号码一定落在同一分表。`F09629` 的 `business_name` 含【】内外文本，业务侧按【】内为资费名称、【】外为资费摘要拆分。
 
 离线复跑（8 个 AVL 各 10 行样例，日期按文件名取 `20261120`）：
 

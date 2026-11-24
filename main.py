@@ -117,15 +117,15 @@ async def marketAssistant(args: Args):
     # 缓存，否则会把上一个用户的标签带给下一个用户且不会报错
     label_provider = IopLabelProvider(args.telnum)
 
-    # 2. 建立产品对象列表
+    # 建立产品对象列表
     # 卖点维表按本次请求的全部 product_id 批量查一次（不缓存、不跨请求共享）：
     # 商机对象的标签 ID 子集来自该行的「标签ID」列，卖点话术模块用该行的产品
-    # 名称 /「生成话术」/「兜底话术」/「匹配结果2」/「标签N」原文按上一版格式
+    # 名称 /「生成话术」/「兜底话术」/「匹配结果2」/「标签N」原文
     # 拼话术；库缺失 / 未命中降级为空 dict。
     selling_points = dimensions.load_selling_points(
         [one.id for one in args.productId])
     # 「标签转换维表.xlsx」写出的 label_name_mapping 表：把 IOP 的 ITEMNAME
-    # 换成营销助手显示名字，对应上一版本的 consts.label_name_mapping。
+    # 换成营销助手显示名字。
     # 表缺失 / 列漂移降级 {}，辅助画像直接用 IOP 原名，输出结构不变。
     label_name_mapping = dimensions.load_label_name_mapping()
     product_obj_list = []
@@ -144,7 +144,7 @@ async def marketAssistant(args: Args):
             selling_points=selling_points,
             label_name_mapping=label_name_mapping))
 
-    # 3. 输出话术
+    # 输出话术
     # 商机回捞 / 控损 / 诊断 / 卖点话术四类业务对象返回 code=0；其余兜底 code=2。
     # 这里按对象类型判定，不能靠 product_name 是否为空：兜底对象也可能因
     # 维表残留拿到非空名称，只看它会返回 code=0 + 空话术，看起来成功、实际无内容。

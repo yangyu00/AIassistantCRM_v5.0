@@ -3,7 +3,7 @@
 # 安装：python -m venv .venv && . .venv/bin/activate
 #       python -m pip install -r requirements.txt
 #
-# 运行平台：仅 Linux / Unix（local_excel2db 直接用 fcntl，见根 README 第 1 节）。
+# 运行平台：仅 Linux / Unix（local_excel2db 直接用 fcntl）。
 # Python：3.10+（代码使用 `X | None` 联合类型注解）。
 #
 # 下面写的是「版本下限」，由代码实际调用到的 API 推出，不是精确锁定版本。

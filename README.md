@@ -52,7 +52,7 @@ main.py ──> log/INFO_*.log、log/ERROR_*.log（在线进程日志写入，�
 
 物理布局约定：
 
-- 固定表名 = `{AVL}`，分表名 = `{AVL}_{分表号}`，分表号 `zlib.crc32(str(product_no)) % NUM_TABLES`。
+- 固定表名 = `{AVL}`，分表名 = `{AVL}_{分表号}`，分表号 `zlib.crc32(str(product_no).encode("utf-8")) % NUM_TABLES`。
 - `F09591`（控损）与 `F09633`（诊断·用户场景对应关系）按 `product_no` 分表，默认 128 张；`F09633` 是千万级表，分表键与在线查询键一致，一次请求只命中一张分表。
 - 写入侧与在线侧各自独立声明库路径、表字段与分表数，代码 / 配置互不引用；唯一交集是磁盘上的 db 文件。改列顺序、分表数或库路径必须同步两侧声明（写入侧 `sftp_avl2db/table_schemas.py`、`avl_specs.py`、`.env`；在线侧 `services/db_config.py`、`services/.env`）。改分表数须重灌对应 AVL 全量数据。
 - 每个 `{AVL}.db` 内另有 `_avl_meta` 批次水位表（写入侧维护、在线侧按同名只读），用于把查询限定在最近 `N` 个 `op_time` 批次；不参与分表与过期清理。
@@ -67,7 +67,7 @@ main.py ──> log/INFO_*.log、log/ERROR_*.log（在线进程日志写入，�
 | 调用量统计 | `call_stat/.env`（4 键） | `load_config()` | 缺文件告警；缺键静默回落 `config.py` 内置默认值，仅显式写了非法值才告警 |
 | 在线读取 | `services/.env`（5 键） | `db_config.load()` | 回落 `db_config.py` 代码内默认值 |
 | 维表写入 | `local_excel2db/registry.json` | `load_registry()` | 配置损坏退出码 2 |
-| 在线服务 | `main.py` 顶部常量 | — | `LOG_DIR`、`FASTAPI_CONFIG`、`MARKET_ASSISTANT_URL`、`MARKET_ASSISTANT_USERS` |
+| 在线服务 | `main.py` 顶部常量 | — | `LOG_DIR`、`FASTAPI_CONFIG`、`MARKET_ASSISTANT_URL` |
 
 `.env` 语法只认整行 `#` 注释与 `KEY=VALUE`，不支持引号、行内注释、`${VAR}` 插值。仓库随附的 `.env` 为实际生效字符串，`.env.example` 是同值的带注释键模板；改完配置重启对应进程生效（配置对象首次加载后冻结）。
 
@@ -154,7 +154,7 @@ main.py ──> log/INFO_*.log、log/ERROR_*.log（在线进程日志写入，�
 - 辅助画像：商机侧 `build_auxiliary_portrait()` 按 `标签名: <strong><span style="color:blue;">值</span></strong>; ` 逐项拼接，跳过空值，末尾加 `【辅助画像】` 前缀并 `rstrip`；卖点话术侧 `selling_point_script.build_auxiliary_portrait()` 额外套用上一版硬编码转换（显示名映射 / `0.00→无` / 加元 / 加 M / 是否 / 降档阈值标红 / 同名去重），HTML 形状一致。空输入返回空串，不追加该段。
 - 标签 ID 子集来自卖点维表 `selling_points.label_id`（换行 / 竖线 / 逗号 / 分号及全角变体拆分、去空、保序去重），IOP 返回决定名称与值；维表决定「查哪些 ID」，IOP 决定「叫什么、值是多少」，`label_name_mapping` 表（由「标签转换维表.xlsx」写出）把 IOP 的 `ITEMNAME` 换成营销助手显示名。
 - `productName`：诊断取 `record['business_name']` 原文（即 `F09629.BUSINESS_NAME`）；卖点话术取维表「产品名称」原文（不拆资费名称 / 摘要，也不进 `output_script`）。
-- 上一版 `product_selling_point_match.py`（Excel → `consts.py`）只用于理解输出来源；这一版不复刻离线解析，直接把 `dimensions.db` 转好的 `TEXT` 原文做格式转换。
+- 不复刻离线解析，直接把 `dimensions.db` 转好的 `TEXT` 原文做格式转换。
 - 库里所有话术 / 标签列只存原始文本，拆分与解析都在在线读取侧完成，不写回解析结果。
 
 ### 实现级规格索引（重建逐字符行为时按此取）
@@ -205,10 +205,12 @@ python -m pip install -r requirements.txt
 
 最后一处不能漏：`.env` 缺键、空值或写成 `<...>` 占位符时会**回落到 `_SPECS` 的内置值**（见 `IOP/README.md` 第 4 节），只改 `.env` 并不能保证生效值已换掉。生产环境不要把 `.env` 再提交进版本库。改完配置重启对应进程生效（配置对象首次加载后冻结）。
 
+**外部依赖获取口径（属外部依赖）**：上表所列 `SFTP_HOST` / `SFTP_PORT` / `SFTP_USERNAME` / `SFTP_PASSWORD` / `SFTP_REMOTE_PATH` 与 `IOP_TOKEN_HOST` / `IOP_TOKEN_PORT` / `IOP_TOKEN_ID` / `IOP_TOKEN_SECRET` / `IOP_CUSTINFO_HOST` / `IOP_CUSTINFO_PORT` 的获取渠道：<待填写：上游接口人或运维交付渠道>；责任人：<待填写：配置管理员>；缺失行为：SFTP 侧缺任一键启动时 fail-fast，IOP 侧缺文件 / 缺键 / 空值回落 `IOP/config.py::_SPECS` 内置值。
+
 ### 10.3 首次上线顺序
 
 1. **先建维表库**：`python -m local_excel2db --once`。输入是仓库根 `excels/` 已预置的两张 xlsx，确认产出 `local_excel2db/runtime/sqlite_db/dimensions.db` 且 `selling_points` 有行。
-2. **再灌业务库**：12 个 AVL 各跑一次带 `--date` 的单次补跑（按上游实际文件日期逐个补），产出 `sftp_avl2db/runtime/sqlite_db/{project}/{AVL}.db` 与库内 `_avl_meta` 批次水位。改过分表数（`F09591` / `F09633`）必须重灌对应 AVL 全量。
+2. **再灌业务库**：12 个 AVL 各跑一次带 `--date` 的单次补跑（按上游实际文件日期逐个补），产出 `sftp_avl2db/runtime/sqlite_db/{project}/{AVL}.db` 与库内 `_avl_meta` 批次水位。改过分表数（`F09591` / `F09633`）必须重灌对应 AVL 全量。 上游 AVL 数据文件（属外部依赖）：获取渠道 <待填写：上游投递目录 / 接口人>，责任人 <待填写：数据提供方>，真实文件日期 <待填写：YYYYMMDD>；未取得文件时不臆造日期，常驻进程会在文件到达后自动拉取。
 3. **最后起常驻进程**：`python main.py`，加上 §10.5 代码块里的 12 个 `--task` 常驻进程与 `python -m local_excel2db`（共 14 个，见第 1 节）。
 4. 业务库尚未就绪也允许先起在线服务：商机 / 控损按空记录出话术（仍 `code: "0"`），诊断返回 `None` 后由平级的卖点话术模块接手，API 不会 500。
 

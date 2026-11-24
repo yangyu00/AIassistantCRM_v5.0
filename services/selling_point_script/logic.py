@@ -1,24 +1,24 @@
-"""卖点维表话术：复现上一版本 ``ProductInfoRewrite`` 的**输出内容格式**。
+"""卖点维表话术：话术输出内容格式。
 
-数据不再来自 ``excel2consts`` 生成的 ``src/consts.py``，而是走现有 db 链路：
+数据走现有 db 链路：
 
 * ``services.dimensions.SellingPointRow`` 一行（``local_excel2db`` 把
   ``卖点维表.xlsx`` 转成 ``dimensions.db`` 后的只读结果）提供产品名称 /
   生成话术 / 标签ID / 兜底话术 / 匹配结果2 / 标签0…标签N 原文；
 * ``custom_label_info`` 是请求级 IOP 返回 ``{ITEMCODE: [ITEMNAME, ITEMVALUE]}``，
-  既用来按上一版本的转换规则拼【辅助画像】，也用来决定命中哪一组切入 /
+  既用来拼【辅助画像】，也用来决定命中哪一组切入 /
   挽留话术；
 * ``label_name_mapping`` 来自 db 里的 ``label_name_mapping`` 表（写入侧由
-  ``标签转换维表.xlsx`` 产出），对应上一版本的 ``consts.label_name_mapping``。
+  ``标签转换维表.xlsx`` 产出）。
 
 本模块纯函数、零 I/O、零第三方依赖，不 import 诊断包、不查诊断 8 表、不做
-``#标签名&`` 替换。输出顺序 / HTML / 字面换行与上一版本逐字符一致：
+``#标签名&`` 替换。输出顺序 / HTML / 字面换行固定如下：
 
     辅助画像 → 切入话术 → 卖点 → 挽留话术
 
 四个【】标题统一包 ``<strong>``；话术行前缀用 ``color: blue;``（带空格），
 卖点首段内容用 ``color:red;``；段落之间用字面 ``\\n``，**不**转成 ``<br>``。
-「匹配结果2」为空时整张话术表为空（老版 ``nested_dict[key_id] = {}`` 口径），
+「匹配结果2」为空时整张话术表为空，
 「兜底话术」列为空也不回退「标签N」。
 
 之后要改「从维表里抽哪些信息」只改 ``extract_selling_point_fields()``，
@@ -28,11 +28,11 @@ from __future__ import annotations
 
 import re
 
-# 上一版本 __strong_text() / __get_output_script() 的四段顺序与标题。
+# 四段顺序与标题。
 SELLING_POINT_SECTIONS = ("辅助画像", "切入话术", "卖点", "挽留话术")
 STRONG_TITLES = tuple(f"【{s}】" for s in SELLING_POINT_SECTIONS)
 
-# 上一版本 product_info_raw.py::__get_auxiliary_portrait() 里的硬编码标签特判。
+# 硬编码标签特判。
 # 这些 ID 是 IOP 的 ITEMCODE，与 get_customer_labels() 返回的 key 同一口径。
 _LABEL_ZERO_TO_WU = "a1e357f57b474d51119bf003443bd088"
 _LABEL_FEE_YUAN = "cb933e7eb32b67ec637c78c6f2be65a1"
@@ -59,7 +59,7 @@ def strong_sections(text):
 
 
 # ---------------------------------------------------------------------------
-# ① 话术单元格 → [切入段, 挽留段]（直译上一版本 cut_in_str2tuple）
+# ① 话术单元格 → [切入段, 挽留段]
 # ---------------------------------------------------------------------------
 def parse_fusion_scripts(text):
     """解析一个话术单元格 → ``[切入话术, 挽留话术]``；全解析失败返回 ``""``。
@@ -99,7 +99,7 @@ def parse_fusion_scripts(text):
     else:
         injection_scripts.append('')
 
-    # 全部切入挽留话术都解析失败 → 返回空字符串（上一版本原样行为）
+    # 全部切入挽留话术都解析失败 → 返回空字符串
     for one_content in injection_scripts:
         if one_content:
             break
@@ -108,7 +108,6 @@ def parse_fusion_scripts(text):
     return injection_scripts
 
 
-# 与上一版本同名，便于对照历史实现 / 外部调用。
 cut_in_str2tuple = parse_fusion_scripts
 
 
@@ -194,7 +193,7 @@ def select_script(script_dict, custom_label_info, index):
 
 
 # ---------------------------------------------------------------------------
-# ② 生成话术 → 【卖点】段（直译上一版本 __get_selling_point）
+# ② 生成话术 → 【卖点】段
 # ---------------------------------------------------------------------------
 def build_selling_point_section(old_text):
     """把「生成话术」列按 ``1、资费：/ 2、价格：/ 3、业务确认：`` 分段。
@@ -226,12 +225,11 @@ def build_selling_point_section(old_text):
     return fusion_text
 
 
-# 与上一版本同名，便于对照历史实现 / 外部调用。
 build_selling_point = build_selling_point_section
 
 
 # ---------------------------------------------------------------------------
-# ③ 标签ID + IOP 返回 → 【辅助画像】（直译上一版本 __get_auxiliary_portrait）
+# ③ 标签ID + IOP 返回 → 【辅助画像】
 # ---------------------------------------------------------------------------
 def build_auxiliary_portrait(label_ids, custom_label_info,
                              label_name_mapping=None):
@@ -280,7 +278,7 @@ def build_auxiliary_portrait(label_ids, custom_label_info,
             if label_id == _LABEL_BOOL:
                 label_value = ("是" if str(label_value) == "1" else "否")
 
-            # 涉及是否的重复标签去重（沿用上一版本：replace 结果未回写）
+            # 涉及是否的重复标签去重（replace 结果未回写）
             if label_name in exist_label_name_list:
                 if label_value == "是":
                     portrait_str.replace(f"{label_name}: 否; ",

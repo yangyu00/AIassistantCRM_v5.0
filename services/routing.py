@@ -69,7 +69,7 @@ async def build_product_object(product_id, telnum, *, custom_label_info,
         return ProductInfoByDiagnosis(product_id, diagnosis_record)
 
     # 4. 卖点维表话术：与商机 / 控损 / 诊断平级的独立业务。消费维表行 +
-    #    请求级 IOP 返回 + 标签显示名映射，复现上一版本的话术输出格式；
+    #    请求级 IOP 返回 + 标签显示名映射；
     #    不查诊断 8 表、不做 #标签名& 替换。
     sp_obj = build_selling_point_object(
         product_id, selling_points, custom_label_info, label_name_mapping)

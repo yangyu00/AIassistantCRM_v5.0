@@ -44,14 +44,14 @@
 
 ## 3. 五类路由（四类业务 + 兜底，顺序不可调换）
 
-`build_product_object(product_id, telnum, *, custom_label_info, selling_points)` 是唯一对象工厂；`main.py` 用 `isinstance(obj, BUSINESS_OBJECT_TYPES)` 判 `code`（`"0"` 带话术 / `"2"` 空话术）。
+`build_product_object(product_id, telnum, *, custom_label_info, selling_points, label_name_mapping=None)` 是唯一对象工厂；`main.py` 用 `isinstance(obj, BUSINESS_OBJECT_TYPES)` 判 `code`（`"0"` 带话术 / `"2"` 空话术）。
 
 | 顺序 | 条件 | 数据源 | 对象 |
 |---|---|---|---|
 | 1 | 商机回捞 3 个 ID：`202608041615335173/172/174` → `F09554/F09555/F09556` | `reader.query(avl, telnum)` | `ProductInfoByOpportunityRecall` |
 | 2 | 控损 1 个 ID：`202609180955095402` → `F09591`，命中即返回 | `reader.query(avl, telnum)` | `ProductInfoByLossControl` |
 | 3 | 诊断（由 `F09629` 动态命中，无静态 ID 白名单） | `diagnosis.build_diagnosis_record()`：8 表（7 表关联 + `F09635` 标签反查）；任一环节为空返回 `None` | `ProductInfoByDiagnosis` |
-| 4 | 诊断返回 `None`（或前面都没命中） | `selling_point_script.build_selling_point_object(product_id, selling_points)`：只消费维表一行，输出复现上一版格式（可选 `custom_label_info` 默认不传） | `ProductInfoBySellingPoint` |
+| 4 | 诊断返回 `None`（或前面都没命中） | `selling_point_script.build_selling_point_object(product_id, selling_points, custom_label_info, label_name_mapping)`：只消费维表一行 + 请求级 IOP 返回 + 标签显示名映射 | `ProductInfoBySellingPoint` |
 | 5 | 其余 | — | `ProductInfoRaw`（兜底，`code: "2"`） |
 
 - 业务库未就绪（`reader.query` 返回 `{}`）时按空记录出话术：商机仍输出四段（各段填「无」），控损输出「无历史话术记录」，都不落到诊断 / 卖点话术 / 兜底，也不抛 500。
@@ -66,7 +66,7 @@
 
 - `AVL_DB_SPECS`：12 个 AVL 各自的 `db_file`（如 `diagnosis/F09633.db`）、schema 名、单条查询键 `where`、固定 `order_by`、是否分表。
 - `TABLE_SCHEMAS` / `TABLE_PRIMARY_KEYS`：各表列顺序 / 类型（与写入侧建表 DDL 对齐）与主键；`SELECT *` 回来的 dict 按此列顺序组装。
-- `services/.env`：共 5 键——`AVL_DB_ROOT`、`DIMENSIONS_DB`、`LOSS_CONTROL_NUM_TABLES`、`F09633_NUM_TABLES`、`AVL_FRESHNESS_WINDOW_DAYS`（默认 `2`，`0` 关闭新鲜度过滤，见第 4.1 节）；缺文件 / 缺键用 `db_config.py` 顶部代码内默认值（默认指向 `sftp_avl2db/runtime/sqlite_db` 等）。与根 README 第 4 节的 5 键口径一致。
+- `services/.env`：共 5 键——`AVL_DB_ROOT`、`DIMENSIONS_DB`、`LOSS_CONTROL_NUM_TABLES`、`F09633_NUM_TABLES`、`AVL_FRESHNESS_WINDOW_DAYS`（默认 `2`，`0` 关闭新鲜度过滤，见第 4.1 节）；缺文件 / 缺键用 `db_config.py` 顶部代码内默认值（默认指向 `sftp_avl2db/runtime/sqlite_db` 等）。
 - `shard_index()` / `table_name()`：分表号 `crc32(product_no) % NUM_TABLES`，表名 `{AVL}_{分表号}`；固定表名为 `{AVL}`。
 
 三个入口都是 `async`、内部同步 `sqlite3`，列名走 `DbProfile.columns` 白名单、值一律参数绑定，排序固定取静态声明：
@@ -146,7 +146,7 @@
 | `query.py` | `build_diagnosis_record(product_id, telnum, *, custom_label_info)`，async，7 表关联 + 第 8 张表 F09635 反查 + IOP 值替换；任一环节为空返回 `None`，不读维表、不拼兜底。不 import IOP，标签由编排层注入 |
 | `rewrite.py` | `ProductInfoByDiagnosis`，把 record 拼成固定六段 `output_script` |
 
-**诊断不消费 `selling_points`，也不导出任何兜底话术符号。** 原 `diagnosis/fallback.py` 已迁出为平级包 `selling_point_script/`。
+**诊断不消费 `selling_points`，也不导出任何兜底话术符号。**
 
 #### 7 表关联取数 + 话术标签值替换
 
@@ -174,15 +174,13 @@
 
 ### 6.2 卖点维表话术（`services/selling_point_script/`）：与诊断平级
 
-这一版的需求是「**把 db 里已转好的维表信息，经过转换复现上一版的输出内容格式**」。
-因此 Excel → `consts.py` 那套离线解析（`product_selling_point_match.py`）**不进本包**，
-只用 ``SellingPointRow`` 的 ``TEXT`` 原文做格式转换；上一版 `ProductInfoRewrite`
-的 HTML 模板逐字符对齐。
+把 db 里已转好的维表信息，经过转换输出话术格式。
+只用 ``SellingPointRow`` 的 ``TEXT`` 原文做格式转换；HTML 模板逐字符对齐。
 
 | 文件 | 职责 |
 |---|---|
 | `logic.py` | 纯函数零 I/O：`cut_in_str2tuple()`（老版话术分段 + 蓝色 span）、`build_selling_point()`（老版卖点标红 / 加粗）、`strong_sections()`（标题加粗）、`build_output_script()`（**唯一组合点**）、`pick_script_statement()`（老版按标签选话术）、`extract_selling_point_fields()`（**唯一抽取点**） |
-| `rewrite.py` | `ProductInfoBySellingPoint`（业务对象）+ `build_selling_point_object(product_id, selling_points, *, custom_label_info=None)`（工厂，无行 / 产品名为空返回 `None`） |
+| `rewrite.py` | `ProductInfoBySellingPoint`（业务对象）+ `build_selling_point_object(product_id, selling_points, custom_label_info=None, label_name_mapping=None)`（工厂，无行 / 产品名为空返回 `None`） |
 | `__init__.py` | 显式导出语义化类名与两个单点函数 |
 
 **db 字段 → 上一版输出位置**

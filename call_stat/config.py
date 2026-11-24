@@ -84,7 +84,7 @@ def load_config(*, env_path=None, runtime_dir=None) -> CallStatConfig:
     d = _DEFAULTS
 
     def resolve(key, parser, *extra):
-        # 缺键静默回落默认值；只有显式写了非法值才告警（与 IOP 的容错口径一致）
+        # 缺键静默回落默认值；只有显式写了非法值才告警
         return parser(v[key], d[key], *extra) if key in v else d[key]
 
     return CallStatConfig(
