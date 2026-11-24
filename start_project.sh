@@ -9,6 +9,7 @@
 #
 # Optional environment variables:
 #   PYTHON_BIN=/path/to/python      Interpreter override (default: .venv/bin/python, then python3)
+#   CRM_PORT=8990                  Online API port (default 8990; also read by main.py)
 #   SKIP_SFTP=1                    Do not start the 12 SFTP writer processes (for local checks without upstream)
 #   BOOTSTRAP_AVL_DATE=YYYYMMDD    Before startup, run a one-shot backfill for each of the 12 AVLs on the given date
 #   INSTALL_DEPS=1                 Run pip install -r requirements.txt automatically when dependencies are missing
@@ -32,6 +33,7 @@ SKIP_DEP_CHECK="${SKIP_DEP_CHECK:-0}"
 SKIP_BOOTSTRAP_DB="${SKIP_BOOTSTRAP_DB:-0}"
 INSTALL_DEPS="${INSTALL_DEPS:-0}"
 BOOTSTRAP_AVL_DATE="${BOOTSTRAP_AVL_DATE:-}"
+API_PORT="${CRM_PORT:-8990}"
 
 if [[ -x "$ROOT/.venv/bin/python" ]]; then
     PY="$ROOT/.venv/bin/python"
@@ -125,6 +127,11 @@ launch() {
 start() {
     [[ "$DRY_RUN" == "1" ]] || mkdir -p "$LOG_DIR"
 
+    if [[ ! "$API_PORT" =~ ^[0-9]{1,5}$ ]] || (( 10#$API_PORT < 1 || 10#$API_PORT > 65535 )); then
+        echo "CRM_PORT must be an integer in 1..65535 (got: $API_PORT)"
+        return 2
+    fi
+
     # Avoid duplicate startup: writers hold a single-instance lock (a second instance exits),
     # and the API would hit a port conflict.
     local f
@@ -207,9 +214,9 @@ start() {
     launch dim_watcher -m local_excel2db
     launch api main.py
 
+    echo
+    echo "Online API : http://0.0.0.0:${API_PORT}/api/speechQryService"
     if [[ "$DRY_RUN" != "1" ]]; then
-        echo
-        echo "Online API : http://0.0.0.0:8989/api/speechQryService"
         echo "Status     : bash start_project.sh status"
         echo "Stop all   : bash start_project.sh stop"
         echo "Start logs : $LOG_DIR/*.log"

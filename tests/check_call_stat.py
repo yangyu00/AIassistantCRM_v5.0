@@ -10,7 +10,7 @@ from urllib.parse import urlencode
 
 import requests
 
-BASE_URL = os.environ.get("CRM_SMOKE_BASE_URL", "http://127.0.0.1:8989").rstrip("/")
+BASE_URL = os.environ.get("CRM_SMOKE_BASE_URL", "http://127.0.0.1:8990").rstrip("/")
 # 与 call_stat/.env 的 CALL_STAT_QUERY_PATH 保持一致；改了 .env 记得同步这里
 CALL_STAT_PATH = "/api/callStat"
 TIMEOUT = 10

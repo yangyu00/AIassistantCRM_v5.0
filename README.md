@@ -8,7 +8,7 @@
 |---|---|---|---|
 | 写入侧 | `python -m sftp_avl2db --task <AVL>` | 12 | 每个 AVL 一个进程：SFTP 拉取 AVL → 解析 → 写 `{AVL}.db` |
 | 写入侧 | `python -m local_excel2db` | 1 | 轮询项目根 `excels/*.xlsx` → `dimensions.db` |
-| 在线侧 | `python main.py` | 1 | FastAPI 在线 API（`0.0.0.0:8989`），只读业务库与维表，按 `product_id` 拼话术 |
+| 在线侧 | `python main.py` | 1 | FastAPI 在线 API（默认 `0.0.0.0:8990`，端口可用 `CRM_PORT` 配置），只读业务库与维表，按 `product_id` 拼话术 |
 | 在线侧模块 | `call_stat/` | 0（进程内） | HTTP 访问按天计数，缓冲落 `call_stat/runtime/call_sum.db` |
 
 部署时 14 个进程都要起。业务与计数数据的写入边界是：在线进程只写 `call_stat/runtime/call_sum.db`，业务库与维表均由写入侧独立维护；此外在线进程启动时会由 `configure_logging()` 在项目根 `log/` 下写 `INFO_YYYY-MM-DD.log` / `ERROR_YYYY-MM-DD.log`（按天轮转、保留 7 天），这是日志产物，不参与业务数据流。各包配置与运行时产物按 `__file__` 锚在包目录内，与启动 CWD 无关。
@@ -67,7 +67,7 @@ main.py ──> log/INFO_*.log、log/ERROR_*.log（在线进程日志写入，�
 | 调用量统计 | `call_stat/.env`（4 键） | `load_config()` | 缺文件告警；缺键静默回落 `config.py` 内置默认值，仅显式写了非法值才告警 |
 | 在线读取 | `services/.env`（5 键） | `db_config.load()` | 回落 `db_config.py` 代码内默认值 |
 | 维表写入 | `local_excel2db/registry.json` | `load_registry()` | 配置损坏退出码 2 |
-| 在线服务 | `main.py` 顶部常量 | — | `LOG_DIR`、`FASTAPI_CONFIG`、`MARKET_ASSISTANT_URL` |
+| 在线服务 | `main.py` 顶部常量 + 环境变量 `CRM_PORT` | `_resolve_port()` | 端口默认 `8990`；`LOG_DIR`、`MARKET_ASSISTANT_URL` 仍是顶部常量，`CRM_PORT` 非法时启动 fail-fast |
 
 `.env` 语法只认整行 `#` 注释与 `KEY=VALUE`，不支持引号、行内注释、`${VAR}` 插值。仓库随附的 `.env` 为实际生效字符串，`.env.example` 是同值的带注释键模板；改完配置重启对应进程生效（配置对象首次加载后冻结）。
 
@@ -77,6 +77,16 @@ main.py ──> log/INFO_*.log、log/ERROR_*.log（在线进程日志写入，�
 - `services/.env`：`AVL_DB_ROOT`、`DIMENSIONS_DB`、`LOSS_CONTROL_NUM_TABLES`、`F09633_NUM_TABLES`、`AVL_FRESHNESS_WINDOW_DAYS`（默认 `2`，`0` 关闭新鲜度过滤）。
 - `call_stat/.env`：`CALL_STAT_FLUSH_THRESHOLD`（默认 100）、`CALL_STAT_QUERY_PATH`（默认 `/api/callStat`）、`CALL_STAT_DB_FILENAME`（默认 `call_sum.db`）、`CALL_STAT_EXPORT_DIRNAME`（默认 `export`）。
 - `sftp_avl2db/.env`：SFTP 公共 5 项 + 每个 AVL 的 `<AVL>_BATCH_SIZE / _DATA_EXPIRE_DAYS / _LOCAL_FILE_EXPIRE_DAYS / _POLL_INTERVAL_SECONDS / _PURGE_CYCLE_DAYS`，分表 AVL 另加 `<AVL>_NUM_TABLES`；无项目级键。
+
+**在线服务端口（唯一不读 `.env` 的运行参数）**：`main.py::FASTAPI_CONFIG["port"]` 默认 `8990`，由 `main.py::_resolve_port()` 从环境变量 `CRM_PORT` 读取（1~65535 的整数），未设置或为空时用默认值；显式写了非法值会在启动时抛 `ValueError` 直接退出，不静默回落。改端口不必改任何配置文件：
+
+```bash
+python main.py                       # 0.0.0.0:8990
+CRM_PORT=9100 python main.py         # 0.0.0.0:9100
+CRM_PORT=9100 bash start_project.sh  # 启动脚本打印的地址同步跟随
+```
+
+改了 `CRM_PORT` 后，冒烟脚本要同步设 `CRM_SMOKE_BASE_URL`（见 `tests/README.md`），否则仍打默认 `8990`。
 
 ## 5. 在线 API 契约
 
@@ -254,7 +264,7 @@ python -m sftp_avl2db --task F09555
 # ... F09556 / F09591 / F09627 / F09628 / F09629 / F09630 / F09631 / F09632 / F09633 / F09635
 
 python -m local_excel2db          # 卖点维表写入（默认 600s 轮询）
-python main.py                    # 在线 API :8989
+python main.py                    # 在线 API :8990（CRM_PORT 可覆盖）
 ```
 
 常用维护命令：

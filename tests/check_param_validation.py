@@ -7,7 +7,7 @@ import time
 
 import requests
 
-BASE_URL = os.environ.get("CRM_SMOKE_BASE_URL", "http://127.0.0.1:8989").rstrip("/")
+BASE_URL = os.environ.get("CRM_SMOKE_BASE_URL", "http://127.0.0.1:8990").rstrip("/")
 SPEECH_PATH = "/api/speechQryService"
 TIMEOUT = 10
 
