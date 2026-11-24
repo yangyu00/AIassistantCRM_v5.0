@@ -240,6 +240,9 @@ bash start_project.sh status         # 查看各进程
 bash start_project.sh stop           # 优雅停止（先 SIGTERM 让在线进程 flush 调用量）
 DRY_RUN=1 bash start_project.sh      # 只打印不执行
 # 可选：SKIP_SFTP=1（不启 12 个写入进程）、BOOTSTRAP_AVL_DATE=YYYYMMDD（启动前按日期补跑一次）
+#       PYTHON_BIN=/path/to/python（覆盖解释器，默认 .venv/bin/python 再 python3）
+#       INSTALL_DEPS=1（依赖缺失时自动 pip install -r requirements.txt）
+#       SKIP_DEP_CHECK=1（跳过依赖检查）、SKIP_BOOTSTRAP_DB=1（dimensions.db 缺失也不自动 --once 建库）
 ```
 
 PID 与进程 stdout 在 `log/startup/`，各写入侧自身日志仍在各自 `runtime/log/`。等价的手工启动方式：

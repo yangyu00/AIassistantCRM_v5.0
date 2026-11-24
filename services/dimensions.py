@@ -80,7 +80,6 @@ def _row_to_value(row) -> SellingPointRow:
 def load_label_name_mapping() -> dict[str, str]:
     """读「标签转换维表」→ ``{label_id: 营销助手显示名字}``。
 
-    上一版本把这份映射写进 ``consts.label_name_mapping``；db 版由
     ``local_excel2db`` 把 ``标签转换维表.xlsx`` 落成 ``label_name_mapping``
     表，在线侧按 ``db_config`` 声明只读两列。表缺失 / 列漂移 / 查询异常一律
     降级 ``{}``：此时辅助画像直接用 IOP 返回的 ``ITEMNAME``，输出结构不变。

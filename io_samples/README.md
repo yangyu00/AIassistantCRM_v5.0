@@ -45,7 +45,7 @@ python -m sftp_avl2db --task F09591 --date 20261110 \
 
 **维表 Excel**（只吃两个 `.xlsx`，且见下节）
 
-`local_excel2db` 按包内 `registry.json` 的 `source`（纯文件名）从项目根 `excels/` 轮询 xlsx、抽列写入 `local_excel2db/runtime/sqlite_db/dimensions.db`；在线侧经 `services/dimensions.py` 每请求只读一次该库，按 `product_id` 取 `selling_points.label_id`（Excel「标签ID」）拼商机辅助画像；诊断 8 表不适用时，由平级的卖点话术模块把该行的产品名称 /「生成话术」/「兜底话术」/「匹配结果2」/「标签N」原文转换成上一版 `ProductInfoRewrite` 的输出格式。
+`local_excel2db` 按包内 `registry.json` 的 `source`（纯文件名）从项目根 `excels/` 轮询 xlsx、抽列写入 `local_excel2db/runtime/sqlite_db/dimensions.db`；在线侧经 `services/dimensions.py` 每请求两次 `mode=ro` 只读连接（`selling_points` 按全部 `productId` 批量查一次、`label_name_mapping` 全表读一次），按 `product_id` 取 `selling_points.label_id`（Excel「标签ID」）拼商机辅助画像；诊断 8 表不适用时，由平级的卖点话术模块把该行的产品名称 /「生成话术」/「兜底话术」/「匹配结果2」/「标签N」原文转换成上一版 `ProductInfoRewrite` 的输出格式。
 
 ## 3. 维表 Excel 的实际目录：`excels/`
 
@@ -53,7 +53,7 @@ python -m sftp_avl2db --task F09591 --date 20261110 \
 |---|---|---|
 | `io_samples/` | 随仓库提交的格式样例，用于对照表头 / 列格式 | 无人 |
 | `excels/` | `local_excel2db` 唯一输入目录，按 `__file__` 定位到项目根 | `python -m local_excel2db` 写入进程 |
-| `local_excel2db/runtime/sqlite_db/` | 写入侧唯一产物 `dimensions.db` | `services/dimensions.py`（在线侧 `mode=ro`，每请求 1 次） |
+| `local_excel2db/runtime/sqlite_db/` | 写入侧唯一产物 `dimensions.db` | `services/dimensions.py`（在线侧 `mode=ro`，每请求 2 次只读连接：`selling_points` 批量 + `label_name_mapping` 全表） |
 
 `registry.json` 里每张表的 `source` 只允许纯文件名（如 `卖点维表.xlsx`），由 `config.py` 强制拼到 `INPUT_DIR = 项目根/excels/`；写 `../`、子目录或绝对路径会在加载配置时直接报 `ValueError`。库、锁、日志的路径是代码常量，全部落在 `local_excel2db/runtime/` 下；配置与产物都锚在包内，与启动 CWD 无关，registry 与 CLI 都不提供路径覆盖入口，也不读环境变量：
 

@@ -52,7 +52,7 @@ def _warn(msg):
 
 
 def strong_sections(text):
-    """上一版本 ``__strong_text()``：四个【】标题统一包 ``<strong>``。"""
+    """四个【】标题统一包 ``<strong>``。"""
     for title in STRONG_TITLES:
         text = text.replace(title, f"<strong>{title}</strong>")
     return str(text)
@@ -112,20 +112,20 @@ cut_in_str2tuple = parse_fusion_scripts
 
 
 def _clean_script_text(text):
-    """上一版本调用处口径：``.strip().replace("**", "")``。"""
+    """调用处口径：``.strip().replace("**", "")``。"""
     return str(text or "").strip().replace("**", "")
 
 
 def pick_script_text(row):
-    """「兜底话术」列原文。老版不回退「标签N」（标签N 只服务匹配结果2）。"""
+    """「兜底话术」列原文。不回退「标签N」（标签N 只服务匹配结果2）。"""
     return str(getattr(row, "fallback_script", "") or "").strip()
 
 
 def build_script_dict(row):
-    """维表一行 → 上一版本 ``cut_in_script_dict[product_id]`` 的等价结构。
+    """维表一行 → 按「匹配结果2」构造的话术字典。
 
-    「匹配结果2」为空时返回 ``{}``——老版生成 consts 时整张内层字典被丢掉，
-    切入 / 挽留两段都不输出，连「兜底话术」也不生效。
+    「匹配结果2」为空时返回 ``{}``，此时切入 / 挽留两段都不输出，
+    连「兜底话术」也不生效。
     """
     match_result = str(getattr(row, "match_result", "") or "").strip()
     if not match_result:
@@ -164,7 +164,6 @@ def _label_nv(item):
 def select_script(script_dict, custom_label_info, index):
     """按 IOP 命中情况选切入（index=0）/ 挽留（index=1）段。
 
-    直译上一版本 ``__get_cut_in_statement()`` / ``__get_retain_statement()``：
     按 dict 插入顺序找第一个「ID 在 IOP 返回里且 ITEMVALUE ∈ {是, 1}」的组，
     全不命中才用「兜底话术」组；异常一律降级空串，不抛给在线接口。
     """
@@ -182,8 +181,8 @@ def select_script(script_dict, custom_label_info, index):
                 if isinstance(fusion_script_list, list):
                     fallback_script = fusion_script_list[index]
     except IndexError:
-        # 老版对「匹配结果2」里解析失败的话术组存的是 ""，取 [0]/[1] 必然抛
-        # IndexError；它的 try/except 直接吞掉并 return ""，这里逐字符照做，
+        # 「匹配结果2」里解析失败的话术组存的是 ""，取 [0]/[1] 必然抛
+        # IndexError；try/except 直接吞掉并 return ""，
         # 不打日志（真实维表里有大量这类行，刷屏无意义）。
         return ""
     except Exception as e:
@@ -314,7 +313,7 @@ _OUTPUT_KEYS = ("auxiliary_portrait", "cut_in_statement",
 
 
 def build_output_script(record):
-    """**唯一组合点**：各段按上一版本顺序拼成 ``output_script``。
+    """**唯一组合点**：各段按固定顺序拼成 ``output_script``。
 
     字面 ``\\n`` 连接，最后把四个【】标题统一包 ``<strong>``；不做
     ``strip()``、不把 ``\\n`` 转成 ``<br>``，与上一版本逐字符一致。

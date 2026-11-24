@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
-# 写入侧 load_profiles() 读包内 .env；按当前约定 .env 允许随仓库入库、本仓库已随附，
+# 写入侧 load_profiles() 读包内 .env；本仓库已随附，
 # 仅当检出里确实缺失时才临时从 .env.example 复制一份，脚本结束删除。
 # 在线侧 services 读自己的 services/.env（不存在时用 db_config 的代码内默认值），
 # 不依赖这份文件。
@@ -76,7 +76,7 @@ NO_INTERSECT_PID = "202611210000000098"   # 有映射但场景无交集 → 诊�
 GOLDEN_PID = "202611210000000097"         # 带完整标签子集，用于 IOP 辅助画像 golden 比对
 TEL_NO_INTERSECT = "15000000099"          # F09633 里只有不相干场景
 MATCH_IDS = ("SCENE_LABEL_0", "SCENE_LABEL_1", "SCENE_LABEL_2")
-# 上一版本「标签ID」列：既有普通标签，也有 product_info_raw.py 里硬编码特判的 ID
+# 「标签ID」列：既有普通标签，也有 product_info_raw.py 里硬编码特判的 ID
 SELLING_LABEL_IDS = "\n".join([
     "DIM_LABEL_A",
     "cb933e7eb32b67ec637c78c6f2be65a1",   # 费用 → 加「元」
@@ -91,10 +91,10 @@ TAG_TEXTS = (
     "切入话术\n基于客户标签特征切入（壹号）：切入B\n拒绝挽留话术\n**担心合约**：挽留B",
     "切入话术\n基于客户标签特征切入（贰号）：切入C\n拒绝挽留话术\n流量少：挽留C",
 )
-# 「生成话术」列：上一版 __get_selling_point 的输入形态
+# 「生成话术」列：输入形态
 SELL_TEXT = ("1、资费：基础100分钟+1GB国内。2、价格：9元/月。"
              "3、业务确认：合约期1年。")
-# 上一版 ProductInfoRewrite.output_script 的逐字符期望（无标签时无辅助画像段）。
+# 无标签时（无辅助画像段）的逐字符期望输出。
 # 用 "\n".join 写清楚段间是真实换行，不是 <br>。
 EXPECTED_LEGACY_OUTPUT = "\n".join([
     "<strong>【切入话术】</strong>",

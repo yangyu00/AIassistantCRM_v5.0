@@ -91,7 +91,7 @@ def run() -> int:
             print(f"  HTTP {resp.status_code} | 响应不是 JSON：{resp.text[:200]}")
             continue
 
-        # 只摘关键字段，避免八组完整响应刷屏；想看全量可临时改成 dumps 整个 body
+        # 只摘关键字段，避免九组完整响应刷屏；想看全量可临时改成 dumps 整个 body
         print(f"  HTTP {resp.status_code} | 耗时 {elapsed:.3f}s")
         print(f"  实际：res_code={body.get('res_code')} | res_desc={body.get('res_desc')!r} "
               f"| result={json.dumps(body.get('result'), ensure_ascii=False)}")

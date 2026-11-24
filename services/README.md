@@ -179,7 +179,7 @@
 
 | 文件 | 职责 |
 |---|---|
-| `logic.py` | 纯函数零 I/O：`cut_in_str2tuple()`（老版话术分段 + 蓝色 span）、`build_selling_point()`（老版卖点标红 / 加粗）、`strong_sections()`（标题加粗）、`build_output_script()`（**唯一组合点**）、`pick_script_statement()`（老版按标签选话术）、`extract_selling_point_fields()`（**唯一抽取点**） |
+| `logic.py` | 纯函数零 I/O：`cut_in_str2tuple()`（切入 / 挽留话术分段 + 蓝色 span）、`build_selling_point()`（卖点标红 / 加粗）、`strong_sections()`（标题加粗）、`build_output_script()`（**唯一组合点**）、`select_script()`（按标签选话术）、`extract_selling_point_fields()`（**唯一抽取点**） |
 | `rewrite.py` | `ProductInfoBySellingPoint`（业务对象）+ `build_selling_point_object(product_id, selling_points, custom_label_info=None, label_name_mapping=None)`（工厂，无行 / 产品名为空返回 `None`） |
 | `__init__.py` | 显式导出语义化类名与两个单点函数 |
 

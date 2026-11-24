@@ -126,6 +126,8 @@ runtime/
 | `SFTP_PASSWORD` | 见仓库内 `.env` 明文串（此处不转录；部署前必须替换并轮换） |
 | `SFTP_REMOTE_PATH` | `/ftpdata2/data_reverse/wangsi/aifile` |
 
+上表 5 个键属外部依赖：获取渠道：<待填写：上游接口人或运维交付渠道>；责任人：<待填写：配置管理员>。统一口径见根 README 第 10.2 节，不在本子包重复转录。本子包补齐缺失行为：`load_profiles()` 对 67 个键逐键读取，漏任一键启动时直接 fail-fast，不回落默认值；`SFTP_PASSWORD` 取值不在此转录，部署前必须替换并轮换。
+
 **12 个 AVL 各 5 项（共 60 项）**
 
 列名是键的后缀，实际键名为 `<AVL>_<列名>`，例如 `F09554_BATCH_SIZE`。
@@ -281,6 +283,6 @@ python tests/check_diagnosis_offline.py   # 端到端自检（写入侧与在线
 python tests/check_purge_rotation.py     # 清理轮转自检
 ```
 
-上面两条 `python -m sftp_avl2db` 命令都需要 `loguru`（见第 8 节末尾的离线复跑说明）；`--local-dir` 只换源，不绕过日志依赖。两个 `tests/check_*.py` 走 `load_profiles()` 与注入 logger，不需要 loguru。
+上面的 `python -m sftp_avl2db` 命令需要 `loguru`（见第 8 节末尾的离线复跑说明）；`--local-dir` 只换源，不绕过日志依赖。两个 `tests/check_*.py` 走 `load_profiles()` 与注入 logger，不需要 loguru。
 
 `build_task()` 的 `logger=`、`local_dir=`、`day=`、`now=`、`sleeper=`、`batch_size=`、`table_schema=` 都是显式注入点；`runner.serve_forever()` 另有 `max_rounds` / `date_strings` 测试钩子。离线复跑产出隔离到临时目录，不碰包内 `runtime/`。

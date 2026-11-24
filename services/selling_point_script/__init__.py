@@ -1,4 +1,4 @@
-"""卖点维表话术业务包：db 一行 + IOP 返回 → 复现上一版本话术输出。"""
+"""卖点维表话术业务包：db 一行 + IOP 返回 → 按固定四段格式输出话术。"""
 from __future__ import annotations
 
 from .logic import (
