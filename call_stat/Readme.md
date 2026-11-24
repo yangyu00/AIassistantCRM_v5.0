@@ -119,7 +119,7 @@ curl "http://host:8990/api/callStat?date=2026-11-16"
 curl "http://host:8990/api/callStat?month=2026-11"
 ```
 
-端口跟随在线服务 `main.py` 的 `CRM_PORT` 配置（默认 `8990`），改端口时把 `host` 后的端口同步替换即可。
+端口跟随**项目根 `.env`** 的 `CRM_PORT`（默认 `8990`，由 `app_config.load_config()` 解析），改端口时把 `host` 后的端口同步替换即可。
 
 - 单日与月查询都读到完整累计（含尚未落库部分）：本进程有活动的日期用 `_DAY_TOTAL`，历史日期用「库 + `_PENDING`」。
 - 月查询按 `calendar.monthrange` 补齐整月每一天，无记录补 `0`。

@@ -2,6 +2,8 @@
 # 全局 .env 规则只对未显式放行的路径生效，下面逐一反忽略。
 # 各模块 .env.example 主要用于提供键说明与注释，不替代实际 .env。
 .env
+!/.env
+!/.env.example
 !IOP/.env
 !sftp_avl2db/.env
 !call_stat/.env

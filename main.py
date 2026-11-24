@@ -1,4 +1,3 @@
-import os
 from contextlib import asynccontextmanager
 from typing import List
 
@@ -13,27 +12,14 @@ from services import (
 )
 from src.exceptions import telnumError, productIdError, register_errors_handlers
 from src.log_util import my_log, configure_logging
+from app_config import resolve_port
 
 # 日志目录：留空表示写到项目根目录下的 log/，也可填绝对路径
 LOG_DIR = ""
 
-# 在线服务监听端口：默认 8990，可用环境变量 CRM_PORT 覆盖（1~65535 的整数）。
-# 显式写了非法值时直接 fail-fast，避免带着错误端口静默启动。
-DEFAULT_PORT = 8990
-
-
-def _resolve_port() -> int:
-    raw = os.environ.get("CRM_PORT", "").strip() or str(DEFAULT_PORT)
-    try:
-        port = int(raw)
-    except ValueError as exc:
-        raise ValueError(f"CRM_PORT 必须是 1~65535 的整数，当前值: {raw!r}") from exc
-    if not 1 <= port <= 65535:
-        raise ValueError(f"CRM_PORT 必须是 1~65535 的整数，当前值: {raw!r}")
-    return port
-
-
-FASTAPI_CONFIG = {"host": "0.0.0.0", "port": _resolve_port(), "reload": False}
+# 在线服务监听端口：唯一来源是项目根 .env 的 CRM_PORT（默认 8990），
+# 由 app_config.load_config() 解析；改端口只改 .env 一行并重启进程。
+FASTAPI_CONFIG = {"host": "0.0.0.0", "port": resolve_port(), "reload": False}
 # 业务路由
 MARKET_ASSISTANT_URL = "/api/speechQryService"
 

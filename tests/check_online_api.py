@@ -8,8 +8,8 @@ import time
 
 import requests
 
-# 服务地址：默认与 main.py 的 CRM_PORT 默认端口 8990 一致。
-# 部署到别的机器、或在线服务改了 CRM_PORT，用 CRM_SMOKE_BASE_URL 覆盖，不要改代码。
+# 服务地址：默认与项目根 .env 的 CRM_PORT 默认端口 8990 一致。
+# 部署到别的机器、或改了根 .env 的 CRM_PORT，用 CRM_SMOKE_BASE_URL 覆盖，不要改代码。
 BASE_URL = os.environ.get("CRM_SMOKE_BASE_URL", "http://127.0.0.1:8990").rstrip("/")
 SPEECH_PATH = "/api/speechQryService"   # main.py::MARKET_ASSISTANT_URL
 TIMEOUT = 10                            # 秒；服务没起时别把脚本挂死

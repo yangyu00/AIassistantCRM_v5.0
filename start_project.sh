@@ -9,12 +9,14 @@
 #
 # Optional environment variables:
 #   PYTHON_BIN=/path/to/python      Interpreter override (default: .venv/bin/python, then python3)
-#   CRM_PORT=8990                  Online API port (default 8990; also read by main.py)
 #   SKIP_SFTP=1                    Do not start the 12 SFTP writer processes (for local checks without upstream)
 #   BOOTSTRAP_AVL_DATE=YYYYMMDD    Before startup, run a one-shot backfill for each of the 12 AVLs on the given date
 #   INSTALL_DEPS=1                 Run pip install -r requirements.txt automatically when dependencies are missing
 #   SKIP_DEP_CHECK=1               Skip the dependency check
 #   SKIP_BOOTSTRAP_DB=1            Do not auto-run --once to create the dimension DB even if it is missing
+#
+# Online API port: ONLY from ./.env -> CRM_PORT (app_config.load_config());
+#                shell environment variables are NOT read.
 #
 # Artifacts: PID files and stdout go to log/startup/ (ignored by .gitignore);
 #            each writer keeps its own logs under runtime/log/, rotated daily and kept for 7 days.
@@ -33,7 +35,6 @@ SKIP_DEP_CHECK="${SKIP_DEP_CHECK:-0}"
 SKIP_BOOTSTRAP_DB="${SKIP_BOOTSTRAP_DB:-0}"
 INSTALL_DEPS="${INSTALL_DEPS:-0}"
 BOOTSTRAP_AVL_DATE="${BOOTSTRAP_AVL_DATE:-}"
-API_PORT="${CRM_PORT:-8990}"
 
 if [[ -x "$ROOT/.venv/bin/python" ]]; then
     PY="$ROOT/.venv/bin/python"
@@ -127,11 +128,6 @@ launch() {
 start() {
     [[ "$DRY_RUN" == "1" ]] || mkdir -p "$LOG_DIR"
 
-    if [[ ! "$API_PORT" =~ ^[0-9]{1,5}$ ]] || (( 10#$API_PORT < 1 || 10#$API_PORT > 65535 )); then
-        echo "CRM_PORT must be an integer in 1..65535 (got: $API_PORT)"
-        return 2
-    fi
-
     # Avoid duplicate startup: writers hold a single-instance lock (a second instance exits),
     # and the API would hit a port conflict.
     local f
@@ -144,6 +140,12 @@ start() {
     done
 
     command -v "$PY" >/dev/null 2>&1 || { echo "Python not found: $PY"; return 2; }
+
+    # 端口与 main.py 共用根 .env 的同一个解析入口，避免两处漂移。
+    if ! API_PORT="$("$PY" -c 'from app_config import resolve_port; print(resolve_port())')"; then
+        echo "端口配置解析失败：请检查项目根 .env 的 CRM_PORT（需为 1~65535 的整数）"
+        return 2
+    fi
     case "$(uname -s)" in
         Linux|Darwin|*BSD) ;;
         *) echo "  [warning] Writer side relies on fcntl file locks; Linux / Unix only" ;;
