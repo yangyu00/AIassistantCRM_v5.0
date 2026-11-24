@@ -1,6 +1,6 @@
 """项目根级运行配置：唯一来源 ``./.env``，唯一入口 ``load_config()``。
 
-与各包 ``.env`` 惯例一致：不读系统环境变量，没有第二套解析入口；
+不读系统环境变量，没有第二套解析入口；
 ``main.py`` 与 ``start_project.sh`` 共用本模块，避免两处端口口径漂移。
 """
 from __future__ import annotations
@@ -29,7 +29,6 @@ def _read_env(env_path) -> dict[str, str]:
               file=sys.stderr, flush=True)
         return {}
     values = {}
-    # utf-8-sig：兼容 Windows 编辑器写入的 BOM
     for line in path.read_text(encoding="utf-8-sig").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:

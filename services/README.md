@@ -131,7 +131,7 @@
 - 库不存在 / 表缺失 / 必需列漂移 / 查询异常 → 打日志并降级 `{}`；未命中的 `product_id` 不在返回 dict 中。商机辅助画像为空，卖点话术模块无行可用（落 `code: "2"`）；`label_name_mapping` 表缺失 / 列漂移同样降级 `{}`，此时辅助画像直接用 IOP 原名，输出结构不变。都不抛给在线接口。
 - 离线打桩：`dimensions.configure(临时 dimensions.db)`，传 `None` 还原默认路径。
 
-分工：商机侧由维表 `label_id` 决定「查哪些 ID」、IOP 返回的 `custom_label_info` 决定「名称与值」；**卖点话术侧**消费维表原文 + IOP 返回 + `label_name_mapping`：IOP 返回拼【辅助画像】并决定命中哪组标签专属话术，映射把 IOP 的 `ITEMNAME` 换成营销助手显示名；按上一版 `ProductInfoRewrite` 的格式拼出「辅助画像 / 切入话术 / 卖点 / 挽留话术」，原文里不存在待替换字段，**不做 `#标签名&` → IOP `ITEMVALUE` 替换**，也不读诊断 8 张表；**诊断侧**完全不读维表。上一版 Excel → `consts.py` 的离线解析脚本只用于理解输出来源，db 里已转好的列是唯一数据源。写入侧配置见 [`local_excel2db/README.md`](../local_excel2db/README.md)，在线侧列映射不取自它。
+分工：商机侧由维表 `label_id` 决定「查哪些 ID」、IOP 返回的 `custom_label_info` 决定「名称与值」；**卖点话术侧**消费维表原文 + IOP 返回 + `label_name_mapping`：IOP 返回拼【辅助画像】并决定命中哪组标签专属话术，映射把 IOP 的 `ITEMNAME` 换成营销助手显示名；按上一版 `ProductInfoRewrite` 的格式拼出「辅助画像 / 切入话术 / 卖点 / 挽留话术」，原文里不存在待替换字段，**不做 `#标签名&` → IOP `ITEMVALUE` 替换**，也不读诊断 8 张表；**诊断侧**完全不读维表。db 里已转好的列是唯一数据源。写入侧配置见 [`local_excel2db/README.md`](../local_excel2db/README.md)，在线侧列映射不取自它。
 
 ## 6. 诊断与卖点话术（两个平级业务包）
 

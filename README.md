@@ -151,7 +151,7 @@ python -c "from app_config import load_config; print(load_config())"   # 查看�
 
 - `product_id → AVL 前缀` 的两张静态表集中在 `services/routing.py`；`reader.py` 只认 AVL 前缀，不知道产品 ID。
 - 商机 / 控损命中即返回；`reader.query` 返回 `{}` 时按空记录出话术，不落到诊断 / 卖点话术 / 兜底。
-- 诊断的 `F09629`（`DIM_MARKET_PRODUCT_BUSINESS_ONCE`）本身即「产品ID → 策略 / 产品」映射表；诊断只认自己的 8 张表，任一查询空、场景交集为空或六项输出全空时返回 `None`，由路由继续问平级的卖点话术模块，诊断自己不拼维表话术。卖点话术只消费维表一行，**维表中无该 `product_id`，或有该行但 `product_name`（产品名称）为空时**工厂返回 `None`，才落第 5 类（`code: "2"`）。边界实现见 `services/selling_point_script/logic.py::extract_selling_point_fields()`，与第 9 节降级总表一致。
+- 诊断的 `F09629`（`DIM_MARKET_PRODUCT_BUSINESS_ONCE`）本身即「产品ID → 策略 / 产品」映射表；诊断只认自己的 8 张表，任一查询空、场景交集为空或六项输出全空时返回 `None`，由路由继续问平级的卖点话术模块，诊断自己不拼维表话术。卖点话术只消费维表一行，**维表中无该 `product_id`，或有该行但 `product_name`（产品名称）为空时**工厂返回 `None`，才落第 5 类（`code: "2"`）。边界实现见 `services/selling_point_script/logic.py::extract_selling_point_fields()`。
 - `selling_points` 不参与路由判定，只作为数据透传给对象工厂；诊断分支只收 `custom_label_info`，卖点话术分支只收 `selling_points`。
 
 ## 8. 业务话术规则
@@ -185,7 +185,7 @@ python -c "from app_config import load_config; print(load_config())"   # 查看�
 |---|---|
 | 业务库缺失 / AVL 未注册 / 查询异常 | `reader` 返回 `{}` / `[]`；商机 / 控损按空记录出话术（仍 `code: "0"`），诊断返回 `None` → 卖点话术模块，API 不 500 |
 | 分表 AVL 的 `where` 缺标量 `product_no` | 定位不到分表，返回 `[]`，不广播、不抛异常 |
-| 诊断 7 表关联任一为空 / 场景交集为空 / 六项输出全空 | 诊断返回 `None`；路由改问平级的卖点话术模块，按上一版格式输出（切入 / 卖点 / 挽留），`code: "0"` |
+| 诊断 7 表关联任一为空 / 场景交集为空 / 六项输出全空 | 诊断返回 `None`；路由改问平级的卖点话术模块，按上一版格式输出（辅助画像 / 切入 / 卖点 / 挽留），`code: "0"` |
 | 维表中无该 `product_id` 或产品名称为空 | 卖点话术工厂返回 `None`，落 `ProductInfoRaw`（`code: "2"`） |
 | 卖点话术原文为空 /「匹配结果2」为空 | 切入 / 挽留段整段不出现，只留【卖点】；不填「无」、不回退「标签N」（上一版口径） |
 | 卖点维表库缺失 / 列漂移 / 查询异常 | `dimensions` 降级 `{}`，商机辅助画像为空，卖点话术无行可用 → `code: "2"`，其余话术段照常；`label_name_mapping` 表缺失同样降级 `{}`，辅助画像直接用 IOP 原名 |

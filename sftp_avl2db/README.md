@@ -1,10 +1,10 @@
 # sftp_avl2db · SFTP AVL → SQLite 业务库
 
-每个 AVL 对应一个 db 的纯写入侧代码包，可独立复用：只负责「SFTP 拉取 AVL → 解析 → 写进 SQLite」，不提供在线查询入口，也不声明在线侧的库路径、表字段或查询条件。在线业务侧读哪些库、按什么键查由 `services/db_config.py` 独立维护；两侧唯一交集是磁盘上的 db 文件。
+每个 AVL 对应一个 db 的纯写入侧代码包，只负责「SFTP 拉取 AVL → 解析 → 写进 SQLite」，不提供在线查询入口，也不声明在线侧的库路径、表字段或查询条件。在线业务侧读哪些库、按什么键查由 `services/db_config.py` 独立维护；两侧唯一交集是磁盘上的 db 文件。
 
 配置与运行时产出都锚在包内、按 `__file__` 定位，与启动 CWD 无关：`.env` 是本包唯一配置来源，`runtime/` 是唯一产出目录。一个 AVL = 一个 `{AVL}.db`，`project`（项目名）负责把同一业务的本地 AVL 与 db 收进同一对文件夹；表结构按名字放在 `table_schemas.py` 里，多个 AVL 可复用。库内固定表叫 `{AVL}`，分表叫 `{AVL}_{分表号}`。
 
-`import sftp_avl2db` 零 I/O、零第三方依赖；组件按「配置 / 解析 / 写入 / I-O / 编排」五层拆分，每层可单独 import、替换、测试。把包 copy 到别的项目时排除 `runtime/`。
+`import sftp_avl2db` 零 I/O、零第三方依赖；组件按「配置 / 解析 / 写入 / I-O / 编排」五层拆分，每层可单独 import、替换、测试。
 
 ## 1. 调用链地图
 
@@ -126,7 +126,7 @@ runtime/
 | `SFTP_PASSWORD` | 见仓库内 `.env` 明文串（此处不转录；部署前必须替换并轮换） |
 | `SFTP_REMOTE_PATH` | `/ftpdata2/data_reverse/wangsi/aifile` |
 
-上表 5 个键属外部依赖：获取渠道：<待填写：上游接口人或运维交付渠道>；责任人：<待填写：配置管理员>。统一口径见根 README 第 10.2 节，不在本子包重复转录。本子包补齐缺失行为：`load_profiles()` 对 67 个键逐键读取，漏任一键启动时直接 fail-fast，不回落默认值；`SFTP_PASSWORD` 取值不在此转录，部署前必须替换并轮换。
+上表 5 个键属外部依赖：获取渠道：<待填写：上游接口人或运维交付渠道>；责任人：<待填写：配置管理员>。本子包补齐缺失行为：`load_profiles()` 对 67 个键逐键读取，漏任一键启动时直接 fail-fast，不回落默认值；`SFTP_PASSWORD` 取值不在此转录，部署前必须替换并轮换。
 
 **12 个 AVL 各 5 项（共 60 项）**
 
