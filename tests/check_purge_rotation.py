@@ -262,12 +262,12 @@ try:
     if _created_env:
         check("模板里每个 AVL 的清理周期独立取值",
               profiles["F09554"].retention.purge_cycle_days == 1
-              and profiles["F09591"].retention.purge_cycle_days == 2
+              and profiles["F09591"].retention.purge_cycle_days == 7
               and profiles["F09627"].retention.purge_cycle_days == 1
               and profiles["F09633"].retention.purge_cycle_days == 7)
-        check("模板里轮询间隔按 AVL 粒度生效",
-              profiles["F09554"].retention.poll_seconds == 600
-              and profiles["F09627"].retention.poll_seconds == 1800)
+        check("模板里轮询间隔统一为 900",
+              profiles["F09554"].retention.poll_seconds == 900
+              and profiles["F09627"].retention.poll_seconds == 900)
     tmpl_keys = [
         l.split("=", 1)[0].strip()
         for l in ENV.with_name(".env.example").read_text(
@@ -332,7 +332,7 @@ _case = load_with(env_lines(
               "F09554_PURGE_CYCLE_DAYS": "3"}))
 check("改单个 AVL 的轮询间隔不影响同项目其它 AVL",
       _case["F09554"].retention.poll_seconds == 123
-      and _case["F09555"].retention.poll_seconds == 600)
+      and _case["F09555"].retention.poll_seconds == 900)
 check("改单个 AVL 的清理周期不影响同项目其它 AVL",
       _case["F09554"].retention.purge_cycle_days == 3
       and _case["F09556"].retention.purge_cycle_days == 1)

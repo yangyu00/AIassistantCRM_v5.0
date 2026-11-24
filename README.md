@@ -235,10 +235,10 @@ python tests/check_online_api.py
 
 ```bash
 python -m pip install -r requirements.txt
-bash 启动项目.sh                 # 启动 14 个常驻进程；若 dimensions.db 不存在会先 --once 建库
-bash 启动项目.sh status         # 查看各进程
-bash 启动项目.sh stop           # 优雅停止（先 SIGTERM 让在线进程 flush 调用量）
-DRY_RUN=1 bash 启动项目.sh      # 只打印不执行
+bash start_project.sh                 # 启动 14 个常驻进程；若 dimensions.db 不存在会先 --once 建库
+bash start_project.sh status         # 查看各进程
+bash start_project.sh stop           # 优雅停止（先 SIGTERM 让在线进程 flush 调用量）
+DRY_RUN=1 bash start_project.sh      # 只打印不执行
 # 可选：SKIP_SFTP=1（不启 12 个写入进程）、BOOTSTRAP_AVL_DATE=YYYYMMDD（启动前按日期补跑一次）
 ```
 
