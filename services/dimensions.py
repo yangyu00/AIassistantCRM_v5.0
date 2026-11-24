@@ -130,11 +130,17 @@ def load_selling_points(product_ids) -> dict[str, SellingPointRow]:
 
     try:
         cols = list(db_config.SELLING_POINTS_SELECT_COLUMNS)
-        quoted = ", ".join(cols)
         uri = Path(db).resolve().as_uri() + "?mode=ro"
         out: dict[str, SellingPointRow] = {}
         conn = sqlite3.connect(uri, uri=True)
         try:
+            # 老库 / 手工建库可能缺可选列（如「兜底话术」→ fallback_script）：
+            # 缺列用 NULL AS 补齐，避免整表 SELECT 失败后降级成 {}（那样会一路
+            # 落到 code: "2"，连【卖点】都拿不到）。NULL 由 _row_to_value 转空串。
+            actual_cols = {r[1] for r in conn.execute(
+                f"PRAGMA table_info({db_config.SELLING_POINTS_TABLE})")}
+            quoted = ", ".join(
+                c if c in actual_cols else f"NULL AS {c}" for c in cols)
             # 分块避免单次绑定参数过多
             for start in range(0, len(ids), _CHUNK):
                 chunk = ids[start:start + _CHUNK]

@@ -18,8 +18,9 @@
 
 四个【】标题统一包 ``<strong>``；话术行前缀用 ``color: blue;``（带空格），
 卖点首段内容用 ``color:red;``；段落之间用字面 ``\\n``，**不**转成 ``<br>``。
-「匹配结果2」为空时整张话术表为空，
-「兜底话术」列为空也不回退「标签N」。
+「匹配结果2」为空时整张话术表为空（例外见下）；
+「兜底话术」列缺失 / 为空时回退「标签0」原文充当兜底话术组，其余「标签N」
+仍只服务「匹配结果2」，不参与兜底。
 
 之后要改「从维表里抽哪些信息」只改 ``extract_selling_point_fields()``，
 要改「抽出来的信息怎么组合」只改 ``build_output_script()``。
@@ -116,23 +117,39 @@ def _clean_script_text(text):
     return str(text or "").strip().replace("**", "")
 
 
+def _fallback_source(row):
+    """兜底话术来源：优先「兜底话术」列；列缺失 / 为空时回退「标签0」。
+
+    返回 ``(原文, 是否回退到标签0)``。只回退「标签0」，不回退其它「标签N」：
+    「标签N」只服务「匹配结果2」的场景 ID 映射。
+    """
+    fallback = str(getattr(row, "fallback_script", "") or "").strip()
+    if fallback:
+        return fallback, False
+    tag_texts = getattr(row, "tag_texts", ()) or ()
+    tag0 = str(tag_texts[0] or "").strip() if tag_texts else ""
+    return tag0, bool(tag0)
+
+
 def pick_script_text(row):
-    """「兜底话术」列原文。不回退「标签N」（标签N 只服务匹配结果2）。"""
-    return str(getattr(row, "fallback_script", "") or "").strip()
+    """「兜底话术」列原文；列缺失 / 为空时回退「标签0」原文。"""
+    return _fallback_source(row)[0]
 
 
 def build_script_dict(row):
     """维表一行 → 按「匹配结果2」构造的话术字典。
 
-    「匹配结果2」为空时返回 ``{}``，此时切入 / 挽留两段都不输出，
-    连「兜底话术」也不生效。
+    「兜底话术」列缺失 / 为空时，用「标签0」原文充当兜底话术组；此时即使
+    「匹配结果2」为空，兜底组也仍然生效（否则 tag0 会被整张空话术表吞掉）。
+    其余情况维持原口径：「匹配结果2」为空 → ``{}``，切入 / 挽留两段不输出。
     """
+    fallback_text, fallback_uses_tag0 = _fallback_source(row)
+    fallback_group = parse_fusion_scripts(_clean_script_text(fallback_text))
     match_result = str(getattr(row, "match_result", "") or "").strip()
     if not match_result:
-        return {}
+        return {"兜底话术": fallback_group} if fallback_uses_tag0 else {}
 
-    inner_dict = {"兜底话术": parse_fusion_scripts(
-        _clean_script_text(pick_script_text(row)))}
+    inner_dict = {"兜底话术": fallback_group}
     tag_texts = getattr(row, "tag_texts", ()) or ()
     for g, one_id in enumerate(match_result.split('\n')):
         raw = str(tag_texts[g]).strip() if g < len(tag_texts) else ""
