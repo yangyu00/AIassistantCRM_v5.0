@@ -24,7 +24,8 @@ def configure(config) -> None:
             avl_db_root=db_config.DEFAULT_AVL_DB_ROOT,
             dimensions_db=db_config.default_dimensions_db(),
             profiles=config,
-            freshness_window_days=_CONFIG.freshness_window_days)
+            freshness_window_days=_CONFIG.freshness_window_days,
+            freshness_window_by_project=_CONFIG.freshness_window_by_project)
     db_config.validate(_CONFIG)
     PROFILES = _CONFIG.profiles
 
@@ -37,12 +38,12 @@ def _error(msg):
     print(f"ERROR:: {msg}", flush=True)
 
 
-def _latest_op_time(conn, avl):
+def _latest_op_time(conn, avl, window):
     """同连接读写入侧登记的批次水位。
 
-    元数据表缺失 / 无行 / 窗口关闭都返回 ``None``，此时不做批次过滤。
+    元数据表缺失 / 无行 / 该业务窗口关闭都返回 ``None``，此时不做批次过滤。
     """
-    if _CONFIG.freshness_window_days <= 0:
+    if window <= 0:
         return None
     try:
         row = conn.execute(
@@ -53,13 +54,14 @@ def _latest_op_time(conn, avl):
     return row[0] if row and row[0] else None
 
 
-def _cutoff(latest_op_time):
-    """窗口下界 = 最新数据日期 - (N-1) 天。
+def _cutoff(latest_op_time, project=None):
+    """窗口下界 = 最新数据日期 - (N-1) 天，N 按业务（project）取。
 
     N 表示「保留最近 N 个 op_time 日期」：N=2、最新 21 日 → 下界 20 日。
+    ``project=None`` 时用全局回退窗口（离线自检直调本函数的口径）。
     以数据里的 ``op_time`` 为基准；日期文本不是 YYYY-MM-DD 时降级不做过滤，避免误杀。
     """
-    window = _CONFIG.freshness_window_days
+    window = _CONFIG.freshness_window_days_for(project)
     if window <= 0 or not latest_op_time:
         return None
     try:
@@ -153,14 +155,16 @@ def _resolve_many(avl, where, limit=None, cutoff=None):
 
 
 def _query(avl, key):
-    db_path = PROFILES[avl].db_path
+    conf = PROFILES[avl]
+    db_path = conf.db_path
     if not os.path.isfile(db_path):
         _warn(f"数据库文件不存在: {db_path}")
         return {}
     try:
         conn = sqlite3.connect(str(db_path))
         try:
-            cutoff = _cutoff(_latest_op_time(conn, avl))
+            window = _CONFIG.freshness_window_days_for(conf.project)
+            cutoff = _cutoff(_latest_op_time(conn, avl, window), conf.project)
             _, sql, columns, values = _resolve(avl, key, cutoff=cutoff)
             row = conn.execute(sql, tuple(values)).fetchone()
         finally:
@@ -172,14 +176,16 @@ def _query(avl, key):
 
 
 def _query_many(avl, where, limit=None):
-    db_path = PROFILES[avl].db_path
+    conf = PROFILES[avl]
+    db_path = conf.db_path
     if not os.path.isfile(db_path):
         _warn(f"数据库文件不存在: {db_path}")
         return []
     try:
         conn = sqlite3.connect(str(db_path))
         try:
-            cutoff = _cutoff(_latest_op_time(conn, avl))
+            window = _CONFIG.freshness_window_days_for(conf.project)
+            cutoff = _cutoff(_latest_op_time(conn, avl, window), conf.project)
             resolved = _resolve_many(avl, where, limit=limit, cutoff=cutoff)
             if resolved is None:
                 return []

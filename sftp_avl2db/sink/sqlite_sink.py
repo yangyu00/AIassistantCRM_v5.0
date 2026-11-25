@@ -33,6 +33,7 @@ class WriteStats:
     commits: int = 0          # commit 次数
     connections: int = 0      # 打开的 sqlite 连接数
     purged: int = 0           # 最近一次 purge_expired 删除的行数
+    dropped_tables: int = 0   # 全量替换模式下本次 DROP 并重建的业务表数
     max_op_time: str = ""     # 本文件写入记录里最大的 op_time（原样文本）
     errors: list[tuple[str, str]] = field(default_factory=list)  # [(库路径, 异常文本)]
 
@@ -53,12 +54,42 @@ class SqliteSink:
             raise ValueError(f"batch_size 必须为正整数，当前为 {self.batch_size}")
         self.stats = WriteStats()
 
-    def _group_targets_by_db(self) -> dict[Path, list[str]]:
+    def _group_targets_by_db(self, layout=None) -> dict[Path, list[str]]:
         """把布局枚举出的 ``(库, 表)`` 按库文件分组。"""
+        layout = self.layout if layout is None else layout
         groups: dict[Path, list[str]] = {}
-        for db_path, table in self.layout.all_targets():
+        for db_path, table in layout.all_targets():
             groups.setdefault(Path(db_path), []).append(table)
         return groups
+
+    def drop_before_insert_enabled(self) -> bool:
+        """全量替换模式是否开启；profile 没带该字段时按关闭处理。"""
+        retention = getattr(self.profile, "retention", None)
+        return int(getattr(retention, "drop_before_insert", 0) or 0) == 1
+
+    def drop_existing(self, layout=None) -> int:
+        """DROP 本 AVL 的全部业务表，再按同一 DDL 立即重建（清掉历史数据）。
+
+        ``_avl_meta`` 是批次水位表，不进 layout，保留不动；表名来自静态布局，
+        不接受外部字符串。返回被重建的业务表数量。
+        """
+        layout = self.layout if layout is None else layout
+        dropped = 0
+        for db_path, tables in self._group_targets_by_db(layout).items():
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(str(db_path))
+            try:
+                cur = _configure(conn)
+                for t in tables:
+                    cur.execute(f"DROP TABLE IF EXISTS {t}")
+                    cur.execute(self.schema.create_table_sql(t))
+                    dropped += 1
+                # 元数据表与业务表同库，幂等保留；不因业务表 DROP 丢失水位。
+                cur.execute(create_meta_table_sql())
+                conn.commit()
+            finally:
+                conn.close()
+        return dropped
 
     def ensure_schema(self) -> None:
         """按布局枚举全部库表并建表。"""
@@ -140,6 +171,11 @@ class SqliteSink:
         layout = self.layout if layout is None else layout
         self.stats = WriteStats()
         time_index = self._time_index()
+
+        # 全量替换模式：写入最新 AVL 之前先 DROP 并重建全部目标表，
+        # 表里的历史数据（含上游不再下发的主键）一次性清干净。
+        if self.drop_before_insert_enabled():
+            self.stats.dropped_tables = self.drop_existing(layout)
 
         conns: dict[str, sqlite3.Connection] = {}
         batches: dict[tuple[str, str], list] = {}

@@ -80,7 +80,7 @@ runtime/
 
 ## 5. 配置
 
-唯一来源 `sftp_avl2db/.env`（67 个键），唯一入口 `load_profiles()`；不读系统环境变量，没有第二套解析入口。语法只认整行 `#` 注释与 `KEY=VALUE`，不做引号、行内注释或 `${VAR}` 插值。
+唯一来源 `sftp_avl2db/.env`（68 个键），唯一入口 `load_profiles()`；不读系统环境变量，没有第二套解析入口。语法只认整行 `#` 注释与 `KEY=VALUE`，不做引号、行内注释或 `${VAR}` 插值。
 
 | 文件 | 作用 |
 |---|---|
@@ -90,7 +90,7 @@ runtime/
 | `avl_specs.py` | 每个 AVL 的静态声明：项目、schema 名、解析器、是否分表；`table_name()` 表名规则、`shard_index()` 分表口径、`validate_specs()` 启动校验 |
 | `table_schemas.py` | `TABLE_SCHEMAS`（列定义）与 `TABLE_PRIMARY_KEYS`（主键），供建表 DDL、幂等与解析器列数校验 |
 
-`.env` 分组：SFTP 公共 5 项（`SFTP_HOST/PORT/USERNAME/PASSWORD/REMOTE_PATH`）+ 12 个 AVL 各 5 个运行参数（60 项）+ 2 个分表 AVL 各 1 个 `NUM_TABLES` = 67 个键，全部必需：
+`.env` 分组：SFTP 公共 5 项（`SFTP_HOST/PORT/USERNAME/PASSWORD/REMOTE_PATH`）+ 全量替换模式开关 1 项（`AVL_DROP_BEFORE_INSERT`）+ 12 个 AVL 各 5 个运行参数（60 项）+ 2 个分表 AVL 各 1 个 `NUM_TABLES` = 68 个键，全部必需：
 
 | 键（`<AVL>` 换成具体 AVL 名） | 含义 | 取值 |
 |---|---|---|
@@ -105,14 +105,15 @@ runtime/
 - **分表数**：固定表**没有** `<AVL>_NUM_TABLES` 键，代码里 `num_tables=0`（`config.py::load_profiles()` 对非分表 AVL 直接置 0），`validate_specs()` 会拦住「固定表配了 NUM_TABLES」的漂移；分表 AVL 才是 128。
 - **清理轮转周期 `<AVL>_PURGE_CYCLE_DAYS`**：所有 12 个 AVL 都有这个键。当前值固定表（10 个）一律 `1`（每天对全部库表清一次），两个分表 AVL 是 `F09591_PURGE_CYCLE_DAYS=7`、`F09633_PURGE_CYCLE_DAYS=7`（每天只清约 1/N 的分表，N 天轮完）。`0` 是「每轮全量清」的合法取值，不是分表数。
 
-也就是说，本节下面「67 个键的完整清单」表里固定表 `NUM_TABLES` 列写 `—` 表示**不配该键**，不是配了 1；`1 / 7` 全部是清理周期，逐键取值见该表，语义见第 11 节「分表 db 的库表清理降频」。
+也就是说，本节下面「68 个键的完整清单」表里固定表 `NUM_TABLES` 列写 `—` 表示**不配该键**，不是配了 1；`1 / 7` 全部是清理周期，逐键取值见该表，语义见第 11 节「分表 db 的库表清理降频」。
 
 - 粒度是 AVL：`project` 不参与任何键的拼装，没有项目级键、没有项目级兜底、没有任何默认值；漏配一个 AVL 的任一键，启动直接 fail-fast。改完 `.env` 重启进程生效（配置对象冻结）。
+- 唯一例外是 `AVL_DROP_BEFORE_INSERT`：全部 AVL 共用的模式开关，必需键、只允许 `0/1`。可另写可选的 `<AVL>_DROP_BEFORE_INSERT` 对单个 AVL 覆盖（缺省回落到全局键），这组覆盖键不计入上面 68 个必需键。
 - `AVL_SPECS` 与 `_AVLS` 的 key 必须一致，schema 名必须在 `TABLE_SCHEMAS` 里，主键必须在 `TABLE_PRIMARY_KEYS` 里；分表 AVL 的表结构还须含 `product_no` 列。这些漂移由 `validate_specs()` 启动时拦住。
 - `load_profiles(runtime_dir=...)` 或 CLI `--runtime-dir` 是唯一产出隔离入口，只改产出位置、不改配置来源。部署建议 `ln -s /data/crm_runtime sftp_avl2db/runtime` 把数据挂到独立盘，不要整目录覆盖包目录。
 - 在线业务侧读取这些 db 时，库路径、表字段与分表数由 `services/db_config.py` 与 `services/.env` 独立声明；两侧键名不必相同，但分表数取值必须一致，改列顺序 / 分表数 / 库路径时两侧声明必须同步。
 
-### 67 个键的完整清单与当前生效值
+### 68 个键的完整清单与当前生效值
 
 `sftp_avl2db/.env`（与 `.env.example` 同值、随仓库入库）的实际内容如下。仅凭 `<AVL>_*` 模板无法写出这份文件，重建时照下表逐键落盘；新环境可 `cp .env.example .env` 再替换凭据。
 
@@ -126,7 +127,15 @@ runtime/
 | `SFTP_PASSWORD` | 见仓库内 `.env` 明文串（此处不转录；部署前必须替换并轮换） |
 | `SFTP_REMOTE_PATH` | `/ftpdata2/data_reverse/wangsi/aifile` |
 
-上表 5 个键属外部依赖：获取渠道：<待填写：上游接口人或运维交付渠道>；责任人：<待填写：配置管理员>。本子包补齐缺失行为：`load_profiles()` 对 67 个键逐键读取，漏任一键启动时直接 fail-fast，不回落默认值；`SFTP_PASSWORD` 取值不在此转录，部署前必须替换并轮换。
+上表 5 个键属外部依赖：获取渠道：<待填写：上游接口人或运维交付渠道>；责任人：<待填写：配置管理员>。本子包补齐缺失行为：`load_profiles()` 对 68 个键逐键读取，漏任一键启动时直接 fail-fast，不回落默认值；`SFTP_PASSWORD` 取值不在此转录，部署前必须替换并轮换。
+
+**全量替换模式 1 项（全部 AVL 共用）**
+
+| 键 | 当前值 | 含义 |
+|---|---|---|
+| `AVL_DROP_BEFORE_INSERT` | `0` | `0` 关闭 / `1` 开启；开启后写入最新 AVL 前 `DROP` 并重建全部目标表 |
+
+可选覆盖键 `<AVL>_DROP_BEFORE_INSERT`（如 `F09627_DROP_BEFORE_INSERT=1`）：写了就对该 AVL 单独生效，不写则回落到全局键；同样只认 `0/1`。
 
 **12 个 AVL 各 5 项（共 60 项）**
 
@@ -138,18 +147,32 @@ runtime/
 | `F09555` | 10000 | 3 | 3 | 900 | 1 | — |
 | `F09556` | 10000 | 3 | 3 | 900 | 1 | — |
 | `F09591` | 5000 | 3 | 3 | 900 | 7 | 128 |
-| `F09627` | 10000 | 3 | 3 | 900 | 1 | — |
-| `F09628` | 10000 | 3 | 3 | 900 | 1 | — |
-| `F09629` | 10000 | 3 | 3 | 900 | 1 | — |
-| `F09630` | 10000 | 3 | 3 | 900 | 1 | — |
-| `F09631` | 10000 | 3 | 3 | 900 | 1 | — |
-| `F09632` | 10000 | 3 | 3 | 900 | 1 | — |
-| `F09633` | 10000 | 3 | 3 | 900 | 7 | 128 |
-| `F09635` | 10000 | 3 | 3 | 900 | 1 | — |
+| `F09627` | 10000 | 365 | 3 | 900 | 1 | — |
+| `F09628` | 10000 | 365 | 3 | 900 | 1 | — |
+| `F09629` | 10000 | 365 | 3 | 900 | 1 | — |
+| `F09630` | 10000 | 365 | 3 | 900 | 1 | — |
+| `F09631` | 10000 | 365 | 3 | 900 | 1 | — |
+| `F09632` | 10000 | 365 | 3 | 900 | 1 | — |
+| `F09633` | 10000 | 365 | 3 | 900 | 7 | 128 |
+| `F09635` | 10000 | 365 | 3 | 900 | 1 | — |
 
 **分表 2 项**：`F09591_NUM_TABLES=128`、`F09633_NUM_TABLES=128`。只有这两个 AVL 有 `NUM_TABLES` 键，固定表不配（代码里 `num_tables=0`）。
 
-合计 `5 + 60 + 2 = 67` 个键，全部必需，按 AVL 逐键配置，没有缺省回落；`load_profiles()` 用 `_int()` / `_str()` 逐键读取，漏任一键启动时直接 fail-fast。`PURGE_CYCLE_DAYS` 允许 `0`（每轮全量清），其余数值项均为正整数。
+合计 `5 + 1 + 60 + 2 = 68` 个键，全部必需，按 AVL 逐键配置，没有缺省回落；`load_profiles()` 用 `_int()` / `_str()` / `_flag()` 逐键读取，漏任一键启动时直接 fail-fast。`PURGE_CYCLE_DAYS` 允许 `0`（每轮全量清），`AVL_DROP_BEFORE_INSERT` 只允许 `0/1`，其余数值项均为正整数。诊断 8 张表的 `DATA_EXPIRE_DAYS` 统一为 `365`（商机 / 控损仍为 `3`），`cutoff = now - 365 天`，按 7 天轮转时库内峰值约 `365 + 7 - 1 = 371` 天。
+
+### 全量替换模式（`AVL_DROP_BEFORE_INSERT`）
+
+默认 `0`：`SqliteSink.write()` 仍按主键 `INSERT OR REPLACE` 追加，历史行由 `cleanup_expired()` 按 `DATA_EXPIRE_DAYS` 管控。
+
+设为 `1`：每个 AVL 文件**写入前**，`write()` 先对该 AVL 布局枚举出的全部目标表执行 `DROP TABLE IF EXISTS`，再用同一份建表 DDL 立即重建，然后才写入本批记录。分表 AVL 会一次重建全部 128 张分表；`_avl_meta` 是批次水位表、不进 layout，保留不动。效果是「表里只保留最新 AVL 的数据」，上游不再下发的主键不会残留，也不需要靠新鲜度窗口挡旧行。
+
+- 作用点在 `sftp_avl2db/sink/sqlite_sink.py::write()` / `drop_existing()`，所有调用路径（在线 runner、离线自检直调 `write()`）一致；`runner.import_one()` 会打一行模式日志。
+- 同一轮若导入多个日期文件（常驻模式默认同时兜底前一天与当天），每次 `write()` 都会重建一次，最终只剩最后一个文件的数据——这正是「存入最新 AVL 之前清旧」的语义。
+- 与过期清理互不冲突：`purge_expired()` 仍按 `DATA_EXPIRE_DAYS` 跑；开启模式只是让表在每批写入前先归零。
+- 风险提示：`DROP` 在写入前已提交，若该批解析 / 写入中途失败，表里会是空表或半批数据，下轮需用 `--force-reload` 重跑补齐；建议配合任务锁与失败告警使用。
+- 只对部分 AVL 开启时，写 `<AVL>_DROP_BEFORE_INSERT=1` 覆盖全局 `0`，例如只让诊断 8 张表走全量替换。
+
+自检：`python tests/check_drop_before_insert.py`（覆盖关闭 / 开启 / 分表 / 按 AVL 覆盖 / 按业务窗口 / 365 天保留期）。
 
 ## 6. 新增业务 / 新增 AVL
 

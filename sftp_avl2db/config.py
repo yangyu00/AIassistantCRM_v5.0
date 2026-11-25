@@ -70,6 +70,17 @@ def _num_tables(v: dict[str, str], name: str) -> int:
     return _int(v, f"{name}_NUM_TABLES")
 
 
+def _flag(v: dict[str, str], key: str, *, default: int | None = None) -> int:
+    """读一个 ``0`` 关闭 / ``1`` 开启的模式开关；只认这两个值。"""
+    if default is not None and key not in v:
+        return default
+    n = _int(v, key, min_value=0)
+    if n not in (0, 1):
+        raise ValueError(
+            f"{key} 只能是 0（关闭）或 1（开启），当前为 {n}（{ENV_PATH}）")
+    return n
+
+
 # 冻结配置对象（字段无默认值：一律由 load_profiles() 装配）
 @dataclass(frozen=True)
 class SftpConfig:
@@ -90,6 +101,10 @@ class RetentionConfig:
     # N=每天只清 1/N 分表、N 天轮完。固定表不参与轮转，仍每天全清一次。
     # 每个 AVL 独立取值，无项目级兜底。
     purge_cycle_days: int
+    # 全量替换模式：0=关闭（按主键 INSERT OR REPLACE 追加）；
+    # 1=开启（写入最新 AVL 前 DROP 掉本 AVL 全部目标表并按同一 DDL 重建）。
+    # 全局键 AVL_DROP_BEFORE_INSERT 打底，可用 <AVL>_DROP_BEFORE_INSERT 覆盖。
+    drop_before_insert: int
 
 
 @dataclass(frozen=True)
@@ -144,6 +159,9 @@ def load_profiles(runtime_dir=None) -> dict[str, TaskProfileConfig]:
         password=_str(v, "SFTP_PASSWORD"),
     )
 
+    # 全量替换模式：全局键打底，<AVL>_DROP_BEFORE_INSERT 可选覆盖。
+    global_drop = _flag(v, "AVL_DROP_BEFORE_INSERT")
+
     profiles = {}
     for name, project in _AVLS:
         spec = spec_of(name)
@@ -165,6 +183,8 @@ def load_profiles(runtime_dir=None) -> dict[str, TaskProfileConfig]:
                 # 允许 0（每轮全量），但仍是必需键，不是缺省回落值。
                 purge_cycle_days=_int(v, f"{key}_PURGE_CYCLE_DAYS",
                                       min_value=0),
+                drop_before_insert=_flag(
+                    v, f"{key}_DROP_BEFORE_INSERT", default=global_drop),
             ),
             local_dir=root / "files" / project,
             db_dir=root / "sqlite_db" / project,

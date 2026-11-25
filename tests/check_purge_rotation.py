@@ -273,7 +273,7 @@ try:
         for l in ENV.with_name(".env.example").read_text(
             encoding="utf-8").splitlines()
         if l.strip() and not l.strip().startswith("#") and "=" in l]
-    check("模板共 67 个键", len(tmpl_keys) == 67)
+    check("模板共 68 个键", len(tmpl_keys) == 68)
     check("模板无任何项目级键前缀",
           not any(k.startswith(("OPPORTUNITY_RECALL_", "LOSS_CONTROL_",
                                 "DIAGNOSIS_")) for k in tmpl_keys))

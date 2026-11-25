@@ -32,6 +32,7 @@ export CRM_SMOKE_BASE_URL=http://10.0.0.5:8990
 | `legacy_output_reference.py` | 不打任何服务（纯函数） | 上一版四个历史文件的逐行直译，提供 `build_legacy_consts()` / `legacy_output()`，供上面两个自检脚本当 oracle；**不参与线上运行**，也不 import 现版实现 |
 | `check_purge_rotation.py` | 不打任何服务（临时 SQLite + 桩时钟） | 库表清理轮转自检：AVL 粒度配置（缺键 fail-fast / 逐 AVL 独立取值）/ 7 组并集覆盖 128 张表且组间互斥 / `cycle=0` 行为 / 固定表每日全清 / 每天只触发一次 `purge_expired()` / 跨 7 天过期行全清而新鲜行保留 / 单次补跑一次全量清，结论 `ALL PASS` |
 | `check_avl_freshness.py` | 不打任何服务（临时 SQLite） | AVL 批次新鲜度窗口自检：`_avl_meta` 水位登记 / 补跑旧文件不回退 / 窗口下界 / 单条倒序取最新 / 多条收敛到最新批次 / `N=0` 与元数据表缺失降级，结论 `ALL PASS` |
+| `check_drop_before_insert.py` | 不打任何服务（临时 SQLite） | 配置变更自检：诊断 8 张表 `DATA_EXPIRE_DAYS=365` / 商机控损仍为 3 / 按业务新鲜度窗口（商机 2 · 控损 2 · 诊断 0）/ 旧全局键已废弃写了不生效 / 离线单值注入 / `AVL_DROP_BEFORE_INSERT` 全局开关与 `<AVL>_` 覆盖 / 模式关闭按主键追加、开启时 DROP 重建固定表与 128 张分表且 `_avl_meta` 保留，结论 `ALL PASS` |
 
 ## 3. 运行
 
@@ -68,6 +69,9 @@ python tests/check_purge_rotation.py
 
 # AVL 批次新鲜度窗口自检：不写包内 runtime/，临时库跑完即删
 python tests/check_avl_freshness.py
+
+# 配置变更自检：不写包内 runtime/，临时库跑完即删
+python tests/check_drop_before_insert.py
 ```
 
 ## 4. 副作用与注意

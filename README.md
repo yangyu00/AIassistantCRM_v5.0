@@ -63,9 +63,9 @@ main.py ──> log/INFO_*.log、log/ERROR_*.log（在线进程日志写入，�
 | 作用域 | 唯一来源 | 装配入口 | 缺文件 / 缺键行为 |
 |---|---|---|---|
 | IOP 客户端 | `IOP/.env`（20 键） | `IOPConfig.load()` | 回落 `config.py` 内置默认值 |
-| SFTP 写入 | `sftp_avl2db/.env`（67 键） | `load_profiles()` | 缺任一键直接 fail-fast |
+| SFTP 写入 | `sftp_avl2db/.env`（68 键） | `load_profiles()` | 缺任一键直接 fail-fast |
 | 调用量统计 | `call_stat/.env`（4 键） | `load_config()` | 缺文件告警；缺键静默回落 `config.py` 内置默认值，仅显式写了非法值才告警 |
-| 在线读取 | `services/.env`（5 键） | `db_config.load()` | 回落 `db_config.py` 代码内默认值 |
+| 在线读取 | `services/.env`（7 键） | `db_config.load()` | 回落 `db_config.py` 代码内默认值 |
 | 维表写入 | `local_excel2db/registry.json` | `load_registry()` | 配置损坏退出码 2 |
 | 在线服务 | 项目根 `.env` | `app_config.load_config()` | 端口键 `CRM_PORT`，默认 `8990`；`LOG_DIR`、`MARKET_ASSISTANT_URL` 仍是 `main.py` 顶部常量，端口非法时启动 fail-fast |
 
@@ -74,9 +74,9 @@ main.py ──> log/INFO_*.log、log/ERROR_*.log（在线进程日志写入，�
 关键键名：
 
 - `IOP/.env`：`IOP_TOKEN_HOST/PORT/ID/SECRET`、`IOP_CUSTINFO_HOST/PORT/VERSION/TYPE`、`IOP_TIMEOUT_TOTAL/CONNECT/SOCK_READ`、`IOP_RETRY_MAX_ATTEMPTS/BACKOFF_BASE/BACKOFF_FACTOR/BACKOFF_MAX/COOLDOWN`、`IOP_LIFETIME_DEFAULT_EXPIRES_IN/REFRESH_BUFFER/MIN_LIFETIME/MAX_EXPIRES_IN`。
-- `services/.env`：`AVL_DB_ROOT`、`DIMENSIONS_DB`、`LOSS_CONTROL_NUM_TABLES`、`F09633_NUM_TABLES`、`AVL_FRESHNESS_WINDOW_DAYS`（默认 `2`，`0` 关闭新鲜度过滤）。
+- `services/.env`：`AVL_DB_ROOT`、`DIMENSIONS_DB`、`LOSS_CONTROL_NUM_TABLES`、`F09633_NUM_TABLES`，以及按业务分别配置的新鲜度窗口 `OPPORTUNITY_RECALL_FRESHNESS_WINDOW_DAYS`（默认 `2`）、`LOSS_CONTROL_FRESHNESS_WINDOW_DAYS`（默认 `2`）、`DIAGNOSIS_FRESHNESS_WINDOW_DAYS`（默认 `0`，关闭过滤）。旧版全局键 `AVL_FRESHNESS_WINDOW_DAYS` 已废弃，写了不生效。
 - `call_stat/.env`：`CALL_STAT_FLUSH_THRESHOLD`（默认 100）、`CALL_STAT_QUERY_PATH`（默认 `/api/callStat`）、`CALL_STAT_DB_FILENAME`（默认 `call_sum.db`）、`CALL_STAT_EXPORT_DIRNAME`（默认 `export`）。
-- `sftp_avl2db/.env`：SFTP 公共 5 项 + 每个 AVL 的 `<AVL>_BATCH_SIZE / _DATA_EXPIRE_DAYS / _LOCAL_FILE_EXPIRE_DAYS / _POLL_INTERVAL_SECONDS / _PURGE_CYCLE_DAYS`，分表 AVL 另加 `<AVL>_NUM_TABLES`；无项目级键。
+- `sftp_avl2db/.env`：SFTP 公共 5 项 + 全局模式开关 `AVL_DROP_BEFORE_INSERT`（`0` 关闭 / `1` 开启，写入最新 AVL 前 DROP 并重建全部目标表，可用 `<AVL>_DROP_BEFORE_INSERT` 覆盖）+ 每个 AVL 的 `<AVL>_BATCH_SIZE / _DATA_EXPIRE_DAYS / _LOCAL_FILE_EXPIRE_DAYS / _POLL_INTERVAL_SECONDS / _PURGE_CYCLE_DAYS`，分表 AVL 另加 `<AVL>_NUM_TABLES`；无项目级键。诊断 8 张表的 `_DATA_EXPIRE_DAYS` 统一为 `365`，商机 / 控损仍为 `3`。
 
 **在线服务端口**：唯一来源是**项目根 `.env`** 的 `CRM_PORT`（默认 `8990`），由 `app_config.load_config()` 解析。`main.py` 的 `FASTAPI_CONFIG["port"]` 与 `start_project.sh` 打印的地址都取这一份值，改端口只改这一行、重启进程即生效，不必改代码；与其它包的 `.env` 一样，不读系统环境变量。
 
@@ -176,7 +176,7 @@ python -c "from app_config import load_config; print(load_config())"   # 查看�
 |---|---|
 | 四类业务对象的 HTML 逐字模板、控损自定义标签解析栈、辅助画像拼接 | [`services/README.md` 第 9 节](services/README.md) |
 | 商机回捞 12 列 / 控损 5 列的完整列名、类型与解析消费字段 | [`sftp_avl2db/README.md` 第 7 节](sftp_avl2db/README.md) |
-| `sftp_avl2db/.env` 67 个键的完整键名与当前取值 | [`sftp_avl2db/README.md` 第 5 节](sftp_avl2db/README.md) |
+| `sftp_avl2db/.env` 68 个键的完整键名与当前取值 | [`sftp_avl2db/README.md` 第 5 节](sftp_avl2db/README.md) |
 | 诊断常量、正则、排序键、7 表关联精确调用、诊断不适用条件、卖点话术的 db 字段映射与上一版输出格式逐字符规格 | [`services/README.md` 第 6 节](services/README.md) |
 
 ## 9. 降级总表

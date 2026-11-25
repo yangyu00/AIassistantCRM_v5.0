@@ -66,7 +66,7 @@
 
 - `AVL_DB_SPECS`：12 个 AVL 各自的 `db_file`（如 `diagnosis/F09633.db`）、schema 名、单条查询键 `where`、固定 `order_by`、是否分表。
 - `TABLE_SCHEMAS` / `TABLE_PRIMARY_KEYS`：各表列顺序 / 类型（与写入侧建表 DDL 对齐）与主键；`SELECT *` 回来的 dict 按此列顺序组装。
-- `services/.env`：共 5 键——`AVL_DB_ROOT`、`DIMENSIONS_DB`、`LOSS_CONTROL_NUM_TABLES`、`F09633_NUM_TABLES`、`AVL_FRESHNESS_WINDOW_DAYS`（默认 `2`，`0` 关闭新鲜度过滤，见第 4.1 节）；缺文件 / 缺键用 `db_config.py` 顶部代码内默认值（默认指向 `sftp_avl2db/runtime/sqlite_db` 等）。
+- `services/.env`：共 7 键——`AVL_DB_ROOT`、`DIMENSIONS_DB`、`LOSS_CONTROL_NUM_TABLES`、`F09633_NUM_TABLES`，以及按业务分别配置的新鲜度窗口 `OPPORTUNITY_RECALL_FRESHNESS_WINDOW_DAYS`（默认 `2`）、`LOSS_CONTROL_FRESHNESS_WINDOW_DAYS`（默认 `2`）、`DIAGNOSIS_FRESHNESS_WINDOW_DAYS`（默认 `0`，关闭过滤，见第 4.1 节）；缺文件 / 缺键用 `db_config.py` 顶部代码内默认值（默认指向 `sftp_avl2db/runtime/sqlite_db` 等）。只认这三个业务键，旧版全局键 `AVL_FRESHNESS_WINDOW_DAYS` 已废弃。
 - `shard_index()` / `table_name()`：分表号 `crc32(product_no) % NUM_TABLES`，表名 `{AVL}_{分表号}`；固定表名为 `{AVL}`。
 
 三个入口都是 `async`、内部同步 `sqlite3`，列名走 `DbProfile.columns` 白名单、值一律参数绑定，排序固定取静态声明：
@@ -84,16 +84,17 @@
 
 #### 4.1 AVL 批次新鲜度窗口
 
-`INSERT OR REPLACE` 只覆盖「本批出现过的主键」，上游不再下发的主键会带着旧 `op_time` 留在库里。在线侧用一个变量把这些过时行挡在查询外：
+`INSERT OR REPLACE` 只覆盖「本批出现过的主键」，上游不再下发的主键会带着旧 `op_time` 留在库里。在线侧按业务各自配置一个新鲜度窗口，把这些过时行挡在查询外：
 
 | 项 | 位置 | 说明 |
 |---|---|---|
 | 批次水位 | 写入侧在每个 `{AVL}.db` 内维护的 `_avl_meta` 表 | 一行 / AVL：`latest_file_date`（文件名日期）、`latest_op_time`（该批数据最大 `op_time`）、`last_filename`、`updated_at`；只在「新文件日期 ≥ 已记录日期」时推进，补跑旧文件不回退 |
-| 变量 `AVL_FRESHNESS_WINDOW_DAYS` | `services/.env`（默认 `2`，`0` 关闭） | `N` = 只召回 `op_time ∈ [最新批次-(N-1)天, 最新批次]` 的数据。以数据里的 `op_time` 为基准，不依赖「`op_time` = 文件日期 - 1」这一当前事实 |
+| 变量 `OPPORTUNITY_RECALL_FRESHNESS_WINDOW_DAYS` / `LOSS_CONTROL_FRESHNESS_WINDOW_DAYS` / `DIAGNOSIS_FRESHNESS_WINDOW_DAYS` | `services/.env`（默认 `2` / `2` / `0`，`0` 关闭） | 按业务（project）分别生效：`N` = 只召回 `op_time ∈ [最新批次-(N-1)天, 最新批次]` 的数据。商机回捞 / 控损 `N=2`，诊断 8 张表 `N=0` 关闭过滤、不做批次收敛。以数据里的 `op_time` 为基准，不依赖「`op_time` = 文件日期 - 1」这一当前事实 |
 
 - **单条** `query()`：`op_time >= 下界` + `ORDER BY op_time DESC LIMIT 1`（窗口内取最新一条）。
 - **多条** `query_many()` / `query_in()`：先按窗口过滤，再在**结果集内**收敛到 `op_time = MAX(op_time)` 的那一批。例：最新批次 21 日、`N=2`（下界 20 日），结果里同时有 20 / 21 日 → 只返回 21 日集合。
-- 下界由 `_cutoff()` 按 `YYYY-MM-DD` 计算；水位表缺失 / 无行 / 日期格式异常 / `N=0` 一律降级为不过滤。
+- 下界由 `_cutoff()` 按当前 AVL 的 `project` 取对应业务的 `N` 计算；水位表缺失 / 无行 / 日期格式异常 / 该业务 `N=0` 一律降级为不过滤。`read_config.freshness_window_days_for(project)` 是唯一取数点；`load(freshness_window_days=单值)` 只是离线自检的编程式注入（把全部业务临时设成同一窗口），不是 `.env` 键。
+- 旧版全局键 `AVL_FRESHNESS_WINDOW_DAYS` 已废弃、不再被读取：`.env` 里残留也不生效，不会把诊断的 `0` 拉回 `2`。`_from_env()` 只遍历 `FRESHNESS_WINDOW_ENV_KEYS` 里的三个业务键。
 - 水位与业务查询在**同一个 sqlite 连接**里读取，每请求不增加额外连接；`_avl_meta` 不进分表布局，也不被 `purge_expired()` 清理。
 - 自检：`python tests/check_avl_freshness.py`。
 

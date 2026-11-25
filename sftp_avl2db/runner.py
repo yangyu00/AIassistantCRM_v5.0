@@ -73,6 +73,11 @@ class Avl2DbRunner:
         try:
             # 解析层是生成器；写入层按 BATCH_SIZE 分桶、逐批 commit
             rows = self.parser.parse(local_path)
+            retention = getattr(self.profile, "retention", None)
+            if int(getattr(retention, "drop_before_insert", 0) or 0) == 1:
+                self.log.info(
+                    f"[{prefix}] 全量替换模式=1：{remote_name} 写入前 "
+                    "DROP 并重建全部目标表，只保留本批 AVL 数据")
             self.sink.write(remote_name, rows, layout=self.layout)
             self._log_import_done(remote_name, prefix)
             # ↑ 成功后才登记清单；下面任何异常都不 add，下轮会重试

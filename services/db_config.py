@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import zlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Final, Mapping
@@ -30,9 +30,20 @@ TIME_COLUMN: Final = "op_time"
 # 两侧各自声明，磁盘上的 db 文件是唯一交集。
 AVL_META_TABLE: Final = "_avl_meta"
 # 新鲜度窗口：只召回 op_time 落在 [最新批次-(N-1)天, 最新批次] 的数据。
-# N=0 关闭过滤；N=1 仅取最新一批。
+# N=0 关闭过滤；N=1 仅取最新一批。按业务（project）分别配置：
+# 商机回捞 / 控损沿用 2 天；诊断 8 张表改为 0（关闭过滤，不做批次收敛）。
+# 只作为全局回退值 / 离线单值注入的默认值，不是 .env 键。
 DEFAULT_FRESHNESS_WINDOW_DAYS: Final = 2
-FRESHNESS_WINDOW_ENV_KEY: Final = "AVL_FRESHNESS_WINDOW_DAYS"
+DEFAULT_FRESHNESS_WINDOW_BY_PROJECT: Final[Mapping[str, int]] = {
+    "opportunity_recall": 2,
+    "loss_control": 2,
+    "diagnosis": 0,
+}
+FRESHNESS_WINDOW_ENV_KEYS: Final[Mapping[str, str]] = {
+    "opportunity_recall": "OPPORTUNITY_RECALL_FRESHNESS_WINDOW_DAYS",
+    "loss_control": "LOSS_CONTROL_FRESHNESS_WINDOW_DAYS",
+    "diagnosis": "DIAGNOSIS_FRESHNESS_WINDOW_DAYS",
+}
 
 # 一、各业务库的表字段（与写入侧建表 DDL 对齐；冗余声明便于在线侧独立理解）
 #     key = schema 名；值 = ((列名, 类型), ...)，顺序即 SELECT * 的列顺序
@@ -232,8 +243,19 @@ class ReadConfig:
     avl_db_root: Path
     dimensions_db: Path
     profiles: Mapping[str, DbProfile]
-    # 0 = 关闭新鲜度过滤；N >= 1 = 只召回最近 N 个 op_time 日期的批次。
+    # 兼容 / 全局回退值：离线自检传单值注入、或业务未命中映射时使用。
     freshness_window_days: int = DEFAULT_FRESHNESS_WINDOW_DAYS
+    # 按业务（project）分别生效的窗口：0 = 关闭过滤；
+    # N >= 1 = 只召回最近 N 个 op_time 日期的批次。
+    freshness_window_by_project: Mapping[str, int] = field(
+        default_factory=lambda: dict(DEFAULT_FRESHNESS_WINDOW_BY_PROJECT))
+
+    def freshness_window_days_for(self, project: str | None = None) -> int:
+        """取某个业务的窗口；``None`` 返回全局回退值（离线自检直调用）。"""
+        if project is None:
+            return self.freshness_window_days
+        return int(self.freshness_window_by_project.get(
+            project, self.freshness_window_days))
 
 
 def _read_env(path) -> dict[str, str]:
@@ -282,7 +304,8 @@ def _resolve_path(raw: str | None, default: Path) -> Path:
 
 def _build(root: Path, dimensions_db: Path,
            num_tables: Mapping[str, int],
-           freshness_window_days: int = DEFAULT_FRESHNESS_WINDOW_DAYS) -> ReadConfig:
+           freshness_window_days: int = DEFAULT_FRESHNESS_WINDOW_DAYS,
+           freshness_window_by_project=None) -> ReadConfig:
     profiles = {}
     for name, spec in AVL_DB_SPECS.items():
         cols = TABLE_SCHEMAS[spec.schema]
@@ -299,9 +322,13 @@ def _build(root: Path, dimensions_db: Path,
             sharded=spec.sharded,
             num_tables=num_tables.get(name, 0) if spec.sharded else 0,
         )
-    return ReadConfig(avl_db_root=root, dimensions_db=dimensions_db,
-                      profiles=profiles,
-                      freshness_window_days=freshness_window_days)
+    return ReadConfig(
+        avl_db_root=root, dimensions_db=dimensions_db, profiles=profiles,
+        freshness_window_days=freshness_window_days,
+        freshness_window_by_project=dict(
+            freshness_window_by_project
+            if freshness_window_by_project is not None
+            else DEFAULT_FRESHNESS_WINDOW_BY_PROJECT))
 
 
 def _from_env(env_path: Path) -> ReadConfig:
@@ -313,11 +340,14 @@ def _from_env(env_path: Path) -> ReadConfig:
     for avl, key in NUM_TABLES_ENV_KEYS.items():
         if key in v:
             nts[avl] = _positive_int(v[key], key)
-    window = (DEFAULT_FRESHNESS_WINDOW_DAYS
-              if FRESHNESS_WINDOW_ENV_KEY not in v
-              else _nonnegative_int(v[FRESHNESS_WINDOW_ENV_KEY],
-                                    FRESHNESS_WINDOW_ENV_KEY))
-    return _build(root, dimensions_db, nts, window)
+    # 只认三个按业务声明的键，缺键用代码内默认值；其它键一律忽略。
+    # 旧版全局键 AVL_FRESHNESS_WINDOW_DAYS 不再识别。
+    windows = dict(DEFAULT_FRESHNESS_WINDOW_BY_PROJECT)
+    window = DEFAULT_FRESHNESS_WINDOW_DAYS
+    for project, key in FRESHNESS_WINDOW_ENV_KEYS.items():
+        if key in v:
+            windows[project] = _nonnegative_int(v[key], key)
+    return _build(root, dimensions_db, nts, window, windows)
 
 
 @lru_cache(maxsize=1)
@@ -327,10 +357,16 @@ def _defaults() -> ReadConfig:
 
 
 def load(*, avl_db_root=None, dimensions_db=None, num_tables=None,
-         env_path=None, freshness_window_days=None) -> ReadConfig:
-    """装配在线侧读取配置。"""
+         env_path=None, freshness_window_days=None,
+         freshness_window_by_project=None) -> ReadConfig:
+    """装配在线侧读取配置。
+
+    ``freshness_window_days`` 传单值时（离线自检注入）所有业务同值；
+    ``freshness_window_by_project`` 传 mapping 时按业务覆盖当前配置。
+    """
     if (env_path is None and avl_db_root is None and dimensions_db is None
-            and num_tables is None and freshness_window_days is None):
+            and num_tables is None and freshness_window_days is None
+            and freshness_window_by_project is None):
         return _defaults()
     base = (_defaults() if env_path is None
             else _from_env(Path(env_path)))
@@ -345,8 +381,18 @@ def load(*, avl_db_root=None, dimensions_db=None, num_tables=None,
                     for k, v in num_tables.items()})
     window = (base.freshness_window_days if freshness_window_days is None
               else _nonnegative_int(str(freshness_window_days),
-                                    FRESHNESS_WINDOW_ENV_KEY))
-    return _build(root, dim, nts, window)
+                                    "freshness_window_days"))
+    if freshness_window_days is not None:
+        # 单值注入保持旧语义：所有业务用同一个窗口。
+        by_project = {p: window for p in DEFAULT_FRESHNESS_WINDOW_BY_PROJECT}
+    elif freshness_window_by_project is not None:
+        by_project = dict(base.freshness_window_by_project)
+        by_project.update({
+            p: _nonnegative_int(str(n), f"{p}_FRESHNESS_WINDOW_DAYS")
+            for p, n in freshness_window_by_project.items()})
+    else:
+        by_project = dict(base.freshness_window_by_project)
+    return _build(root, dim, nts, window, by_project)
 
 
 def default_dimensions_db() -> Path:
@@ -357,10 +403,15 @@ def default_dimensions_db() -> Path:
 def validate(config) -> None:
     """在线侧自己的契约校验：列 / 查询键 / 排序 / 分表声明逐一核对。"""
     profiles = config.profiles if isinstance(config, ReadConfig) else config
-    if (isinstance(config, ReadConfig)
-            and config.freshness_window_days < 0):
-        raise ValueError(
-            f"freshness_window_days 不能为负：{config.freshness_window_days}")
+    if isinstance(config, ReadConfig):
+        if config.freshness_window_days < 0:
+            raise ValueError(
+                "freshness_window_days 不能为负："
+                f"{config.freshness_window_days}")
+        for project, n in config.freshness_window_by_project.items():
+            if n < 0:
+                raise ValueError(
+                    f"{project} 的 freshness_window_days 不能为负：{n}")
     if set(profiles) != set(AVL_DB_SPECS):
         raise ValueError(
             "读取配置的 AVL 集合与 AVL_DB_SPECS 不一致；"
@@ -389,7 +440,7 @@ def validate(config) -> None:
 __all__ = [
     "ENV_PATH", "DEFAULT_AVL_DB_ROOT", "DEFAULT_DIMENSIONS_DB",
     "TIME_COLUMN", "AVL_META_TABLE", "DEFAULT_FRESHNESS_WINDOW_DAYS",
-    "FRESHNESS_WINDOW_ENV_KEY",
+    "DEFAULT_FRESHNESS_WINDOW_BY_PROJECT", "FRESHNESS_WINDOW_ENV_KEYS",
     "TABLE_SCHEMAS", "TABLE_PRIMARY_KEYS", "AVL_DB_SPECS", "AvlDbSpec",
     "SELLING_POINTS_TABLE", "SELLING_POINTS_PRIMARY_KEY",
     "SELLING_POINTS_REQUIRED_COLUMNS", "SELLING_POINTS_OPTIONAL_COLUMNS",
