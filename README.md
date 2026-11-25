@@ -206,6 +206,16 @@ python -m pip install -r requirements.txt
 
 平台要求见第 1 节（仅 Linux / Unix）。
 
+容器化部署与上面的 venv 路径等价，任选其一：镜像基线为 `python:3.12-slim`，`Dockerfile` 设 `TZ=Asia/Shanghai`、`EXPOSE 8990`，默认 `CMD ["api"]`。
+
+```bash
+docker build -t aiassistantcrm:v5.0 .
+docker run -d --name crm -p 8990:8990 aiassistantcrm:v5.0
+docker run -d --name crm -p 8990:8990 aiassistantcrm:v5.0 full
+```
+
+`docker-entrypoint.sh` 作为 PID 1，按首参分派：`api`（默认，只 `exec python3 main.py`）、`full`（12 个 `python3 -m sftp_avl2db --task <AVL>` + 1 个 `python3 -m local_excel2db` + `python3 main.py`，共 14 个进程，AVL 清单与第 10.5 节一致）、`shell`（`exec /bin/sh`）、其它原样 `exec`。`CRM_PORT` 环境变量由该脚本写回 `/app/.env`（`SKIP_ENV_WRITE=1` 禁用写回）；`app_config.load_config()` 仍只读 `.env`，不读系统环境变量。整目录挂载时脚本校验 `app_config.py` 与 `local_excel2db/registry.json` 存在，`local_excel2db/runtime/sqlite_db/dimensions.db` 缺失时自动执行 `python3 -m local_excel2db --once`。镜像构建时 `Dockerfile` 会用各包 `.env.example` 初始化缺失的 `.env`，凭据替换仍按 10.2 节执行。
+
 ### 10.2 凭据替换（首次部署必做）
 
 仓库随附的 `.env` 与 `.env.example` **逐键同值**；`IOP/config.py::_SPECS` 里还内置了一份实际生效的 token 端点地址与凭据。因此直接 `cp .env.example .env` 会原样带入仓库里的明文串，必须逐项替换：
@@ -284,7 +294,7 @@ python -m call_stat --month 2026-11 --export                     # 导出 CSV
 python -m call_stat --flush                                      # 落盘未达阈值增量
 ```
 
-离线复跑 / 单测可注入 `--local-dir`、`--runtime-dir`、`--max-rounds`，产出隔离到临时目录；但 `python -m sftp_avl2db` 即便走本地目录仍会装配 `TaskLogger`，**必须装好 `loguru`**（`python -m` 入口没有 logger 注入参数；只有编程式调用 `cli.main(logger=...)` 或 `build_task(logger=InMemoryLogger())` 才能绕过，未装时退出码 2）。部署时可把各包 `runtime/` 软链到独立数据盘，不要整目录覆盖包目录。改表名、列映射、主键或标签列数后须删除 `dimensions.db` 重建，并同步在线侧 `SELLING_POINTS_*` 声明。
+离线复跑 / 单测可注入 `--local-dir`、`--runtime-dir`、`--max-rounds`，产出隔离到临时目录；离线复跑仍会装配 `TaskLogger`，需装好 `loguru`（编程式调用 `cli.main(logger=...)` 或 `build_task(logger=InMemoryLogger())` 可注入替身）。部署时可把各包 `runtime/` 软链到独立数据盘，不要整目录覆盖包目录。改表名、列映射、主键或标签列数后须删除 `dimensions.db` 重建，并同步在线侧 `SELLING_POINTS_*` 声明。
 
 ## 11. 自检
 

@@ -30,3 +30,5 @@ log/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+
+aiassistantcrm-v50-image.tar

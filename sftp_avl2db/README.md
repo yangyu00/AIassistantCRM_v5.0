@@ -306,6 +306,6 @@ python tests/check_diagnosis_offline.py   # 端到端自检（写入侧与在线
 python tests/check_purge_rotation.py     # 清理轮转自检
 ```
 
-上面的 `python -m sftp_avl2db` 命令需要 `loguru`（见第 8 节末尾的离线复跑说明）；`--local-dir` 只换源，不绕过日志依赖。两个 `tests/check_*.py` 走 `load_profiles()` 与注入 logger，不需要 loguru。
+上面的 `python -m sftp_avl2db` 命令需要 `loguru`；`--local-dir` 只换源，不绕过日志依赖。两个 `tests/check_*.py` 走 `load_profiles()` 与注入 logger，不需要 loguru。
 
 `build_task()` 的 `logger=`、`local_dir=`、`day=`、`now=`、`sleeper=`、`batch_size=`、`table_schema=` 都是显式注入点；`runner.serve_forever()` 另有 `max_rounds` / `date_strings` 测试钩子。离线复跑产出隔离到临时目录，不碰包内 `runtime/`。

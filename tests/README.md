@@ -3,7 +3,7 @@
 部署后 / 联调时手动跑的冒烟脚本，不是 pytest 单元测试：没有 `test_` 开头的函数、没有 fixture，文件名也故意不叫 `test_*.py`，避免被 pytest 收集。按是否联网分两类：
 
 - **在线冒烟**：`check_online_api.py` / `check_param_validation.py` / `check_call_stat.py` / `check_iop_direct.py` —— 跑一次、发真实请求、打印响应，不打桩、不 mock，会真实访问在线服务或 IOP 上游，结论靠人看；
-- **离线自检**：`check_diagnosis_offline.py` / `check_legacy_output_parity.py` / `check_purge_rotation.py` / `check_avl_freshness.py` —— 不打任何服务，用临时 SQLite + 内存桩 / 桩时钟跑断言，打印 `ALL PASS`，临时产物跑完即删。`legacy_output_reference.py` 是上一版本输出的独立参照实现（oracle），本身不跑断言、不 import 现版模块。
+- **离线自检**：`check_diagnosis_offline.py` / `check_legacy_output_parity.py` / `check_purge_rotation.py` / `check_avl_freshness.py` / `check_drop_before_insert.py` —— 不打任何服务，用临时 SQLite + 内存桩 / 桩时钟跑断言，打印 `ALL PASS`（`check_legacy_output_parity.py` 在维表库不存在时打印 `SKIP` 并返回 0），临时产物跑完即删。`legacy_output_reference.py` 是上一版本输出的独立参照实现（oracle），本身不跑断言、不 import 现版模块。
 
 ## 1. 前置条件
 
