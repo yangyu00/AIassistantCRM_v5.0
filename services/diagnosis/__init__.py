@@ -1,8 +1,4 @@
-"""诊断：8 表取数、纯逻辑、六段话术对象、口径常量。
-
-卖点维表话术已抽离为平级业务包 ``services/selling_point_script/``，
-本包不再导出任何兜底话术相关符号。
-"""
+"""诊断：8 表取数、纯逻辑、六段话术对象、口径常量。"""
 _LAZY_EXPORTS = {
     "build_diagnosis_record": ("query", "build_diagnosis_record"),
     "ProductInfoByDiagnosis": ("rewrite", "ProductInfoByDiagnosis"),

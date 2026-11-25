@@ -85,7 +85,7 @@ runtime/
 | 文件 | 作用 |
 |---|---|
 | `.env` | 与 `config.py` 同目录，日常改这个；`repr` 自动屏蔽 `SFTP_PASSWORD` |
-| `.env.example` | 带注释的配置说明，与 `.env` 同值；新环境可 `cp .env.example .env` |
+| `.env.example` | 带注释的 68 个必需键模板；与 `.env` 不同：缺少 8 个可选的 `<AVL>_DROP_BEFORE_INSERT` 覆盖键，且 `F09591_BATCH_SIZE` 为 `5000`（`.env` 为 `10000`）；新环境复制后需按第 5 节补齐 |
 | `config.py::_AVLS` | `(AVL 名, 项目名)` 声明表；AVL 名同时是文件前缀、db 文件名与 `.env` 键前缀 |
 | `avl_specs.py` | 每个 AVL 的静态声明：项目、schema 名、解析器、是否分表；`table_name()` 表名规则、`shard_index()` 分表口径、`validate_specs()` 启动校验 |
 | `table_schemas.py` | `TABLE_SCHEMAS`（列定义）与 `TABLE_PRIMARY_KEYS`（主键），供建表 DDL、幂等与解析器列数校验 |
@@ -115,7 +115,7 @@ runtime/
 
 ### 68 个键的完整清单与当前生效值
 
-`sftp_avl2db/.env`（与 `.env.example` 同值、随仓库入库）的实际内容如下。仅凭 `<AVL>_*` 模板无法写出这份文件，重建时照下表逐键落盘；新环境可 `cp .env.example .env` 再替换凭据。
+`sftp_avl2db/.env`（随仓库入库）的实际内容如下：下表列出 68 个必需键的当前生效值；`.env` 另含 8 个可选的 `<AVL>_DROP_BEFORE_INSERT` 覆盖键（诊断 8 张表均为 `1`），不在下表。仅凭 `<AVL>_*` 模板无法写出这份文件，重建时照下表逐键落盘；新环境复制 `.env.example` 后需补齐覆盖键、核对 `F09591_BATCH_SIZE` 并替换凭据。
 
 **SFTP 公共 5 项**
 
@@ -146,7 +146,7 @@ runtime/
 | `F09554` | 10000 | 3 | 3 | 900 | 1 | — |
 | `F09555` | 10000 | 3 | 3 | 900 | 1 | — |
 | `F09556` | 10000 | 3 | 3 | 900 | 1 | — |
-| `F09591` | 5000 | 3 | 3 | 900 | 7 | 128 |
+| `F09591` | 10000 | 3 | 3 | 900 | 7 | 128 |
 | `F09627` | 10000 | 365 | 3 | 900 | 1 | — |
 | `F09628` | 10000 | 365 | 3 | 900 | 1 | — |
 | `F09629` | 10000 | 365 | 3 | 900 | 1 | — |
@@ -260,7 +260,7 @@ done
 ## 9. 解析与写入行为
 
 1. `FlatColumnParser` 是唯一的 flat 解析器，商机回捞与诊断 8 张维表共用：按 UTF-8 读取（`errors="ignore"`），只去行尾换行 / BOM、保留首尾制表符与空列，按 `\t` 切分后补齐或截断到 `profile.columns` 声明的列数。所有列原样保留文本、不做数值转换；空主键判定的列下标由 `build_parser()` 按 `profile.primary_key` 换算。
-2. 控损续行：以行首 `YYYY-MM-DD` 判定新记录；`strip_eol()` 只去 `\n`、再只剥**一个** ASCII 反斜杠（不能用 `rstrip('\\')`，否则 GBK 尾字节 `0x5C` 的汉字会被削成乱码）；起始行 `>=5` 列取前 5 列、`==4` 列补空 `strategy_name`、`<4` 列整条跳过；空物理行与文件开头孤立续行跳过；最后一条单独入库。
+2. 控损续行：规则见第 7 节「控损（`F09591`）」条目，此处不重复。
 3. `sink/schema.py` 建表 SQL 保持表级 `PRIMARY KEY (...)` 声明形式；主键列由 `TABLE_PRIMARY_KEYS` 传入，可单列可复合，自动补 `NOT NULL`。
 4. 所有 SQLite 连接统一只设 `PRAGMA journal_mode = WAL` 与 `PRAGMA synchronous = NORMAL`；写入按 `BATCH_SIZE` 分桶、逐桶满批提交，使用 `INSERT OR REPLACE` + 主键幂等。
 5. 分表口径 `zlib.crc32(product_no) % NUM_TABLES`；`p_no` 为空时取 `"NULL"`（解析器已跳过空主键，属不可达分支）。

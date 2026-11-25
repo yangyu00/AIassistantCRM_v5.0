@@ -408,7 +408,7 @@ def main():
               ("资费名称", "资费摘要", "痛点诊断", "营销话术")))
     check("卖点话术 productName 取维表产品名称原文",
           fb_obj.product_name == "【兜底套餐】兜底摘要", fb_obj.product_name)
-    # 「匹配结果2」为空 → 老版 cut_in_script_dict[pid] = {} → 切入 / 挽留整段不出现
+    # 「匹配结果2」为空 → 该 pid 的话术字典为空 → 切入 / 挽留整段不出现
     no_mr_row = replace(sp[FALLBACK_PID], match_result="")
     no_mr_obj = build_selling_point_object(
         FALLBACK_PID, {FALLBACK_PID: no_mr_row})

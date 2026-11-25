@@ -341,7 +341,6 @@ def _from_env(env_path: Path) -> ReadConfig:
         if key in v:
             nts[avl] = _positive_int(v[key], key)
     # 只认三个按业务声明的键，缺键用代码内默认值；其它键一律忽略。
-    # 旧版全局键 AVL_FRESHNESS_WINDOW_DAYS 不再识别。
     windows = dict(DEFAULT_FRESHNESS_WINDOW_BY_PROJECT)
     window = DEFAULT_FRESHNESS_WINDOW_DAYS
     for project, key in FRESHNESS_WINDOW_ENV_KEYS.items():

@@ -67,4 +67,4 @@ python -m local_excel2db --once
 
 AVL 样例里含手机号、通话总结、拒绝原因等话术文本，JSON 样例里含 `ITEMVALUE`，两张 xlsx 含产品名与话术——都是脱敏后的样例数据，不代表真实业务内容。往这里补新样例前先确认无真实客户信息；生产数据一律走 `sftp_avl2db/runtime/`、`local_excel2db/runtime/`、`excels/` 等运行时目录，项目 `.gitignore` 已忽略 `*.db`、`*.log`、各包 `runtime/` 等产物。
 
-`tests/` 里的手工冒烟脚本打的是运行中的服务，不使用这些样例文件。
+`tests/` 里的在线冒烟脚本打的是运行中的服务；离线自检脚本不打服务，其中 `check_diagnosis_offline.py` 与 `check_avl_freshness.py` 会读取本目录的 `*.AVL` 样例。
