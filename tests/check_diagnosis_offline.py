@@ -667,6 +667,21 @@ def main():
     check("多值按位置配对（不等长补空）",
           logic.pairs_by_position("a|b|c", "x|y") ==
           [("a", "x"), ("b", "y"), ("c", "")])
+    import random                                        # noqa: E402
+    check("pick_retain_pair 空召回 → None",
+          logic.pick_retain_pair([]) is None and
+          logic.pick_retain_pair(None) is None)
+    demo_pairs = [("r1", "h1"), ("r2", "h2"), ("r3", "h3")]
+    check("pick_retain_pair 只取一条、注入 rng 可复现",
+          logic.pick_retain_pair(demo_pairs, rng=random.Random(7)) ==
+          logic.pick_retain_pair(demo_pairs, rng=random.Random(7)) and
+          logic.pick_retain_pair(demo_pairs, rng=random.Random(7)) in demo_pairs)
+    one_script = logic.build_output_script(
+        {"retain_pairs": demo_pairs}, rng=random.Random(7))
+    check("build_output_script 挽留段只输出随机一条",
+          one_script.count('style="color:blue;"') == 1 and
+          sum(text in one_script for text in ("h1", "h2", "h3")) == 1,
+          one_script)
     check("交集保留全部 REASON",
           logic.intersect_scenes([("s1", "r1"), ("s2", "r2"), ("s3", "r3")],
                                 ["s1", "s2"]) ==
@@ -879,8 +894,17 @@ def main():
     check("productName = business_name 原文", obj.product_name == BIZ_NAME, obj.product_name)
     for label in ("资费名称", "资费摘要", "痛点诊断", "切入话术", "营销话术", "挽留话术"):
         check(f"output_script 含【{label}】", f"【{label}】" in obj.output_script)
-    check("output_script 含实际话术内容", "营销话术A" in obj.output_script and
-          "挽留话术B" in obj.output_script)
+    check("output_script 含实际话术内容（营销话术仍输出全部召回）",
+          "营销话术A" in obj.output_script and
+          "营销话术B" in obj.output_script)
+    retain_lines = [
+        f'<strong><span style="color:blue;">{reason or "无"}：</span></strong>'
+        f'{huashu or "无"}'
+        for reason, huashu in (record or {}).get("retain_pairs", [])]
+    check("挽留话术只随机输出召回中的一条",
+          sum(text in obj.output_script for text in retain_lines) == 1 and
+          obj.output_script.count('style="color:blue;"') == 1,
+          obj.output_script)
     print("  --- output_script 预览 ---")
     print("  " + obj.output_script.replace("<br>", "\n  "))
 

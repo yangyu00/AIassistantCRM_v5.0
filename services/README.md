@@ -243,7 +243,8 @@
 - `expand_user_scenes(rows)`：只收 `scene` 非空的 `(scene, reason)`；`intersect_scenes()` 保留交集首次出现顺序，同一场景可贡献多条非空 `REASON` 作为痛点诊断。
 - `order_scenes_by_priority(scenes, rank_rows)`：`rn` 只能 `int()` 成功才入 ranks；排序键有 RN 为 `(0, rn, index)`、无 RN 为 `(1, 0, index)`；`allow_fallback=False` 时才过滤掉无 RN 场景。返回 `(ordered, ranked_set)`。
 - `expand_retain_pairs(rows)`：按位置配对后**只收 `huashu` 非空**的 `(拒绝原因, 挽留话术)`。
-- `build_output_script(record, *, omit=())`：每段 `line(label, value)` = `<strong>【{label}】</strong>{value or 无}`；痛点 / 营销为多行 `<br>` 拼接；挽留每行 `<strong><span style="color:blue;">{reason or 无}：</span></strong>{huashu or 无}`；六段按固定顺序 `<br>` 连接，`omit` 中的段整段不出现。诊断对象调用时不传 `omit`，固定六段。
+- `pick_retain_pair(retain_pairs, *, rng=None)`：`retain_pairs` 空 → `None`；否则随机返回一条 `(拒绝原因, 挽留话术)`，按「条」抽取、不拆开配对；`rng` 可注入 `random.Random(seed)` 复现，缺省走全局 `random`。
+- `build_output_script(record, *, omit=(), rng=None)`：每段 `line(label, value)` = `<strong>【{label}】</strong>{value or 无}`；痛点 / 营销为多行 `<br>` 拼接；**挽留段只输出 `pick_retain_pair` 随机选中的一条**，单行 `<strong><span style="color:blue;">{reason or 无}：</span></strong>{huashu or 无}`，空召回 → 空段；六段按固定顺序 `<br>` 连接，`omit` 中的段整段不出现。诊断对象调用时不传 `omit`，固定六段。
 
 **7 表关联的精确调用（`diagnosis/query.py`）**
 
@@ -259,7 +260,7 @@
 | 6 | `query_many(F09631, where={"business_type": business_type})` → `extract_scripts` | `db_empty:F09631` |
 | 7 | `query_many(F09632, where={"business_type": business_type})` → `expand_retain_pairs` | `db_empty:F09632` |
 
-record 字段固定为 `product_id / telnum / business_name / business_type / fee_name / fee_summary / product_scenes / user_scenes / matched_scenes / pain_points / top_scene / top_scene_source / entry_script / marketing_scripts / retain_pairs`。六项输出 `fee_name, fee_summary, pain_points, entry_script, marketing_scripts, retain_pairs` 全空时 → `empty_output`、返回 `None`。
+record 字段固定为 `product_id / telnum / business_name / business_type / fee_name / fee_summary / product_scenes / user_scenes / matched_scenes / pain_points / top_scene / top_scene_source / entry_script / marketing_scripts / retain_pairs`。六项输出 `fee_name, fee_summary, pain_points, entry_script, marketing_scripts, retain_pairs` 全空时 → `empty_output`、返回 `None`。`retain_pairs` 始终保留 F09632 的全量召回（标签替换对全集生效、日志也打印全集），「随机输出一条」只发生在 `build_output_script` 的拼装阶段。
 
 **卖点话术格式转换（`selling_point_script/logic.py`）**
 

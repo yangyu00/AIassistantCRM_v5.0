@@ -1,6 +1,7 @@
-"""诊断话术的业务逻辑：纯函数、零 I/O、零第三方依赖，便于离线单测。"""
+"""诊断话术的业务逻辑：零 I/O、零第三方依赖，随机源可注入，便于离线单测。"""
 from __future__ import annotations
 
+import random
 from itertools import zip_longest
 
 from .constants import (
@@ -174,8 +175,26 @@ def apply_tag_values(record, tag_values):
 
 
 # 话术拼装
-def build_output_script(record, *, omit=()):
-    """把 6 个输出字段拼成 HTML 话术。"""
+def pick_retain_pair(retain_pairs, *, rng=None):
+    """从「拒绝原因 + 挽留话术」的召回里随机取一条，空召回返回 ``None``。
+
+    拒绝原因与挽留话术已按位置配成一条召回，随机以「条」为单位，
+    不会把原因和话术拆开错配。``rng`` 可注入 ``random.Random(seed)``
+    便于离线复现；缺省走全局 ``random``，每次拼装独立随机。
+    """
+    pairs = list(retain_pairs or [])
+    if not pairs:
+        return None
+    chooser = rng if rng is not None else random
+    return chooser.choice(pairs)
+
+
+def build_output_script(record, *, omit=(), rng=None):
+    """把 6 个输出字段拼成 HTML 话术。
+
+    挽留段只输出 ``pick_retain_pair`` 从召回里随机选中的一条；痛点诊断 /
+    营销话术仍输出全部召回。``rng`` 仅用于测试时固定随机源。
+    """
     record = record or {}
 
     def line(label, value):
@@ -187,11 +206,12 @@ def build_output_script(record, *, omit=()):
 
     pain_text = "<br>".join(str(x) for x in pain_points if x)
     marketing_text = "<br>".join(str(x) for x in marketing if x)
-    if retain:
-        retain_text = "<br>".join(
+    retain_pair = pick_retain_pair(retain, rng=rng)
+    if retain_pair:
+        reason, huashu = retain_pair
+        retain_text = (
             f'<strong><span style="color:blue;">{reason or EMPTY_TEXT}：</span></strong>'
             f'{huashu or EMPTY_TEXT}'
-            for reason, huashu in retain
         )
     else:
         retain_text = ""
@@ -212,6 +232,7 @@ def build_output_script(record, *, omit=()):
 __all__ = [
     "split_fee_name", "split_multi", "pairs_by_position", "dedup",
     "expand_user_scenes", "intersect_scenes", "order_scenes_by_priority",
-    "expand_retain_pairs", "extract_scripts", "build_output_script",
+    "expand_retain_pairs", "extract_scripts", "pick_retain_pair",
+    "build_output_script",
     "collect_tag_names", "replace_tag_placeholders", "apply_tag_values",
 ]
