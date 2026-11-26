@@ -35,6 +35,7 @@ class WriteStats:
     purged: int = 0           # 最近一次 purge_expired 删除的行数
     dropped_tables: int = 0   # 全量替换模式下本次 DROP 并重建的业务表数
     max_op_time: str = ""     # 本文件写入记录里最大的 op_time（原样文本）
+    rolled_rows: int = 0      # 最近一次 roll_forward_op_time() 更新的行数
     errors: list[tuple[str, str]] = field(default_factory=list)  # [(库路径, 异常文本)]
 
 
@@ -221,8 +222,11 @@ class SqliteSink:
             conns.clear()
             batches.clear()
 
-        # 业务数据已全部提交且没有异常：才推进水位。
-        self._record_metadata(filename, layout)
+        # 业务数据已全部提交且没有异常：才推进水位。空批次（文件存在但
+        # 0 条有效记录）不登记水位，避免把 latest_op_time 写成空串、让在线侧
+        # 新鲜度窗口失去基准；控损的断供兜底也据此判定「文件有问题」。
+        if self.stats.rows > 0:
+            self._record_metadata(filename, layout)
         return self.stats.rows
 
     def purge_expired(self, cutoff: str,
@@ -263,6 +267,54 @@ class SqliteSink:
                     conn.close()
 
         self.stats.purged = total
+        return total
+
+    def roll_forward_op_time(self, days: int = 1,
+                             tables: Iterable[str] | None = None) -> int:
+        """控损断供兜底：把业务表里的 ``op_time`` 日期整体后移 ``days`` 天。
+
+        只遍历 layout 枚举出的业务表，``_avl_meta`` 水位表保持不动（在线侧
+        仍以原水位算窗口下界，后移后的数据只会更容易落在窗口内）。库文件
+        不存在时直接跳过，避免为还没建库的 AVL 凭空造出空 db。返回实际
+        更新的行数；单库失败记 ``stats.errors`` 并继续处理其余库。
+        """
+        days = int(days)
+        if days <= 0:
+            raise ValueError(f"days 必须为正整数，当前为 {days}")
+        total = 0
+        self.stats.rolled_rows = 0
+        self.stats.errors = []
+
+        groups = self._group_targets_by_db()
+        if tables is not None:
+            picked = set(tables)
+            groups = {db: [t for t in ts if t in picked]
+                      for db, ts in groups.items()}
+            groups = {db: ts for db, ts in groups.items() if ts}
+
+        for db_path, targets in groups.items():
+            if not db_path.is_file():
+                continue
+            conn = None
+            try:
+                conn = self._connect(db_path)
+                cur = conn.cursor()
+                for t in targets:
+                    cur.execute(self.schema.shift_time_sql(t, days))
+                    total += max(cur.rowcount, 0)
+                conn.commit()
+            except Exception as e:
+                if conn is not None:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                self.stats.errors.append((str(db_path), str(e)))
+            finally:
+                if conn is not None:
+                    conn.close()
+
+        self.stats.rolled_rows = total
         return total
 
 

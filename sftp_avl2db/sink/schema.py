@@ -91,6 +91,25 @@ class TableSchema:
     def delete_expired_sql(self, table_name: str) -> str:
         return f"DELETE FROM {table_name} WHERE {self.time_column} < ?"
 
+    def shift_time_sql(self, table_name: str, days: int = 1) -> str:
+        """把业务表的时间列按日期整体后移 ``days`` 天（控损断供兜底用）。
+
+        只处理恰好形如 ``YYYY-MM-DD`` 的合法日期文本；其余取值保持原样，
+        避免 ``date()`` 算成 NULL 把数据写坏。``days`` 先转 int 再拼进 SQL
+        日期修饰符，表名来自静态 layout，都不接受外部字符串拼接。
+        """
+        days = int(days)
+        if days <= 0:
+            raise ValueError(f"days 必须为正整数，当前为 {days}")
+        delta = f"+{days} day"
+        t = self.time_column
+        return (
+            f"UPDATE {table_name} SET {t} = "
+            f"strftime('%Y-%m-%d', date({t}, '{delta}')) "
+            f"WHERE {t} GLOB '????-??-??' "
+            f"AND date({t}, '{delta}') IS NOT NULL"
+        )
+
     def validate_row(self, row: Iterable) -> None:
         """写库前校验列数，避免 SQLite 报出难懂的绑定错误。"""
         n = len(tuple(row))

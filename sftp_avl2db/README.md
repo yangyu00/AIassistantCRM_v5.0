@@ -184,8 +184,8 @@ runtime/
 
 ## 7. AVL 与库表契约
 
-- 业务数据日期 `op_time` 取自 AVL 第 1 列，代码不做日期改写；文件名 `YYYYMMDD` 是文件生成日。补跑时 `--date` 填文件名日期，过期清理按 `op_time` 列。**当前样例数据里 `op_time` 全是文件名日期 - 1 天，但这只是上游事实，不是代码约束**：写入侧不按文件名推算、也不改写日期，在线侧的新鲜度窗口同样以数据里的 `op_time` 为基准。
-- 每个 `{AVL}.db` 另有一张 `_avl_meta`（不进 layout、不参与分表路由与过期清理）：`SqliteSink.write()` 成功提交后按文件名日期登记 `latest_file_date` / `latest_op_time`，只在日期不早于已记录值时推进，补跑旧文件不回退；在线侧按同名只读，用来限定查询的新鲜度窗口（见 `services/README.md` 第 4.1 节）。元数据写失败只记 `stats.errors`，不回滚业务数据、不阻断清单登记。
+- 业务数据日期 `op_time` 取自 AVL 第 1 列，正常入库路径不做日期改写；文件名 `YYYYMMDD` 是文件生成日。补跑时 `--date` 填文件名日期，过期清理按 `op_time` 列。**当前样例数据里 `op_time` 全是文件名日期 - 1 天，但这只是上游事实，不是代码约束**：写入侧不按文件名推算、也不改写日期，在线侧的新鲜度窗口同样以数据里的 `op_time` 为基准。唯一例外是控损断供兜底把库内 `op_time` 整体 +1 天，见下文「控损缺文件兜底」。
+- 每个 `{AVL}.db` 另有一张 `_avl_meta`（不进 layout、不参与分表路由与过期清理）：`SqliteSink.write()` 成功提交后按文件名日期登记 `latest_file_date` / `latest_op_time`，只在日期不早于已记录值时推进，补跑旧文件不回退；在线侧按同名只读，用来限定查询的新鲜度窗口（见 `services/README.md` 第 4.1 节）。元数据写失败只记 `stats.errors`，不回滚业务数据、不阻断清单登记。`write()` 产出 0 条记录时不登记水位，避免空批次把 `latest_op_time` 写成空串。
 - 表名不用声明：固定表 = `{AVL}`，分表 = `{AVL}_{分表号}`，由 `avl_specs.table_name()` 统一派生。
 - **回捞商机**（`F09554/55/56`）：一行一条、无续行，逻辑 12 列；`product_no` 为 `TEXT NOT NULL` 主键，为空跳过；列数不足补空串、超出截断，所有列原样保留文本（末列 `city_id` 声明为 INTEGER，由 SQLite 列亲和性转换）。
 - **控损**（`F09591`）：逻辑 5 列，`strategy_name` 含裸换行需续行拼接；`product_no` 为主键与分表键。单个 `F09591.db` 内 128 张表 `F09591_0 … 127`，路由为 `zlib.crc32(product_no.encode("utf-8")) % NUM_TABLES`。写入用 `INSERT OR REPLACE`，批量补跑按文件名日期升序。
@@ -228,6 +228,30 @@ runtime/
 续行解析（`parsers/continuation.py`）：以行首 `YYYY-MM-DD` 判定新记录；`strip_eol()` 只去 `\n`、再只剥**一个** ASCII 反斜杠（不能用 `rstrip('\\')`，否则 GBK 尾字节 `0x5C` 的汉字会被削成乱码）；起始行 `>=5` 列取前 5 列、`==4` 列补空 `strategy_name`、`<4` 列整条跳过；空物理行与文件开头孤立续行跳过；最后一条单独入库。单个 `F09591.db` 内 128 张表 `F09591_0 … 127`，路由 `zlib.crc32(product_no.encode("utf-8")) % NUM_TABLES`，写入用 `INSERT OR REPLACE`，批量补跑按文件名日期升序。
 
 两类库都以主键 + `INSERT OR REPLACE` 保证幂等，`op_time` 不进主键（每日全量覆盖最新批次）；所有 SQLite 连接只设 `PRAGMA journal_mode = WAL` 与 `PRAGMA synchronous = NORMAL`。
+
+### 控损缺文件兜底（`op_time` +1 天）
+
+上游断供时续住控损旧批次，避免库表被过期清理清空、前台查不到数据。
+
+**触发条件**（只对 `project=loss_control` / `F09591` 生效，常驻轮询模式）：
+
+- 本轮「应到文件」= 前一天日期的 `F09591{YYYYMMDD}000000.AVL`（例：26 日 02:00 期望 25 日文件）在远端不存在、stat / 下载 / 解析 / 写入任一环节失败，或本轮因 SFTP 连接失败完全没有入库结果；
+- 拉下来的文件是 **0 字节**，或文件非空但解析出 **0 条有效记录**；
+- 且本轮没有任何日期成功入库过有效数据（只要有一批新数据到了就不兜底）。
+
+**动作**：`Avl2DbRunner` 在跑 `cleanup_expired()` **之前**调用 `SqliteSink.roll_forward_op_time(days=1)`，把 `F09591.db` 内全部 128 张分表业务行的 `op_time` 按 `date(op_time, '+1 day')` 后移一天。只改业务表，`_avl_meta` 水位表不动——在线侧仍按原水位算窗口下界，后移后的数据只会更容易落在窗口内；`op_time` 不是合法 `YYYY-MM-DD` 文本的行保持原样。
+
+**幂等与重试**：
+
+- 同一自然日最多推进一次：进程内闸门 + `runtime/state/F09591.op_time_roll` 标记文件，进程重启也不会重复平移；断供持续几天就每天续一天，正好和「本应到达的批次日期」同步。
+- 空文件 / 空批次按 `FAILED` 处理：不落业务行、不登记 `.fetched` 清单、`write()` 也不推进 `_avl_meta`，下轮继续重试，真文件到达后按主键正常覆盖。
+- `--date` 单次补跑是人工动作，**不启用**兜底，避免把运维补跑失败误判成断供。
+- 只作用于控损；商机 / 诊断 AVL 的行为完全不变。
+- 逻辑按 `profile.project` 判定，不新增任何 `.env` 键，68 键契约与 `validate_specs()` 校验保持不变。
+
+**为什么能防暴雷**：控损 `DATA_EXPIRE_DAYS=3`、`PURGE_CYCLE_DAYS=7`，断供时旧批次的 `op_time` 不动就会被 `cutoff = now - 3 天` 逐步清掉；每天 +1 天后数据始终落在清理线之上，同时仍满足在线侧 `op_time >= 最新批次-(N-1)天` 的窗口（`LOSS_CONTROL_FRESHNESS_WINDOW_DAYS=2`）。
+
+**代价**：128 张分表每天最多一次全表 `UPDATE`（`op_time` 无索引），建议在低峰执行；如需进一步降开销可给分表加 `op_time` 索引，或把兜底收敛到当天轮转命中的分表。自检：`python tests/check_loss_control_rollover.py`。
 
 ## 8. 诊断 8 张表注册（project = diagnosis）
 

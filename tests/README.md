@@ -3,7 +3,7 @@
 部署后 / 联调时手动跑的冒烟脚本，不是 pytest 单元测试：没有 `test_` 开头的函数、没有 fixture，文件名也故意不叫 `test_*.py`，避免被 pytest 收集。按是否联网分两类：
 
 - **在线冒烟**：`check_online_api.py` / `check_param_validation.py` / `check_call_stat.py` / `check_iop_direct.py` —— 跑一次、发真实请求、打印响应，不打桩、不 mock，会真实访问在线服务或 IOP 上游，结论靠人看；
-- **离线自检**：`check_diagnosis_offline.py` / `check_legacy_output_parity.py` / `check_purge_rotation.py` / `check_avl_freshness.py` / `check_drop_before_insert.py` —— 不打任何服务，用临时 SQLite + 内存桩 / 桩时钟跑断言，打印 `ALL PASS`（`check_legacy_output_parity.py` 在维表库不存在时打印 `SKIP` 并返回 0），临时产物跑完即删。`legacy_output_reference.py` 是上一版本输出的独立参照实现（oracle），本身不跑断言、不 import 现版模块。
+- **离线自检**：`check_diagnosis_offline.py` / `check_legacy_output_parity.py` / `check_purge_rotation.py` / `check_avl_freshness.py` / `check_drop_before_insert.py` / `check_loss_control_rollover.py` —— 不打任何服务，用临时 SQLite + 内存桩 / 桩时钟跑断言，打印 `ALL PASS`（`check_legacy_output_parity.py` 在维表库不存在时打印 `SKIP` 并返回 0），临时产物跑完即删。`legacy_output_reference.py` 是上一版本输出的独立参照实现（oracle），本身不跑断言、不 import 现版模块。
 
 ## 1. 前置条件
 
@@ -33,6 +33,7 @@ export CRM_SMOKE_BASE_URL=http://10.0.0.5:8990
 | `check_purge_rotation.py` | 不打任何服务（临时 SQLite + 桩时钟） | 库表清理轮转自检：AVL 粒度配置（缺键 fail-fast / 逐 AVL 独立取值）/ 7 组并集覆盖 128 张表且组间互斥 / `cycle=0` 行为 / 固定表每日全清 / 每天只触发一次 `purge_expired()` / 跨 7 天过期行全清而新鲜行保留 / 单次补跑一次全量清，结论 `ALL PASS` |
 | `check_avl_freshness.py` | 不打任何服务（临时 SQLite） | AVL 批次新鲜度窗口自检：`_avl_meta` 水位登记 / 补跑旧文件不回退 / 窗口下界 / 单条倒序取最新 / 多条收敛到最新批次 / `N=0` 与元数据表缺失降级，结论 `ALL PASS` |
 | `check_drop_before_insert.py` | 不打任何服务（临时 SQLite） | 配置变更自检：诊断 8 张表 `DATA_EXPIRE_DAYS=365` / 商机控损仍为 3 / 按业务新鲜度窗口（商机 2 · 控损 2 · 诊断 0）/ 旧全局键已废弃写了不生效 / 离线单值注入 / `AVL_DROP_BEFORE_INSERT` 全局开关与 `<AVL>_` 覆盖 / 模式关闭按主键追加、开启时 DROP 重建固定表与 128 张分表且 `_avl_meta` 保留，结论 `ALL PASS` |
+| `check_loss_control_rollover.py` | 不打任何服务（临时 SQLite + 桩时钟 / 桩远端） | 控损缺文件兜底自检：远端无当日文件 / 0 字节空文件 / 文件非空但 0 条记录 / 正常文件四种轮次、同日只推一次、跨天继续续命、`_avl_meta` 水位不动、空文件不登记清单、非法 `op_time` 不被写坏、非控损 AVL 不参与、过期清理后前台仍查得到（附「不兜底则被清空」对照），结论 `ALL PASS` |
 
 ## 3. 运行
 
@@ -72,6 +73,9 @@ python tests/check_avl_freshness.py
 
 # 配置变更自检：不写包内 runtime/，临时库跑完即删
 python tests/check_drop_before_insert.py
+
+# 控损缺文件兜底自检：不写包内 runtime/，临时库跑完即删
+python tests/check_loss_control_rollover.py
 ```
 
 ## 4. 副作用与注意

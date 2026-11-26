@@ -10,6 +10,9 @@ from pathlib import Path
 from .config import remote_name_for
 from .protocols import ImportResult, ImportStatus
 
+# 缺文件兜底只作用于控损（F09591 / project=loss_control），其余 AVL 行为不变。
+_LOSS_CONTROL_PROJECT = "loss_control"
+
 
 class Avl2DbRunner:
     """单任务编排器。"""
@@ -32,6 +35,9 @@ class Avl2DbRunner:
         # 库表清理「每天一次」的进程内闸门：只记日历序号，不落状态文件，
         # 同一天最多触发一次清理（进程重启可能重复一次）。
         self._last_purge_day: int | None = None
+        # 控损缺文件兜底：同一自然日最多把 op_time 后移一次，避免常驻轮询
+        # 把日期反复往后推；另落一个标记文件，进程重启也不会重复推。
+        self._last_roll_day: str | None = None
 
     def _remote_path(self, remote_name: str) -> str:
         root = self.profile.sftp.remote_path.rstrip("/")
@@ -70,6 +76,19 @@ class Avl2DbRunner:
             self.log.error(f"下载失败 {remote_name}: {e}")
             return ImportResult(remote_name, ImportStatus.FAILED, detail=f"get: {e}")
 
+        # 控损：远端存在但拉下来是 0 字节，视为「文件有问题」。不写库、
+        # 不登记清单、不推进水位，交给缺文件兜底处理，下轮继续重试。
+        if self._is_loss_control():
+            try:
+                empty_file = local_path.stat().st_size == 0
+            except OSError:
+                empty_file = True
+            if empty_file:
+                self.log.error(
+                    f"控损 AVL 为空文件(0 字节)，按异常文件处理: {remote_name}")
+                return ImportResult(remote_name, ImportStatus.FAILED,
+                                    detail="空文件(0 字节)")
+
         try:
             # 解析层是生成器；写入层按 BATCH_SIZE 分桶、逐批 commit
             rows = self.parser.parse(local_path)
@@ -78,7 +97,14 @@ class Avl2DbRunner:
                 self.log.info(
                     f"[{prefix}] 全量替换模式=1：{remote_name} 写入前 "
                     "DROP 并重建全部目标表，只保留本批 AVL 数据")
-            self.sink.write(remote_name, rows, layout=self.layout)
+            written = self.sink.write(remote_name, rows, layout=self.layout)
+            # 控损：文件非空但解析不出有效记录，同样视为「文件有问题」。
+            # 此时不登记清单，下轮还能重试；水位也不会被空批次推进。
+            if self._is_loss_control() and written <= 0:
+                self.log.error(
+                    f"控损 AVL 无有效记录，按异常批次处理: {remote_name}")
+                return ImportResult(remote_name, ImportStatus.FAILED,
+                                    detail="无有效记录(空批次)")
             self._log_import_done(remote_name, prefix)
             # ↑ 成功后才登记清单；下面任何异常都不 add，下轮会重试
             self.state.add(remote_name)
@@ -100,9 +126,110 @@ class Avl2DbRunner:
             f"[{prefix}] {filename} 覆盖完成，共 {st.rows} 条，"
             f"跳过空主键 {st.skipped} 条")
 
+    # ---- 控损（F09591）缺文件兜底 --------------------------------------
+
+    def _is_loss_control(self) -> bool:
+        """是否控损任务；其余 AVL 完全不参与断供兜底。"""
+        return getattr(self.profile, "project", None) == _LOSS_CONTROL_PROJECT
+
+    def _expected_remote_name(self) -> str | None:
+        """常驻轮次里「本应到达」的文件名：前一天日期的控损 AVL。
+
+        例：26 日 02:00 轮询时，期望拿到 25 日的文件；上游 T+1 出文件，
+        files 里没有它就是当天业务数据没到。
+        """
+        prefixes = getattr(self.profile, "file_prefixes", ())
+        if not prefixes:
+            return None
+        day = (self._now() - timedelta(days=1)).strftime("%Y%m%d")
+        return remote_name_for(self.profile, prefixes[0], day)
+
+    def _roll_marker_path(self) -> Path | None:
+        state_dir = getattr(self.profile, "state_dir", None)
+        if state_dir is None:
+            return None
+        return Path(state_dir) / f"{self.profile.name}.op_time_roll"
+
+    def _roll_already_done(self, day_key: str) -> bool:
+        if self._last_roll_day == day_key:
+            return True
+        marker = self._roll_marker_path()
+        if marker is None:
+            return False
+        try:
+            return (marker.is_file()
+                    and marker.read_text(encoding="utf-8").strip() == day_key)
+        except Exception:
+            return False
+
+    def _mark_roll_done(self, day_key: str) -> None:
+        self._last_roll_day = day_key
+        marker = self._roll_marker_path()
+        if marker is None:
+            return
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(day_key, encoding="utf-8")
+        except Exception as e:
+            self.log.error(f"控损兜底标记写入失败 {marker}: {e}")
+
+    def _maybe_roll_loss_control(self, results: list[ImportResult]) -> bool:
+        """应到文件缺失 / 异常 / 空批次时，把库内数据 ``op_time`` 整体 +1 天。
+
+        目的：上游断供时续住原有批次，既不被 ``cleanup_expired()`` 按真实
+        日期清掉，也仍落在在线侧新鲜度窗口内，避免前台查不到数据。
+
+        命中即停：本轮已有新数据成功入库、或应到文件此前已登记清单，都不推进。
+        同一自然日最多推进一次（进程内闸门 + 标记文件），防止常驻轮询把
+        日期反复往后平移。只作用于控损，且不改 ``_avl_meta`` 水位。
+        """
+        if not self._is_loss_control():
+            return False
+        day_key = self._now().strftime("%Y-%m-%d")
+        if self._roll_already_done(day_key):
+            return False
+
+        # 本轮任意日期成功入库了有效数据 → 前台有数据，无需兜底
+        if any(r.status == ImportStatus.OK and r.rows > 0 for r in results):
+            return False
+
+        expected = self._expected_remote_name()
+        # 应到文件此前已成功入库（本轮 SKIP）→ 不是断供
+        if expected is not None and any(
+                r.filename == expected and r.status == ImportStatus.SKIP
+                for r in results):
+            return False
+
+        roll = getattr(self.sink, "roll_forward_op_time", None)
+        if not callable(roll):
+            self.log.error(
+                "控损缺文件兜底未执行：sink 不支持 roll_forward_op_time()")
+            return False
+
+        bad = [r for r in results
+               if expected is None or r.filename == expected]
+        reason = "; ".join(
+            f"{r.filename}:{r.status}"
+            + (f"({r.detail})" if r.detail else "")
+            for r in bad) or "本轮无入库结果（如 SFTP 连接失败）"
+
+        try:
+            changed = roll(days=1)
+        except Exception as e:
+            self.log.error(f"控损缺文件兜底失败 op_time+1: {e}")
+            return False
+
+        self._mark_roll_done(day_key)
+        self.log.info(
+            f"[{self.profile.name}] 控损缺文件兜底：应到文件 {expected} "
+            f"未取到有效数据 [{reason}]，库内 op_time 整体 +1 天，"
+            f"更新 {changed} 行（_avl_meta 水位不动）")
+        return True
+
     def run_once_for_date(self, date_str: str,
-                          force_reload: bool = False) -> int:
-        """返回本轮真正新入库的文件数。"""
+                          force_reload: bool = False,
+                          results: list[ImportResult] | None = None) -> int:
+        """返回本轮真正新入库的文件数；``results`` 收集每个文件的结构化结果。"""
         self.profile.local_dir.mkdir(parents=True, exist_ok=True)
         self.sink.ensure_schema()          # 幂等
 
@@ -118,6 +245,8 @@ class Avl2DbRunner:
         try:
             for prefix in self.profile.file_prefixes:
                 result = self.import_one(date_str, prefix, force=force_reload)
+                if results is not None:
+                    results.append(result)
                 if result.status == ImportStatus.OK:
                     imported += 1
         finally:
@@ -233,9 +362,14 @@ class Avl2DbRunner:
                     dates = [(now - timedelta(days=1)).strftime("%Y%m%d"),
                              today]
                 total = 0
+                round_results: list[ImportResult] = []
                 for d in sorted(set(dates)):
-                    total += self.run_once_for_date(d,
-                                                    force_reload=force_reload)
+                    total += self.run_once_for_date(
+                        d, force_reload=force_reload,
+                        results=round_results)
+                # 先续住 op_time，再跑过期清理：否则旧批次已被清掉就无从兜底。
+                # 只在常驻轮询启用；--date 单次补跑是人工动作，不自动平移日期。
+                self._maybe_roll_loss_control(round_results)
                 self.cleanup_expired()
                 self.log.info(
                     f"本轮结束，新入库 {total} 个文件，休眠 "
