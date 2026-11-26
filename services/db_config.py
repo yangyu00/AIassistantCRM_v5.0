@@ -243,7 +243,7 @@ class ReadConfig:
     avl_db_root: Path
     dimensions_db: Path
     profiles: Mapping[str, DbProfile]
-    # 兼容 / 全局回退值：离线自检传单值注入、或业务未命中映射时使用。
+    # 全局回退值：离线自检传单值注入、或业务未命中映射时使用。
     freshness_window_days: int = DEFAULT_FRESHNESS_WINDOW_DAYS
     # 按业务（project）分别生效的窗口：0 = 关闭过滤；
     # N >= 1 = 只召回最近 N 个 op_time 日期的批次。
@@ -382,7 +382,7 @@ def load(*, avl_db_root=None, dimensions_db=None, num_tables=None,
               else _nonnegative_int(str(freshness_window_days),
                                     "freshness_window_days"))
     if freshness_window_days is not None:
-        # 单值注入保持旧语义：所有业务用同一个窗口。
+        # 单值注入：所有业务用同一个窗口。
         by_project = {p: window for p in DEFAULT_FRESHNESS_WINDOW_BY_PROJECT}
     elif freshness_window_by_project is not None:
         by_project = dict(base.freshness_window_by_project)
