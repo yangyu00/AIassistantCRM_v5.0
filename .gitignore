@@ -31,4 +31,4 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 
-docker_image/*
+docker_image/
