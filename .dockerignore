@@ -27,4 +27,4 @@ import_time.txt
 bg.pid
 bg_alive.txt
 repo.tar.gz
-aiassistantcrm-v50-image.tar
+docker_image/aiassistantcrm-v50-image.tar
