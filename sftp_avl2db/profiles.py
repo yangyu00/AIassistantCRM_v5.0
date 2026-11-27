@@ -37,15 +37,28 @@ class AssembledTask:
 
 def build_task(profile: TaskProfileConfig, *, logger=None, local_dir=None,
                day=None, sleeper=None, now=None, batch_size=None,
-               table_schema: TableSchema | None = None) -> AssembledTask:
-    """按 ``profile`` 装配。"""
+               table_schema: TableSchema | None = None,
+               atomic_swap: bool | None = None) -> AssembledTask:
+    """按 ``profile`` 装配。
+
+    ``atomic_swap`` 为 None（默认）时自动判断：分表 + 全量替换的 AVL 启用
+    双套表原子切换（当前恰好只命中 F09633），消除每日全量导入期间在线侧
+    读到空表的窗口。显式传 True/False 可强制开启 / 回退到原 DROP 语义。
+
+    在线侧 ``services/`` 不需要任何改动：当前套表名仍是 ``{AVL}_{分表号}``，
+    切换是同一 db 文件内的 RENAME。
+    """
     log = build_logger(profile, logger=logger, day=day)
     state, lock = build_state(profile)
     source = build_remote_source(profile, local_dir=local_dir)
     parser = build_parser(profile)
     layout = build_layout(profile)
+    if atomic_swap is None:
+        atomic_swap = bool(
+            getattr(profile, "sharded", False)
+            and int(getattr(profile.retention, "drop_before_insert", 0) or 0) == 1)
     sink = build_sink(profile, layout=layout, table_schema=table_schema,
-                      batch_size=batch_size)
+                      batch_size=batch_size, atomic_swap=atomic_swap)
     runner = Avl2DbRunner(
         profile, source=source, parser=parser, sink=sink, layout=layout,
         state=state, lock=lock, log=log, sleeper=sleeper, now=now,

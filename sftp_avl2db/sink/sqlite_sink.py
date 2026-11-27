@@ -1,23 +1,39 @@
-"""SQLite 写入层：建表 / 流式分批写 / 过期清理（F09633 导入优化版）。
+"""SQLite 写入层：建表 / 流式分批写 / 过期清理 / 全量替换原子切换。
 
-替换路径：``sftp_avl2db/sink/sqlite_sink.py``（其余文件无需改动）。
+替换路径：``sftp_avl2db/sink/sqlite_sink.py``（原 P1 优化版的就地升级）。
+装配：``profiles.build_task()`` 对「分表 + 全量替换」的 AVL（当前即 F09633）
+传 ``atomic_swap=True``；默认 False，其余 AVL 与既有自检行为逐字节不变。
 
-相对原版的四点改动，全部保持公开 API 与统计字段兼容：
-1. 分表 AVL 增加「全局未刷行数」水位：达到阈值时把所有分桶的写入放进
-   一个事务提交，内存峰值与分表数解耦。原版 BATCH_SIZE 是**单分桶**阈值，
-   128 张分表 × 100000 的行缓存会把整份 AVL 常驻内存；千万行时尤其严重。
-2. 写入连接加大 page cache / temp_store，SQL 文本按表缓存，分表路由查表化，
-   减少逐行 Python 开销与 SQLite prepare 次数。
-3. DROP 全量替换模式下用 ``INSERT OR REPLACE`` 代替
-   ``ON CONFLICT DO UPDATE``：表刚重建为空，冲突探测是纯开销；
-   OR REPLACE 保留「同主键只留一行」语义，且同批出现重复主键也不会报错。
-   非 DROP 模式（商机 / 控损）完全保持原 upsert 行为。
-4. 末尾余量按库一次提交，不再逐桶 commit 128 次。
+保留 P1 的四点优化：
+1. 分表 AVL 的「全局未刷行数」水位：内存峰值与分表数解耦。
+2. 写入连接加大 page cache / temp_store，SQL 文本按表缓存，路由查表化。
+3. DROP 全量替换模式用 ``INSERT OR REPLACE`` 替代逐行冲突探测。
+4. 末尾余量按库一次提交。
+
+P2 新增：``atomic_swap`` 双套表原子切换，消除每日全量导入的在线侧空窗。
+
+    当前套（在线侧读）  {AVL}_{i}          —— 表名派生规则不变，services/ 零改动
+    暂存套（导入目标）  {AVL}_stage_{i}
+    上一套（切换后）    {AVL}_old_{i}
+
+流程：建空 stage 套 → 8000 万行全部灌入 stage → 单个事务里把 128 组
+``{AVL}_{i}`` RENAME 成 ``{AVL}_old_{i}``、把 ``{AVL}_stage_{i}`` RENAME 成
+``{AVL}_{i}``，并在同一事务推进 ``_avl_meta`` 水位 → COMMIT → 独立事务释放
+old 套。RENAME 只改 schema 不搬数据，切换事务是毫秒级；WAL 下在线侧的
+短读连接要么看到提交前的完整旧套、要么看到提交后的完整新套，任意时刻
+``{AVL}_{i}`` 都存在且有数据，不存在「表被 DROP 但还没灌完」的空窗。
+
+导入失败（解析 / 写 stage / 切换三者任一）时当前套完全未被触碰，在线侧
+继续读上一日全量数据；P0 的失败隔离照常生效，不会出现「失败即空表」。
+代价：磁盘峰值从约 8.4GB 升到约 16.8GB（当前 + stage 两套），需预留
+≥25GB（含 WAL 峰值）。
 """
 from __future__ import annotations
 
+import copy
 import re
 import sqlite3
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -31,10 +47,13 @@ from .schema import (
 _FILE_DATE_RE = re.compile(r"(\d{8})000000$")
 
 # 全局未刷行数上限的默认值：分表数再多，内存里也只留这么多行。
-# 10 万行是实测折中值：千万行 AVL 约 100 次提交，每批每张分表平均
-# 780 行、局部性够好，常驻内存约 40~60MB；水位过小会把 128 张表切成
-# 大量小批，过大则单事务 WAL 与内存都偏大（20 万水位实测反而略慢）。
+# 10 万行是实测折中值：内存约 40~60MB，每批每张分表平均 780 行。
 DEFAULT_GLOBAL_FLUSH_ROWS = 100000
+
+# 双套表切换的表名后缀。当前套保持 ``{AVL}`` / ``{AVL}_{分表号}``，
+# 在线侧 db_config.table_name() 的派生规则完全不用改。
+STAGE_SUFFIX: str = "_stage"
+OLD_SUFFIX: str = "_old"
 
 
 def _configure(conn: sqlite3.Connection) -> sqlite3.Cursor:
@@ -57,6 +76,8 @@ class WriteStats:
     dropped_tables: int = 0   # 全量替换模式下本次 DROP 并重建的业务表数
     max_op_time: str = ""     # 本文件写入记录里最大的 op_time（原样文本）
     rolled_rows: int = 0      # 最近一次 roll_forward_op_time() 更新的行数
+    swapped_tables: int = 0   # P2：本次原子切换的表数（0 = 未启用 / 空批次）
+    swap_seconds: float = 0.0  # P2：切换事务耗时（RENAME 只改 schema，毫秒级）
     errors: list[tuple[str, str]] = field(default_factory=list)  # [(库路径, 异常文本)]
 
 
@@ -67,7 +88,8 @@ class SqliteSink:
                  batch_size: int | None = None,
                  global_flush_rows: int | None = None,
                  drop_insert_mode: str = "replace",
-                 bulk_pragmas: bool = True):
+                 bulk_pragmas: bool = True,
+                 atomic_swap: bool = False):
         self.profile = profile
         self.layout = layout
         self.schema = table_schema or TableSchema.from_profile(profile)
@@ -82,12 +104,9 @@ class SqliteSink:
                              f"当前为 {drop_insert_mode!r}")
         self.drop_insert_mode = drop_insert_mode
         self.bulk_pragmas = bool(bulk_pragmas)
-        # 只对分表 AVL 启用全局水位；固定表保持原有「单桶满批提交」语义，
-        # 避免改变其它 AVL 与既有自检的行为。
+        # 只对分表 AVL 启用全局水位；固定表保持原有「单桶满批提交」语义。
         num_tables = int(getattr(layout, "num_tables", 0) or 0)
         if global_flush_rows is None:
-            # 全局水位与 BATCH_SIZE 解耦：前者管「所有分桶合计多少行提交一次」，
-            # 后者仍是「单个分桶满多少行立即提交」的原语义。
             self.global_flush_rows = (
                 DEFAULT_GLOBAL_FLUSH_ROWS if num_tables > 1 else 0)
         else:
@@ -95,8 +114,40 @@ class SqliteSink:
         if self.global_flush_rows < 0:
             raise ValueError("global_flush_rows 不能为负")
         self._drop_mode = self.drop_before_insert_enabled()
+
+        # ---- P2：双套表原子切换 ------------------------------------------
+        self.atomic_swap = bool(atomic_swap)
+        self._stage_layout = None
+        if self.atomic_swap:
+            if not self._drop_mode:
+                raise ValueError(
+                    "atomic_swap 只在全量替换（drop_before_insert=1）模式下有意义")
+            if not all(hasattr(layout, a) for a in ("base", "db_path", "num_tables")):
+                raise ValueError(
+                    "atomic_swap 需要 AvlDbLayout 提供 base / db_path / num_tables")
+            # 浅拷贝布局，只换表名基准：db_path 保持完全一致，保证 RENAME
+            # 发生在同一个 db 文件内（跨文件无法用 ALTER TABLE 原子切换）。
+            stage = copy.copy(layout)
+            stage.base = f"{layout.base}{STAGE_SUFFIX}"
+            self._stage_layout = stage
+
         self._sql_cache: dict[str, str] = {}
         self.stats = WriteStats()
+
+    # ---- 表名与布局 ------------------------------------------------------
+
+    def _table_names(self):
+        """三套表名：当前 / 暂存 / 上一套，顺序严格对齐。"""
+        current = [t for _, t in self.layout.all_targets()]
+        stage = [t for _, t in self._stage_layout.all_targets()]
+        from ..avl_specs import table_name as make_table_name
+        base = f"{self.layout.base}{OLD_SUFFIX}"
+        n = int(self.layout.num_tables or 0)
+        old = ([make_table_name(base, i) for i in range(n)] if n
+               else [make_table_name(base)])
+        if not (len(current) == len(stage) == len(old)):
+            raise RuntimeError("三套表名数量不一致，拒绝切换")
+        return current, stage, old
 
     def _group_targets_by_db(self, layout=None) -> dict[Path, list[str]]:
         """把布局枚举出的 ``(库, 表)`` 按库文件分组。"""
@@ -200,36 +251,45 @@ class SqliteSink:
         m = _FILE_DATE_RE.search(Path(filename).stem)
         return m.group(1) if m else ""
 
-    def _record_metadata(self, filename: str, layout) -> None:
+    def _record_metadata(self, filename: str, layout, *, conn=None) -> None:
         """入库成功后推进 ``_avl_meta`` 水位。
 
-        元数据写失败只记 ``stats.errors``：不回滚业务数据，也不阻断
-        ``runner`` 登记清单（否则会触发无意义的重复拉取）。
+        ``conn`` 为空（默认，非切换路径）：独立连接写入，元数据写失败只记
+        ``stats.errors``，不回滚业务数据、不阻断 runner 登记清单。
+
+        ``conn`` 传入（切换路径）：在**切换事务内**执行，不 commit / 不 close，
+        异常向上抛由切换事务整体回滚，保证「数据 + 水位」原子一致。
         """
         file_date = self._file_date(filename)
-        if not file_date:
-            return
         targets = list(layout.all_targets())
         if not targets:
             return
         db_path = Path(targets[0][0])
+        params = (
+            self.profile.name,
+            file_date,
+            self.stats.max_op_time,
+            Path(filename).name,
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        if conn is not None:
+            conn.execute(create_meta_table_sql())
+            if file_date:
+                conn.execute(upsert_meta_sql(), params)
+            return
+        if not file_date:
+            return
         try:
             db_path.parent.mkdir(parents=True, exist_ok=True)
-            conn = sqlite3.connect(str(db_path))
+            own = sqlite3.connect(str(db_path))
             try:
-                _configure(conn)
+                _configure(own)
                 # 幂等：即使调用方没先跑 ensure_schema() 也能登记。
-                conn.execute(create_meta_table_sql())
-                conn.execute(upsert_meta_sql(), (
-                    self.profile.name,
-                    file_date,
-                    self.stats.max_op_time,
-                    Path(filename).name,
-                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                ))
-                conn.commit()
+                own.execute(create_meta_table_sql())
+                own.execute(upsert_meta_sql(), params)
+                own.commit()
             finally:
-                conn.close()
+                own.close()
         except Exception as e:
             self.stats.errors.append((str(db_path), f"meta: {e}"))
 
@@ -252,17 +312,19 @@ class SqliteSink:
             return str(Path(db_path)), table
         return route
 
-    def write(self, filename: str, rows: Iterable[tuple], layout=None) -> int:
-        """把解析器产出的记录按布局分桶、逐桶/全局满批提交，并登记批次水位。"""
-        layout = self.layout if layout is None else layout
-        self.stats = WriteStats()
+    # ---- 灌入主体（原 P1 write() 拆出，行为不变） ------------------------
+
+    def _write_rows(self, filename: str, rows: Iterable[tuple], layout,
+                    *, drop_targets: bool = True) -> int:
+        """把 rows 按 layout 分桶、逐桶/全局满批提交；不登记水位。
+
+        ``drop_targets=True`` 时先 DROP 重建目标表（原全量替换语义）；
+        双套表切换路径传 False，因为 stage 套已由 ``_prepare_stage()`` 建好。
+        """
         time_index = self._time_index()
         col_count = len(self.schema.columns)
-        self._sql_cache.clear()
 
-        # 全量替换模式：写入最新 AVL 之前先 DROP 并重建全部目标表，
-        # 表里的历史数据（含上游不再下发的主键）一次性清干净。
-        if self.drop_before_insert_enabled():
+        if drop_targets and self.drop_before_insert_enabled():
             self.stats.dropped_tables = self.drop_existing(layout)
 
         route = self._make_router(layout, filename)
@@ -345,10 +407,124 @@ class SqliteSink:
                 conn.close()
             conns.clear()
             batches.clear()
+        return self.stats.rows
 
-        # 业务数据已全部提交且没有异常：才推进水位。空批次（文件存在但
-        # 0 条有效记录）不登记水位，避免把 latest_op_time 写成空串、让在线侧
-        # 新鲜度窗口失去基准；控损的断供兜底也据此判定「文件有问题」。
+    # ---- P2：双套表原子切换 ----------------------------------------------
+
+    def _prepare_stage(self) -> int:
+        """清掉上一轮遗留的 old 套，重建空的 stage 套；当前套完全不动。
+
+        先 DROP old（约 8.4GB）再建 stage，保证导入期间磁盘峰值始终是
+        「当前 + stage」两套，不会叠加第三套。返回重建的 stage 表数。
+        """
+        _, _, old = self._table_names()
+        count = 0
+        for db_path, stage_tables in self._group_targets_by_db(
+                self._stage_layout).items():
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            conn = self._connect(db_path)
+            try:
+                cur = conn.cursor()
+                for t in old:
+                    cur.execute(f"DROP TABLE IF EXISTS {t}")
+                for t in stage_tables:
+                    cur.execute(f"DROP TABLE IF EXISTS {t}")
+                    cur.execute(self.schema.create_table_sql(t))
+                    count += 1
+                cur.execute(create_meta_table_sql())
+                conn.commit()
+                self.stats.commits += 1
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+        return count
+
+    def _atomic_switch(self, filename: str) -> None:
+        """单事务把「当前套→old、stage→当前」，并在同事务推进水位。
+
+        RENAME 只改 schema 不搬数据；128 组 RENAME 全在一个事务里，WAL 下
+        在线侧短读连接只会看到提交前或提交后的完整一套，任意时刻
+        ``{AVL}_{i}`` 都存在且有数据。
+        """
+        current, stage, old = self._table_names()
+        db_path = Path(self.layout.db_path)
+        conn = self._connect(db_path)
+        t0 = time.perf_counter()
+        try:
+            cur = conn.cursor()
+            cur.execute("BEGIN IMMEDIATE")
+            for cur_t, old_t, stg_t in zip(current, old, stage):
+                # 首轮导入兜底：当前表可能尚未建（ensure_schema 未跑）。
+                # CREATE IF NOT EXISTS 对已有数据的当前表是 no-op。
+                cur.execute(self.schema.create_table_sql(cur_t))
+                cur.execute(f"ALTER TABLE {cur_t} RENAME TO {old_t}")
+                cur.execute(f"ALTER TABLE {stg_t} RENAME TO {cur_t}")
+            # 水位与业务数据在同一个事务里提交，避免切换后水位落后一批。
+            self._record_metadata(filename, self.layout, conn=conn)
+            conn.commit()
+            self.stats.commits += 1
+            self.stats.swapped_tables = len(current)
+            self.stats.swap_seconds = round(time.perf_counter() - t0, 3)
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def _cleanup_old(self) -> None:
+        """切换提交后释放 old 套（独立事务）。失败只记 errors，不影响正确性：
+        下一轮 ``_prepare_stage()`` 会先 DROP 它们。"""
+        _, _, old = self._table_names()
+        db_path = Path(self.layout.db_path)
+        conn = None
+        try:
+            conn = self._connect(db_path)
+            cur = conn.cursor()
+            for t in old:
+                cur.execute(f"DROP TABLE IF EXISTS {t}")
+            conn.commit()
+            self.stats.commits += 1
+        except Exception as e:
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            self.stats.errors.append((str(db_path), f"cleanup_old: {e}"))
+        finally:
+            if conn is not None:
+                conn.close()
+
+    def _write_atomic_swap(self, filename: str, rows: Iterable[tuple],
+                           layout) -> int:
+        """双套表全量导入编排：建 stage → 灌 stage → 原子切换 → 释放 old。"""
+        # a) 当前套完全不动，在线侧此时读到的仍是上一日全量数据
+        self.stats.dropped_tables = self._prepare_stage()
+        # b) 8000 万行灌进 stage（drop_targets=False，表已建好）
+        self._write_rows(filename, rows, self._stage_layout,
+                         drop_targets=False)
+        # c) 空批次不切换也不推进水位，保留旧套（比原版「DROP 后留空表」更安全）
+        if self.stats.rows <= 0:
+            return 0
+        self._atomic_switch(filename)
+        # d) 释放 old 套；失败不影响已切换的数据
+        self._cleanup_old()
+        return self.stats.rows
+
+    def write(self, filename: str, rows: Iterable[tuple], layout=None) -> int:
+        """把解析器产出的记录按布局分桶、逐桶/全局满批提交，并登记批次水位。"""
+        layout = self.layout if layout is None else layout
+        self.stats = WriteStats()
+        self._sql_cache.clear()
+
+        if self.atomic_swap:
+            return self._write_atomic_swap(filename, rows, layout)
+
+        self._write_rows(filename, rows, layout, drop_targets=True)
+        # 业务数据已全部提交且没有异常：才推进水位。空批次不登记水位，
+        # 避免把 latest_op_time 写成空串让在线侧新鲜度窗口失去基准。
         if self.stats.rows > 0:
             self._record_metadata(filename, layout)
         return self.stats.rows
@@ -395,13 +571,7 @@ class SqliteSink:
 
     def roll_forward_op_time(self, days: int = 1,
                              tables: Iterable[str] | None = None) -> int:
-        """控损断供兜底：把业务表里的 ``op_time`` 日期整体后移 ``days`` 天。
-
-        只遍历 layout 枚举出的业务表，``_avl_meta`` 水位表保持不动（在线侧
-        仍以原水位算窗口下界，后移后的数据只会更容易落在窗口内）。库文件
-        不存在时直接跳过，避免为还没建库的 AVL 凭空造出空 db。返回实际
-        更新的行数；单库失败记 ``stats.errors`` 并继续处理其余库。
-        """
+        """控损断供兜底：把业务表里的 ``op_time`` 日期整体后移 ``days`` 天。"""
         days = int(days)
         if days <= 0:
             raise ValueError(f"days 必须为正整数，当前为 {days}")
@@ -446,8 +616,9 @@ def build_sink(profile, *, layout=None, table_schema: TableSchema | None = None,
                batch_size: int | None = None,
                global_flush_rows: int | None = None,
                drop_insert_mode: str = "replace",
-               bulk_pragmas: bool = True) -> SqliteSink:
-    """装配写入层。"""
+               bulk_pragmas: bool = True,
+               atomic_swap: bool = False) -> SqliteSink:
+    """装配写入层。``atomic_swap`` 默认关闭，保持既有行为不变。"""
     if layout is None:
         from .router import build_layout
         layout = build_layout(profile)
@@ -455,7 +626,9 @@ def build_sink(profile, *, layout=None, table_schema: TableSchema | None = None,
                       batch_size=batch_size,
                       global_flush_rows=global_flush_rows,
                       drop_insert_mode=drop_insert_mode,
-                      bulk_pragmas=bulk_pragmas)
+                      bulk_pragmas=bulk_pragmas,
+                      atomic_swap=atomic_swap)
 
 
-__all__ = ["SqliteSink", "WriteStats", "build_sink"]
+__all__ = ["SqliteSink", "WriteStats", "build_sink",
+           "STAGE_SUFFIX", "OLD_SUFFIX"]

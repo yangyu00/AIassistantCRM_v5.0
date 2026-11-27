@@ -13,12 +13,22 @@ from .protocols import ImportResult, ImportStatus
 # 缺文件兜底只作用于控损（F09591 / project=loss_control），其余 AVL 行为不变。
 _LOSS_CONTROL_PROJECT = "loss_control"
 
+# ---- P0：全量替换（DROP）AVL 的失败重试收敛 ---------------------------
+# 8000 万行/天全量 AVL 每重试一次 = 再 DROP + 重灌一遍约 8.4GB。常驻轮询
+# 每 15 分钟一轮、每轮都检查「昨天 + 今天」，失败时若不收敛，同一文件一天
+# 会被反复重灌近百次。连续失败达到阈值即隔离该文件、停止自动重试并 ERROR
+# 告警，改为人工确认后用 --force-reload 重跑。
+# 只作用于 drop_before_insert=1 的 AVL；商机 / 控损（含断供兜底）行为不变。
+DROP_FAILURE_LIMIT = 2
+_DROP_QUARANTINE_SUFFIX = ".drop_quarantine"
+
 
 class Avl2DbRunner:
     """单任务编排器。"""
 
     def __init__(self, profile, *, source, parser, sink, layout,
-                 state, lock, log, sleeper=None, now=None):
+                 state, lock, log, sleeper=None, now=None,
+                 drop_failure_limit: int = DROP_FAILURE_LIMIT):
         self.profile = profile
         self.source = source
         self.parser = parser
@@ -38,6 +48,101 @@ class Avl2DbRunner:
         # 控损缺文件兜底：同一自然日最多把 op_time 后移一次，避免常驻轮询
         # 把日期反复往后推；另落一个标记文件，进程重启也不会重复推。
         self._last_roll_day: str | None = None
+        # P0：DROP 模式失败收敛的进程内计数与持久化隔离集合（懒加载）。
+        self.drop_failure_limit = max(1, int(drop_failure_limit))
+        self._drop_fail_counts: dict[str, int] = {}
+        self._drop_quarantine: set[str] | None = None
+
+    # ---- P0：全量替换模式的失败收敛与清理跳过 -------------------------
+
+    def _drop_before_insert(self) -> bool:
+        """该 AVL 是否开启全量替换（DROP）模式；口径与 import_one() 一致。
+
+        读 profile.retention 而不是 sink 方法：测试替身 / 其它 sink 实现
+        同样生效，且不会因 sink 缺少该方法而退化成「不收敛」。
+        """
+        retention = getattr(self.profile, "retention", None)
+        return int(getattr(retention, "drop_before_insert", 0) or 0) == 1
+
+    def _quarantine_path(self) -> Path | None:
+        """持久化隔离标记：重启进程也不会重新全量重灌已隔离文件。"""
+        state_dir = getattr(self.profile, "state_dir", None)
+        if state_dir is None:
+            return None
+        return Path(state_dir) / f"{self.profile.name}{_DROP_QUARANTINE_SUFFIX}"
+
+    def _quarantine(self) -> set[str]:
+        """懒加载隔离文件名集合；标记文件损坏时按空集合继续（不阻断服务）。"""
+        if self._drop_quarantine is None:
+            path = self._quarantine_path()
+            items: set[str] = set()
+            if path is not None and path.is_file():
+                try:
+                    items = {
+                        line.strip()
+                        for line in path.read_text(encoding="utf-8").splitlines()
+                        if line.strip()
+                    }
+                except OSError:
+                    items = set()
+            self._drop_quarantine = items
+        return self._drop_quarantine
+
+    def _write_quarantine(self) -> None:
+        path = self._quarantine_path()
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            body = "".join(f"{name}\n" for name in sorted(self._quarantine()))
+            path.write_text(body, encoding="utf-8")
+        except OSError as e:
+            self.log.error(f"写入 DROP 失败隔离标记失败 {path}: {e}")
+
+    def _track_drop_failure(self, result: ImportResult, force: bool) -> None:
+        """按远程文件累计连续失败；达到阈值即隔离，停止自动重试。
+
+        - 只对 ``drop_before_insert=1`` 且非控损的 AVL 生效；
+        - MISSING（上游文件尚未生成）/ SKIP 不算失败，不累计；
+        - 成功入库或人工 ``--force-reload`` 会清零计数并解除隔离；
+        - 控损（F09591）的断供兜底完全不参与，保持原有无限重试语义。
+        """
+        if not self._drop_before_insert() or self._is_loss_control():
+            return
+        name = result.filename
+
+        if force or result.status == ImportStatus.OK:
+            self._drop_fail_counts.pop(name, None)
+            q = self._quarantine()
+            if name in q:
+                q.discard(name)
+                self._write_quarantine()
+                self.log.info(f"[{self.profile.name}] 解除失败隔离: {name}")
+            return
+
+        if result.status != ImportStatus.FAILED:
+            return
+
+        count = self._drop_fail_counts.get(name, 0) + 1
+        self._drop_fail_counts[name] = count
+        if count < self.drop_failure_limit:
+            self.log.warning(
+                f"[{self.profile.name}] 全量替换入库失败 "
+                f"{count}/{self.drop_failure_limit}: {name} "
+                f"（{result.detail}）；下轮仍会重试，达到上限后停止自动重试")
+            return
+
+        q = self._quarantine()
+        if name in q:
+            return
+        q.add(name)
+        self._write_quarantine()
+        self.log.error(
+            f"[{self.profile.name}] 全量替换 AVL 连续失败 {count} 次，"
+            f"已停止自动重试并隔离: {name}（{result.detail}）。"
+            "8000 万行/天全量重灌代价极高，请确认上游文件与磁盘空间后人工介入："
+            f"删除 {self._quarantine_path()} 中的该行，或用 --force-reload 重跑；"
+            "在此之前该文件不会再被拉取入库")
 
     def _remote_path(self, remote_name: str) -> str:
         root = self.profile.sftp.remote_path.rstrip("/")
@@ -56,6 +161,18 @@ class Avl2DbRunner:
         if self.state.has(remote_name) and not force:
             self.log.info(f"SKIP 已在清单中，跳过: {remote_name}")
             return ImportResult(remote_name, ImportStatus.SKIP, detail="已在清单中")
+
+        # P0：DROP 全量替换 AVL 的失败隔离闸门。命中即停，不再下载 / 解析 /
+        # 入库，避免 8000 万行文件被常驻轮询反复重灌。人工 --force-reload
+        # 或删除隔离标记后才重新尝试；控损（断供兜底）不参与。
+        if (self._drop_before_insert() and not self._is_loss_control()
+                and not force and remote_name in self._quarantine()):
+            self.log.info(
+                f"SKIP 已被失败隔离（连续失败 {self.drop_failure_limit} 次），"
+                f"停止自动重试: {remote_name}；确认上游文件修复后，删除 "
+                f"{self._quarantine_path()} 中该行或用 --force-reload 重跑")
+            return ImportResult(remote_name, ImportStatus.SKIP,
+                                detail="DROP 失败隔离，停止自动重试")
 
         # stat 三态：存在 / 尚未生成 / 其他错误
         try:
@@ -92,11 +209,17 @@ class Avl2DbRunner:
         try:
             # 解析层是生成器；写入层按 BATCH_SIZE 分桶、逐批 commit
             rows = self.parser.parse(local_path)
-            retention = getattr(self.profile, "retention", None)
-            if int(getattr(retention, "drop_before_insert", 0) or 0) == 1:
-                self.log.info(
-                    f"[{prefix}] 全量替换模式=1：{remote_name} 写入前 "
-                    "DROP 并重建全部目标表，只保留本批 AVL 数据")
+            if self._drop_before_insert():
+                if bool(getattr(self.sink, "atomic_swap", False)):
+                    self.log.info(
+                        f"[{prefix}] 全量替换模式=1（双套表原子切换）："
+                        f"{remote_name} 先灌入 staging 套，全部完成后单事务 "
+                        "RENAME 切换，在线侧全程读当前套、无空窗")
+                else:
+                    self.log.info(
+                        f"[{prefix}] 全量替换模式=1：{remote_name} 写入前 "
+                        "DROP 并重建全部目标表，只保留本批 AVL 数据；"
+                        "导入期间在线侧会读到空表（未启用双套表切换）")
             written = self.sink.write(remote_name, rows, layout=self.layout)
             # 控损：文件非空但解析不出有效记录，同样视为「文件有问题」。
             # 此时不登记清单，下轮还能重试；水位也不会被空批次推进。
@@ -245,6 +368,8 @@ class Avl2DbRunner:
         try:
             for prefix in self.profile.file_prefixes:
                 result = self.import_one(date_str, prefix, force=force_reload)
+                # P0：DROP 模式按文件累计连续失败，达到阈值即隔离停重试。
+                self._track_drop_failure(result, force=force_reload)
                 if results is not None:
                     results.append(result)
                 if result.status == ImportStatus.OK:
@@ -308,6 +433,15 @@ class Avl2DbRunner:
 
         purged = 0
         purged_tables = 0
+        # P0：全量替换模式每批写入前已 DROP 重建全部目标表，表内只保留
+        # 最新一批、不存在需按 op_time 清理的历史行；跳过无索引全表扫描
+        # （8000 万行/天下，7 天轮转每天约 18 张表 × 62.5 万行空扫）。
+        # 人工 --date 单次补跑（force_full=True）保留原有全量清理语义。
+        if self._drop_before_insert() and not force_full and should_purge:
+            should_purge = False
+            self.log.info(
+                f"[{self.profile.name}] 全量替换模式跳过库表过期清理："
+                "写入前已 DROP 重建全部目标表，表内无历史批次可清")
         if should_purge:
             purged = self.sink.purge_expired(cutoff, tables)
             purged_tables = total_tables if tables is None else len(tables)
@@ -343,6 +477,16 @@ class Avl2DbRunner:
                 f"{self.profile.name} 守护进程启动 pid={os.getpid()} "
                 f"轮询间隔={self.profile.retention.poll_seconds}s "
                 f"前缀={list(self.profile.file_prefixes)}")
+            if self._drop_before_insert():
+                swap = bool(getattr(self.sink, "atomic_swap", False))
+                self.log.info(
+                    f"[{self.profile.name}] 全量替换模式：轮询只负责检查远程文件"
+                    "是否到达，已入库文件由 .fetched 清单跳过，不是导入调度周期；"
+                    "单文件全量导入耗时可能远超轮询间隔。"
+                    + ("已启用双套表原子切换：导入期间在线侧持续读上一日全量数据，"
+                       "无空窗；切换事务为秒级，磁盘需预留两套数据空间"
+                       if swap else
+                       "导入期间表为空、在线侧静默降级，请安排在业务低峰并公告窗口"))
 
             if only_date:
                 n = self.run_once_for_date(only_date,

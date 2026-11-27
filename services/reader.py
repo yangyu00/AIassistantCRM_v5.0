@@ -38,6 +38,33 @@ def _error(msg):
     print(f"ERROR:: {msg}", flush=True)
 
 
+def _run_read(db_path, fn):
+    """短连接执行一次只读查询；遇到 schema 变更时重建连接重试。
+
+    写入侧对每日全量 AVL 用「同一 db 内 RENAME 双套表」做原子切换，切换
+    事务提交瞬间会 bump schema cookie。恰好在切换前后打开的读连接上，第一条
+    SELECT 可能报 ``SQLITE_SCHEMA / database schema has changed``；此时表本身
+    是完整可读的，只是该连接的 prepared statement 缓存失效。重建连接即可
+    读到已提交的完整一套（旧套或新套），不需要也不应该降级返回空。
+
+    只对这一类 OperationalError 重试；其它异常照旧交给调用方降级处理。
+    """
+    last = None
+    for _ in range(3):
+        conn = None
+        try:
+            conn = sqlite3.connect(str(db_path))
+            return fn(conn)
+        except sqlite3.OperationalError as e:
+            last = e
+            if "schema" not in str(e).lower():
+                raise
+        finally:
+            if conn is not None:
+                conn.close()
+    raise last  # type: ignore[misc]
+
+
 def _latest_op_time(conn, avl, window):
     """同连接读写入侧登记的批次水位。
 
@@ -160,16 +187,15 @@ def _query(avl, key):
     if not os.path.isfile(db_path):
         _warn(f"数据库文件不存在: {db_path}")
         return {}
-    try:
-        conn = sqlite3.connect(str(db_path))
-        try:
-            window = _CONFIG.freshness_window_days_for(conf.project)
-            cutoff = _cutoff(_latest_op_time(conn, avl, window), conf.project)
-            _, sql, columns, values = _resolve(avl, key, cutoff=cutoff)
-            row = conn.execute(sql, tuple(values)).fetchone()
-        finally:
-            conn.close()
+    def once(conn):
+        window = _CONFIG.freshness_window_days_for(conf.project)
+        cutoff = _cutoff(_latest_op_time(conn, avl, window), conf.project)
+        _, sql, columns, values = _resolve(avl, key, cutoff=cutoff)
+        row = conn.execute(sql, tuple(values)).fetchone()
         return dict(zip(columns, row)) if row else {}
+
+    try:
+        return _run_read(db_path, once)
     except Exception as e:
         _error(f"查询数据库失败: {e}")
         return {}
@@ -181,19 +207,18 @@ def _query_many(avl, where, limit=None):
     if not os.path.isfile(db_path):
         _warn(f"数据库文件不存在: {db_path}")
         return []
-    try:
-        conn = sqlite3.connect(str(db_path))
-        try:
-            window = _CONFIG.freshness_window_days_for(conf.project)
-            cutoff = _cutoff(_latest_op_time(conn, avl, window), conf.project)
-            resolved = _resolve_many(avl, where, limit=limit, cutoff=cutoff)
-            if resolved is None:
-                return []
-            _, sql, columns, values = resolved
-            rows = conn.execute(sql, tuple(values)).fetchall()
-        finally:
-            conn.close()
+    def once(conn):
+        window = _CONFIG.freshness_window_days_for(conf.project)
+        cutoff = _cutoff(_latest_op_time(conn, avl, window), conf.project)
+        resolved = _resolve_many(avl, where, limit=limit, cutoff=cutoff)
+        if resolved is None:
+            return []
+        _, sql, columns, values = resolved
+        rows = conn.execute(sql, tuple(values)).fetchall()
         return [dict(zip(columns, row)) for row in rows]
+
+    try:
+        return _run_read(db_path, once)
     except Exception as e:
         _error(f"查询数据库失败: {e}")
         return []
