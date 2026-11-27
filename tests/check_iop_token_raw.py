@@ -22,7 +22,7 @@ from urllib.parse import urlencode
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ENV = ROOT / "IOP" / ".env"
 
-# 与 IOP/endpoints.py 的契约保持一致（诊断工具独立实现，避免包根 import aiohttp）
+# 诊断工具独立实现，避免包根 import aiohttp
 _TOKEN_PATH = "/openapi/restOauth2Server/access_token"
 _DEFAULTS = {
     "IOP_TOKEN_HOST": "134.80.220.55",

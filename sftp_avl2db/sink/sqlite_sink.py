@@ -669,10 +669,10 @@ class SqliteSink:
         """双套表全量导入编排：建 stage → 灌 stage → 建索引 → 原子切换 → 释放 old。"""
         # a) 当前套完全不动，在线侧此时读到的仍是上一日全量数据
         self.stats.dropped_tables = self._prepare_stage()
-        # b) 8000 万行灌进 stage（drop_targets=False，表已建好）
+        # b) 灌进 stage（drop_targets=False，表已建好）
         self._write_rows(filename, rows, self._stage_layout,
                          drop_targets=False)
-        # c) 空批次不切换也不推进水位，保留旧套（比原版「DROP 后留空表」更安全）
+        # c) 空批次不切换也不推进水位，保留当前套
         if self.stats.rows <= 0:
             return 0
         self._build_stage_indexes()

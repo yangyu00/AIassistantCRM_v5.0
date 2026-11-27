@@ -25,8 +25,8 @@ def is_auth_failure(status_code, res_data, auth_cfg):
     """判断标签查询失败是否属于「token 失效」，返回 ``(是否, 命中依据)``。
 
     HTTP 401/403、业务码在配置白名单、或错误描述里出现 token / 失效 / 过期
-    等关键词，任一命中即视为认证失败。``auth_cfg=None`` 时不做识别（兼容
-    旧调用方）。判定为认证失败后由 ``IOPClient`` invalidate + 重刷 + 重试一次。
+    等关键词，任一命中即视为认证失败。``auth_cfg=None`` 时不做识别。
+    判定为认证失败后由 ``IOPClient`` invalidate + 重刷 + 重试一次。
     """
     if auth_cfg is None:
         return False, ""

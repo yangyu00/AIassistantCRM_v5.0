@@ -19,7 +19,7 @@ from .config import AuthFailureCfg, BackgroundRefreshCfg
 from .client import IOPClient
 
 __all__ = [
-    # 门面（其他项目 / 新代码的主入口）
+    # 门面
     "IOPClient",
     # 配置（IOPConfig.load() 读 IOP/.env 后冻结成这些对象）
     "IOPConfig",

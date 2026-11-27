@@ -764,7 +764,7 @@ def main():
           sp_db is not None and
           sp_db.product_name == "【兜底套餐】兜底摘要")
 
-    # ② 场景交集为空：该行「兜底话术」为空、无标签命中 → 老版不输出切入 / 挽留
+    # ② 场景交集为空：该行「兜底话术」为空、无标签命中 → 不输出切入 / 挽留
     fb_inter = asyncio.run(build_diagnosis_record(
         NO_INTERSECT_PID, TEL_NO_INTERSECT))
     check("场景交集为空 → 诊断返回 None", fb_inter is None)
@@ -809,7 +809,7 @@ def main():
               {FALLBACK_PID: replace(sp[FALLBACK_PID], product_name="")})
           is None)
 
-    # ⑤ 维度隔离：老版四段、诊断六段，且卖点话术不做字段替换
+    # ⑤ 维度隔离：卖点话术四段、诊断六段，且卖点话术不做字段替换
     check("卖点话术输出含【切入话术】【卖点】【挽留话术】",
           sp_db is not None and
           all(f"【{seg}】" in sp_db.output_script for seg in

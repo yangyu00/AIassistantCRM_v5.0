@@ -19,11 +19,13 @@
 
 `import` 边界并非所有包一致：`sftp_avl2db / local_excel2db / call_stat / services` 四个包根零 I/O、零第三方依赖，靠 `__getattr__` 延迟导出，第三方库在入口函数内延迟加载；但 `IOP` 包根在 `__init__.py` 顶层链式导入 `transport / token / client`，三者模块顶层 `import aiohttp`，因此 `import IOP` 必须先装 `aiohttp`（配置仍只在构造 `IOPClient()` 时才读）；`src/log_util.py` 顶层 `from loguru import logger`、`src/exceptions.py` 顶层 `from fastapi import ...`，二者同样在 import 期就要第三方库。
 
+**时区口径（运行约束）**：调用量按天计数（`call_stat/counter.py` 用 `datetime.date.today()`）、写入侧「昨天 + 今天」兜底与 `op_time` 过期清理（`sftp_avl2db/runner.py` 默认用 `datetime.now`，可注入 `now`）、在线日志按天轮转（`src/log_util.py` 用 `time.strftime` + `rotation="00:00"`）都取进程本地时间。容器镜像在 `Dockerfile` 设 `TZ=Asia/Shanghai`；venv / 裸机部署未设时区，需保证宿主机本地时区与上游 AVL 文件名日期口径一致，否则跨天计数、拉取窗口与日志切分会偏移。
+
 ## 2. 目录结构
 
 | 路径 | 职责 |
 |---|---|
-| `main.py` | 在线 API：入参校验、IOP 客户端 lifespan、请求级编排、响应组装；顶部常量为服务端口 / 路由 / 日志目录 |
+| `main.py` | 在线 API：入参校验、IOP 客户端 lifespan、请求级编排、响应组装；顶部常量为日志目录与业务路由，监听端口由 `app_config.resolve_port()` 解析后写入 `FASTAPI_CONFIG` |
 | `src/` | 在线进程日志初始化与自定义异常 |
 | `services/` | 在线话术业务层：读取配置、业务库只读、卖点维表只读、五类路由（四类业务 + 兜底）、四类业务话术对象 |
 | `IOP/` | 用户标签查询客户端（进程级共享会话，任何失败降级 `{}`） |
@@ -219,7 +221,7 @@ docker run -d --name crm -p 8989:8989 aiassistantcrm:v5.0 full
 
 ### 10.2 凭据替换（首次部署必做）
 
-仓库随附的项目根、`IOP/`、`services/`、`call_stat/` 四对 `.env` 与 `.env.example` 逐键同值；`sftp_avl2db/` 一对只差键集合：`.env` 比 `.env.example` 多 8 个可选的 `<AVL>_DROP_BEFORE_INSERT` 覆盖键（诊断 8 张表均为 `1`），68 个必需键逐键同值（其中 `F09591_BATCH_SIZE` 与 `F09633_BATCH_SIZE` 均为 `100000`）。`IOP/config.py::_SPECS` 里还内置了一份实际生效的 token 端点地址与凭据。因此直接 `cp .env.example .env` 会原样带入仓库里的明文串，必须逐项替换：
+仓库随附的项目根、`IOP/`、`services/`、`call_stat/` 四对 `.env` 与 `.env.example` 逐键同值；`sftp_avl2db/` 一对只差键集合：`.env` 比 `.env.example` 多 10 个可选键（8 个 `<AVL>_DROP_BEFORE_INSERT` 覆盖键，诊断 8 张表均为 `1`；另有 `F09633_SYNC_JOURNAL_OFF` / `F09633_STARTUP_FULL_CHECK` 两个临时吞吐配套键），68 个必需键逐键同值（其中 `F09591_BATCH_SIZE` 与 `F09633_BATCH_SIZE` 均为 `100000`）。`IOP/config.py::_SPECS` 里还内置了一份实际生效的 token 端点地址与凭据。因此直接 `cp .env.example .env` 会原样带入仓库里的明文串，必须逐项替换：
 
 | 文件 | 要替换的键 |
 |---|---|

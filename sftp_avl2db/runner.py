@@ -14,10 +14,9 @@ from .protocols import ImportResult, ImportStatus
 _LOSS_CONTROL_PROJECT = "loss_control"
 
 # ---- P0：全量替换（DROP）AVL 的失败重试收敛 ---------------------------
-# 8000 万行/天全量 AVL 每重试一次 = 再 DROP + 重灌一遍约 8.4GB。常驻轮询
-# 每 15 分钟一轮、每轮都检查「昨天 + 今天」，失败时若不收敛，同一文件一天
-# 会被反复重灌近百次。连续失败达到阈值即隔离该文件、停止自动重试并 ERROR
-# 告警，改为人工确认后用 --force-reload 重跑。
+# 常驻轮询每轮都检查「昨天 + 今天」，同一文件失败时若不收敛会被反复
+# 重灌。连续失败达到阈值即隔离该文件、停止自动重试并 ERROR 告警，改为
+# 人工确认后用 --force-reload 重跑。
 # 只作用于 drop_before_insert=1 的 AVL；商机 / 控损（含断供兜底）行为不变。
 DROP_FAILURE_LIMIT = 2
 _DROP_QUARANTINE_SUFFIX = ".drop_quarantine"
@@ -296,7 +295,7 @@ class Avl2DbRunner:
                                 detail="已在清单中")
 
         # P0：DROP 全量替换 AVL 的失败隔离闸门。命中即停，不再下载 / 解析 /
-        # 入库，避免 8000 万行文件被常驻轮询反复重灌。人工 --force-reload
+        # 入库，避免大批量全量 AVL 文件被常驻轮询反复重灌。人工 --force-reload
         # 或删除隔离标记后才重新尝试；控损（断供兜底）不参与。
         if (self._drop_before_insert() and not self._is_loss_control()
                 and not force and remote_name in self._quarantine()):

@@ -29,7 +29,6 @@ _AVLS = (
 
 # 读 .env：只认整行 # 注释与 KEY=VALUE
 def _read_env(env_path) -> dict[str, str]:
-    """读配置文件。"""
     path = Path(env_path)
     if not path.is_file():
         raise FileNotFoundError(
@@ -53,7 +52,6 @@ def _str(v: dict[str, str], key: str) -> str:
 
 
 def _int(v: dict[str, str], key: str, *, min_value: int = 1) -> int:
-    """读一个整数键。"""
     raw = _str(v, key)
     label = "正整数" if min_value > 0 else "非负整数"
     try:
@@ -231,7 +229,6 @@ def load_profiles(runtime_dir=None) -> dict[str, TaskProfileConfig]:
 
 def remote_name_for(profile: TaskProfileConfig, prefix: str,
                     date_str: str) -> str:
-    """拼一个远程文件名。"""
     return profile.remote_name_tmpl.format(prefix=prefix, date=date_str)
 
 

@@ -35,11 +35,9 @@ _SPECS = (
     ("IOP_LIFETIME_DEFAULT_EXPIRES_IN", 600.0, 1.0),
     ("IOP_LIFETIME_REFRESH_BUFFER", 360.0, 0.0),
     ("IOP_LIFETIME_MIN_LIFETIME", 60.0, 1.0),
-    # 上游实际 expires_in 可能是 600000 秒量级（约 7 天）；上限提到 7 天，
-    # 避免把长有效期硬截断到 24h 后「每天刷新一次」并且掩盖上游真实语义。
+    # 上游实际 expires_in 可能是 600000 秒量级（约 7 天），上限取 7 天。
     ("IOP_LIFETIME_MAX_EXPIRES_IN", 604800.0, 1.0),
     # token 响应里有效期字段的候选名（按序取第一个存在的）。
-    # 上游字段名不是标准 expires_in 时不再静默回落到 default=600s。
     ("IOP_EXPIRES_IN_FIELDS", "expires_in,expiresIn,expire_in", None),
     # 标签查询返回这些业务码 / 描述命中这些关键词时，判定为「token 失效」。
     ("IOP_AUTH_FAILURE_CODES", "401,403,1001,1002,10001,10102,30001", None),
