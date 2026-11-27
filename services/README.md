@@ -66,7 +66,7 @@
 
 - `AVL_DB_SPECS`：12 个 AVL 各自的 `db_file`（如 `diagnosis/F09633.db`）、schema 名、单条查询键 `where`、固定 `order_by`、是否分表。
 - `TABLE_SCHEMAS` / `TABLE_PRIMARY_KEYS`：各表列顺序 / 类型（与写入侧建表 DDL 对齐）与主键；`SELECT *` 回来的 dict 按此列顺序组装。
-- `services/.env`：共 7 键——`AVL_DB_ROOT`、`DIMENSIONS_DB`、`LOSS_CONTROL_NUM_TABLES`、`F09633_NUM_TABLES`，以及按业务分别配置的新鲜度窗口 `OPPORTUNITY_RECALL_FRESHNESS_WINDOW_DAYS`（默认 `2`）、`LOSS_CONTROL_FRESHNESS_WINDOW_DAYS`（默认 `2`）、`DIAGNOSIS_FRESHNESS_WINDOW_DAYS`（默认 `0`，关闭过滤，见第 4.1 节）；缺文件 / 缺键用 `db_config.py` 顶部代码内默认值（默认指向 `sftp_avl2db/runtime/sqlite_db` 等）。只认这三个业务键，旧版全局键 `AVL_FRESHNESS_WINDOW_DAYS` 已废弃。
+- `services/.env`：共 7 键——`AVL_DB_ROOT`、`DIMENSIONS_DB`、`LOSS_CONTROL_NUM_TABLES`、`F09633_NUM_TABLES`，以及按业务分别配置的新鲜度窗口 `OPPORTUNITY_RECALL_FRESHNESS_WINDOW_DAYS`（默认 `2`）、`LOSS_CONTROL_FRESHNESS_WINDOW_DAYS`（默认 `2`）、`DIAGNOSIS_FRESHNESS_WINDOW_DAYS`（默认 `0`，关闭过滤，见第 4.1 节）；缺文件 / 缺键用 `db_config.py` 顶部代码内默认值（默认指向 `sftp_avl2db/runtime/sqlite_db` 等）。只认这三个业务键。
 - `shard_index()` / `table_name()`：分表号 `crc32(product_no) % NUM_TABLES`，表名 `{AVL}_{分表号}`；固定表名为 `{AVL}`。
 
 三个入口都是 `async`、内部同步 `sqlite3`，列名走 `DbProfile.columns` 白名单、值一律参数绑定，排序固定取静态声明：

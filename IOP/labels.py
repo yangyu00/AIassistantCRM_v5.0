@@ -5,7 +5,6 @@ from typing import Any
 
 # ---------------------------------------------------------------------------
 # 降级状态码：get_customer_labels_with_status() 的第二个返回值。
-# 以前所有失败都压成裸 {}，线上无法区分「上游挂了」和「号码真的没标签」。
 # ---------------------------------------------------------------------------
 STATUS_OK = "ok"                              # 查询成功且至少 1 项标签
 STATUS_OK_EMPTY = "ok_empty"                  # 查询成功但号码无标签
@@ -119,7 +118,7 @@ def parse_custinfo_response(
     logger: Any,
     cost_ms: float,
 ) -> dict:
-    """向后兼容的原入口：只返回 ``{ITEMCODE: [ITEMNAME, ITEMVALUE]}``。
+    """原入口：只返回 ``{ITEMCODE: [ITEMNAME, ITEMVALUE]}``。
 
     需要区分降级原因时用 ``parse_custinfo_response_ex()``。
     """

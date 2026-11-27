@@ -386,7 +386,7 @@ class SqliteSink:
                 elif self.global_flush_rows and pending >= self.global_flush_rows:
                     flush_all()
 
-            # 末尾余量：按库一次提交（原版是逐桶 128 次 commit）
+            # 末尾余量：按库一次提交
             flush_all()
         except Exception:
             for conn in conns.values():

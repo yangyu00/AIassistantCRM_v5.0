@@ -39,7 +39,7 @@ async with IOPClient() as client:
 4. 刷新后仍无有效 token，返回 `{}` + `status=token_unavailable`，不发标签请求；冷却期内的请求同样在这里短路（0 次 HTTP），但会记 INFO。
 5. 标签查询用 `json=` + 显式 headers 发出；建连 / 读超时与网络异常就地收口，返回 `{}` + 对应 `status`。
 6. `parse_custinfo_response_ex()` 依次校验：`status == 200`、响应体为 dict、`res_code` 按字符串比较等于 `"0"`、`result.BUSIINFO` 为 list；单条缺 `ITEMCODE` 或非 dict 的记录跳过。返回 `(labels, status, auth_failed)`。
-7. **token 失效自愈（本次修复核心）**：`auth_failed=True` 时（HTTP 401/403、`res_code` 命中 `IOP_AUTH_FAILURE_CODES`、或错误描述命中 `IOP_AUTH_FAILURE_KEYWORDS`），`invalidate()` 清空本地 token → `ensure_token(force=True)` 跳过冷却短路重刷一次 → 用新 token **重试一次**标签查询。以前这类失败只返回 `{}`，本地仍认为 token 在整个长有效期内有效，导致长达几十小时静默降级。`IOP_AUTH_RETRY_ENABLED=0` 可关闭。
+7. **token 失效自愈**：`auth_failed=True` 时（HTTP 401/403、`res_code` 命中 `IOP_AUTH_FAILURE_CODES`、或错误描述命中 `IOP_AUTH_FAILURE_KEYWORDS`），`invalidate()` 清空本地 token → `ensure_token(force=True)` 跳过冷却短路重刷一次 → 用新 token **重试一次**标签查询。`IOP_AUTH_RETRY_ENABLED=0` 可关闭。
 
 ## 3. 上游约定（不可改动）
 
@@ -63,7 +63,7 @@ async with IOPClient() as client:
 |---|---|
 | `IOP/.env` | 与 `config.py` 同目录，日常改这个 |
 | `IOP/.env.example` | 带注释的键说明模板，与 `.env` 同值；新环境可 `cp IOP/.env.example IOP/.env` |
-| `IOP/config.py` 的 `_SPECS` | 20 个键的清单、默认值与数值下界；新增参数在这里加一行并写进 `.env.example` |
+| `IOP/config.py` 的 `_SPECS` | 28 个键的清单、默认值与数值下界；新增参数在这里加一行并写进 `.env.example` |
 
 `.env` 语法只认整行 `#` 注释和 `KEY=VALUE`，不做引号、行内注释或 `${VAR}` 插值。确认生效值（配置对象冻结，`repr` 自动屏蔽 `secret`）：
 
@@ -98,19 +98,19 @@ python -c "from IOP import IOPConfig; print(IOPConfig.load())"
 - **token 响应校验**：先判状态码非 200 直接失败且不读 body，再要求响应体为 dict；`access_token` 为空、上游 `error`、既无 token 也无 error、解析失败、结构异常、网络异常全部走统一失败收口。**续期失败时若旧 token 仍在有效期内则保留**（记 ERROR），首次获取失败才清空 `access_token` 与 `deadline`；明确被告知 token 失效时由 `invalidate()` 清空。
 - **有效期换算**：`v = min(float(上游字段), max_expires_in)`，`ttl = min(max(v - refresh_buffer, min_lifetime), v)`。`ttl` 永不超过 `v`，deadline 始终落在未来；`TokenState.deadline` 恒为 `datetime`，无有效 token 时为 `datetime.min`。
   - **`600 - 360 = 240s` 不是固定有效期**，只是 `expires_in` 缺字段 / 非法值回落到 `default=600` 时的结果。上游给 `600000`（秒）时 `max=604800` 不截断，`ttl=599640s ≈ 6.94 天`。
-  - 字段名按 `IOP_EXPIRES_IN_FIELDS` 候选取（命中别名记 INFO）；一个都没有、值非数字 / bool / NaN / 非正 → 回落默认并**记 ERROR**（以前缺字段完全静默，会莫名每 4 分钟刷新一次）。超过上限被截断、疑似绝对时间戳 / 毫秒也都记日志。
+  - 字段名按 `IOP_EXPIRES_IN_FIELDS` 候选取（命中别名记 INFO）；一个都没有、值非数字 / bool / NaN / 非正 → 回落默认并**记 ERROR**。超过上限被截断、疑似绝对时间戳 / 毫秒也都记日志。
   - 每次刷新成功记 `raw_expires_in` 与本地 `ttl`，排查有效期不必再猜单位。
 - **统一降级 + 可区分**：token 不可用、超时 / 网络异常、响应解析或校验失败、标签查询失败全部返回 `{}` 不抛异常（API 不 500），但 `with_status` 会返回具体 `status`（`token_unavailable` / `network_error` / `parse_error` / `http_error` / `bad_structure` / `business_error` / `missing_busiinfo` / `ok_empty`）；`ok` 与 `ok_empty` 表示上游成功。`IopLabelProvider` 把降级原因记进在线日志，并注明「无辅助画像 + 切入/挽留回落兜底组」。
-- **日志**：由构造时注入的 logger 输出（未注入则完全静默），字段为 `key=value`。在线进程 `configure_logging()` 的 INFO 文件 sink 同时收 `INFO` / `WARNING`（原来 WARNING 全丢），ERROR 单独一个文件。日志不含手机号与 `access_token` 值；请求级降级日志只带 `telnum_len`。
+- **日志**：由构造时注入的 logger 输出（未注入则完全静默），字段为 `key=value`。在线进程 `configure_logging()` 的 INFO 文件 sink 同时收 `INFO` / `WARNING`，ERROR 单独一个文件。日志不含手机号与 `access_token` 值；请求级降级日志只带 `telnum_len`。
 
 ## 6. 排查「同样查询一次有辅助画像、一次没有」
 
 代码里两条「极快就返回空标签」的路径都不会超时：
 
 1. **冷却短路（0 次 HTTP）**：上一轮 token 刷新全失败后 `IOP_RETRY_COOLDOWN=5` 秒内，`ensure_token()` 拿锁前直接返回，`get_customer_labels_with_status()` 返回 `token_unavailable`。日志有 `IOP token 处于失败冷却期` 与 `IOP 标签为空 ... reason=token_unavailable`。
-2. **标签端点认证类快速失败（1 次 HTTP，几十 ms）**：两个部署目录共用同一 `client_id` 时，一方刷新会把另一方的 token 顶掉，上游返回 `HTTP 200 + res_code=1001 / access_token invalid`。修复后会自动 invalidate + 重刷 + 重试一次，日志有 `IOP 标签查询疑似 token 失效` → `IOP token 失效自动重刷成功`。修复前这里只返回 `{}`，进程会带病跑完整个有效期。
+2. **标签端点认证类快速失败（1 次 HTTP，几十 ms）**：两个部署目录共用同一 `client_id` 时，一方刷新会把另一方的 token 顶掉，上游返回 `HTTP 200 + res_code=1001 / access_token invalid`。客户端会自动 invalidate + 重刷 + 重试一次，日志有 `IOP 标签查询疑似 token 失效` → `IOP token 失效自动重刷成功`。
 
-**先抓一次 token 端点原始响应，确认 `expires_in` 的字段名与单位**（本次用户追问的关键）：
+**先抓一次 token 端点原始响应，确认 `expires_in` 的字段名与单位**：
 
 ```bash
 python tests/check_iop_token_raw.py            # 只读 .env + 发一次真实 token 请求

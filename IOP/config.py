@@ -38,7 +38,6 @@ _SPECS = (
     # 上游实际 expires_in 可能是 600000 秒量级（约 7 天）；上限提到 7 天，
     # 避免把长有效期硬截断到 24h 后「每天刷新一次」并且掩盖上游真实语义。
     ("IOP_LIFETIME_MAX_EXPIRES_IN", 604800.0, 1.0),
-    # ---- 本次修复新增 ----
     # token 响应里有效期字段的候选名（按序取第一个存在的）。
     # 上游字段名不是标准 expires_in 时不再静默回落到 default=600s。
     ("IOP_EXPIRES_IN_FIELDS", "expires_in,expiresIn,expire_in", None),

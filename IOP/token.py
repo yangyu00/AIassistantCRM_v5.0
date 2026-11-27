@@ -104,8 +104,7 @@ class TokenManager:
     def invalidate(self, reason: str = "manual") -> None:
         """清空 token 状态，强制下次 ``ensure_token()`` 重新刷新。
 
-        标签端点明确返回「token 失效」时调用：以前这类失败只返回 ``{}``，
-        本地仍认为 token 在整个长有效期内有效，导致长达几十小时静默降级。
+        标签端点明确返回「token 失效」时调用。
         """
         if self._state.access_token is None:
             return
@@ -252,7 +251,6 @@ class TokenManager:
 
             p = self._config.lifetime
             # 有效期字段支持别名：上游若不用标准 expires_in（如 expiresIn），
-            # 以前会静默回落 default=600 → 240s 有效期，且连日志都没有。
             fields = self._config.expires_in_fields or ("expires_in",)
             field_used, raw = None, None
             for name in fields:

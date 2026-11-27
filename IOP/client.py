@@ -158,8 +158,7 @@ class IOPClient:
     async def get_customer_labels_with_status(self, tel: str) -> tuple[dict, str]:
         """查询标签并返回 ``(labels, status)``；``status`` 见 ``labels.py``。
 
-        关键修复：标签端点明确返回「token 失效」时，不再只返回 ``{}`` 让进程
-        带着失效 token 撑完整个长有效期，而是 invalidate → 重刷一次 → 用新
+        标签端点明确返回「token 失效」时，invalidate → 重刷一次 → 用新
         token 重试一次标签查询。
         """
         await self._tokens.ensure_token()

@@ -30,8 +30,6 @@ MARKET_ASSISTANT_URL = "/api/speechQryService"
 configure_logging(LOG_DIR)
 
 # 进程内共享一个客户端：token 状态与 HTTP 会话由它自持，标签结果仍按请求隔离。
-# 必须注入在线进程 logger：IOP 默认 NullLogger 会把刷新失败 / 冷却降级 /
-# 标签查询失败全部静默吞掉，线上 log/ 里查不到「为什么这次没有辅助画像」。
 iop_client = IOPClient(logger=my_log)
 
 
@@ -115,7 +113,6 @@ class IopLabelProvider:
             self._fetched = True
             if not self._labels:
                 # 空标签 = 无【辅助画像】且切入/挽留话术回落兜底组。
-                # 以前这里完全没有日志，只能从话术结果反推 IOP 是否成功。
                 # 区分「上游成功但号码无标签」与「IOP 降级」：前者 INFO、后者 ERROR。
                 normal = self.degraded_reason in ("ok", "ok_empty")
                 log_fn = my_log.info if normal else my_log.error
