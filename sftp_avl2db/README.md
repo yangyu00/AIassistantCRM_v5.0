@@ -288,7 +288,7 @@ done
 3. `sink/schema.py` 建表 SQL 保持表级 `PRIMARY KEY (...)` 声明形式；主键列由 `TABLE_PRIMARY_KEYS` 传入，可单列可复合，自动补 `NOT NULL`。
 4. 所有 SQLite 连接统一只设 `PRAGMA journal_mode = WAL` 与 `PRAGMA synchronous = NORMAL`；写入按 `BATCH_SIZE` 分桶、逐桶满批提交，使用按 `TABLE_PRIMARY_KEYS` 注册主键生成的 `INSERT ... ON CONFLICT DO UPDATE`（upsert）原地覆盖。
 5. 分表口径 `zlib.crc32(product_no) % NUM_TABLES`；`p_no` 为空时取 `"NULL"`（解析器已跳过空主键，属不可达分支）。
-6. upsert 与旧的 `INSERT OR REPLACE` 业务语义一致（同一主键只保留最新一条、非主键列全取本批值），但不删旧行、不换 rowid、不产生 freelist 碎片；冲突目标直接用 `TABLE_PRIMARY_KEYS` 的主键元组（可为复合主键），只更新非主键列，需要 SQLite >= 3.24。`F09591` / `F09633` 的 `BATCH_SIZE=100000` 把满批提交次数降到约 1/10，代价是 128 个分桶的行缓存峰值放大约 10 倍、单事务 WAL 更大，需按可用内存评估，必要时回退到 `30000~50000`。
+6. upsert 在主键冲突时原地更新非主键列：同一主键只保留最新一条、非主键列全取本批值，不删旧行、不换 rowid、不产生 freelist 碎片；冲突目标直接用 `TABLE_PRIMARY_KEYS` 的主键元组（可为复合主键），只更新非主键列，需要 SQLite >= 3.24。`F09591` / `F09633` 的 `BATCH_SIZE=100000` 把满批提交次数降到约 1/10，代价是 128 个分桶的行缓存峰值放大约 10 倍、单事务 WAL 更大，需按可用内存评估，必要时回退到 `30000~50000`。
 
 ## 10. 拉取不变量
 

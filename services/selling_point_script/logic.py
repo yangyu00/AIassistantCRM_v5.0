@@ -251,7 +251,7 @@ def build_auxiliary_portrait(label_ids, custom_label_info,
                              label_name_mapping=None):
     """按维表「标签ID」子集对齐 IOP 名称与值，逐项拼辅助画像。
 
-    名称可经 ``label_name_mapping`` 换成营销助手显示名；值按上一版本的硬编码
+    名称可经 ``label_name_mapping`` 换成营销助手显示名；值按硬编码
     规则做「0.00→无 / 费用加元 / 流量加M / 是否→是否 / 降档阈值标红 / 同名去重」
     转换。转换只影响文本，不改变 HTML 结构。
     """
@@ -333,7 +333,7 @@ def build_output_script(record):
     """**唯一组合点**：各段按固定顺序拼成 ``output_script``。
 
     字面 ``\\n`` 连接，最后把四个【】标题统一包 ``<strong>``；不做
-    ``strip()``、不把 ``\\n`` 转成 ``<br>``，与上一版本逐字符一致。
+    ``strip()``、不把 ``\\n`` 转成 ``<br>``。
     """
     record = record or {}
     out = ""

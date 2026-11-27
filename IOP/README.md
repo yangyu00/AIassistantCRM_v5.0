@@ -43,6 +43,11 @@ async with IOPClient() as client:
 - 标签请求头必须显式声明 `Content-Type: application/json; charset=gbk` 与 `Accept-Encoding: gzip, deflate`，即使与实际序列化编码不一致也照发；响应解析用 `json(content_type=None)`，不做 Content-Type 类型校验。
 - token 请求用字符串 `data=`，不带 Content-Type。共享 session 统一带 `skip_auto_headers=("Content-Type",)`，只跳过自动生成的头，显式传入的 `charset=gbk` / `Accept-Encoding` 原样发出。
 
+端点路径与固定参数（`IOP/endpoints.py` 当前值，重建时照此写）：
+
+- token 端点：`http://{IOP_TOKEN_HOST}:{IOP_TOKEN_PORT}/openapi/restOauth2Server/access_token`，表单串字段 `grant_type=client_credentials` / `client_id` / `client_secret`。
+- 标签端点：`http://{IOP_CUSTINFO_HOST}:{IOP_CUSTINFO_PORT}/openapi/httpService/UserService`，固定查询参数 `access_token` / `method=qryCustInfoByChannel` / `format=json`；`post_data` 为 `VERSION`（取 `IOP_CUSTINFO_VERSION`）/ `TELNUM` / `TYPE`（取 `IOP_CUSTINFO_TYPE`）。
+
 契约值集中在 `endpoints.py`；新增 IOP 接口时在该文件加一个 `*_request(cfg, ...)` 即可。
 
 ## 4. 配置

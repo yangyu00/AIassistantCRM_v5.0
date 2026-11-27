@@ -192,7 +192,7 @@
 | `label_id`（标签ID） | 标签子集 → 对齐 IOP 返回与 `label_name_mapping`，拼【辅助画像】 |
 | `selling_point`（生成话术） | 【卖点】段 |
 | `fallback_script`（兜底话术） | 【切入话术】/【挽留话术】段的默认来源 |
-| `match_result`（匹配结果2） | 为空时上一版不输出切入 / 挽留；非空时按下标对应 `tag_g` 原文 |
+| `match_result`（匹配结果2） | 为空且「兜底话术」为空、「标签0」非空时保留「兜底话术」组（回退「标签0」原文），其余为空值情况不输出切入 / 挽留；非空时按下标对应 `tag_g` 原文 |
 | `tag_0 … tag_27`（标签N） | 命中对应场景 ID 时的标签专属话术 |
 
 **输出格式（逐字符）**
@@ -204,10 +204,10 @@
 5. **不做 `#标签名&` 字段替换**：不收集占位符、不查 `F09635`，话术原文逐字符输出——这是与诊断链路的关键区别（诊断三类话术才做替换）。IOP 返回另有用处：拼【辅助画像】、按「匹配结果2」选标签专属话术，二者都不改动话术原文里的字符。
 6. 降级边界：维表无该 `product_id` 或 `product_name` 为空 → 工厂返回 `None` → 路由落 `ProductInfoRaw`（`code: "2"`）。
 
-**取数口径（与上一版对齐，仍只从 db 列重建）**
+**取数口径（仍只从 db 列重建）**
 
-* 「匹配结果2」为空 → 上一版该 pid 的话术字典是 `{}`，切入 / 挽留整段不出现。
-* 「兜底话术」列为空且无标签命中 → 切入 / 挽留为空；**不**回退第一个非空「标签N」（那种回退是上一版诊断兜底模块自己的口径，不属于要复现的输出）。
+* 「匹配结果2」为空 → 仅当「兜底话术」为空且「标签0」非空时，话术字典保留「兜底话术」组（值为「标签0」原文）；其余情况该 pid 的话术字典是 `{}`，切入 / 挽留整段不出现。
+* 「兜底话术」列为空 → 回退「标签0」原文充当兜底话术组；不回退其它「标签N」，也不取第一个非空「标签N」。
 * 同一场景 ID 在「匹配结果2」里重复出现时，后一次覆盖前一次。
 * **IOP 返回由路由总是传入**：按「匹配结果2」的 ID 顺序找第一个 `ITEMVALUE ∈ {是, 1}` 的标签，用对应「标签N」原文；同时按维表「标签ID」子集拼【辅助画像】。
 * 辅助画像**完整复现上一版 `ProductInfoRaw` 的转换规则**：`label_name_mapping` 换显示名、`0.00→无`、费用加「元」、抖音快手流量加「M」、`是否` / `1` → 是 / 否、降档阈值名称标红、同名标签去重（含上一版 `replace` 未回写的行为）。离线自检用独立参照实现做逐字符 golden 比对。
@@ -271,12 +271,14 @@ record 字段固定为 `product_id / telnum / business_name / business_type / fe
 | 行处理 | 空行跳过；`strip()` → `:` 换 `：` → `split("：")`；单段原样；多段首段去 `^\d+\s?\.\s?` 后包 `<strong><span style="color: blue;">{首段}：</span></strong>`，其余用 `：` 拼回 |
 | 段内拼接 | `'\n'.join(行)`；解析结果两段都空 → 返回 `""`（字符串） |
 | 卖点标题 | `r'\d、.*?：'`（`re.DOTALL`）findall；首段 `start_index` 后内容标红，后续按标题 `re.split` 逐段 `\n<strong>标题</strong>内容.strip()` |
-| 原文来源 | `pick_script_text()` 只取 `fallback_script.strip()`；`build_script_dict()` 在「匹配结果2」非空时按 `tag_g` 下标补标签专属话术，为空时返回 `{}`（老版口径） |
+| 原文来源 | `pick_script_text()` 取 `fallback_script.strip()`，为空时回退「标签0」原文；`build_script_dict()` 在「匹配结果2」非空时按 `tag_g` 下标补标签专属话术，为空且回退到「标签0」时保留「兜底话术」组、否则返回 `{}` |
 | IOP 辅助画像 | `build_auxiliary_portrait(label_ids, custom_label_info, label_name_mapping)` 直译上一版 `ProductInfoRaw` 的全部硬编码转换 |
 | 标题加粗 | `strong_sections()` 把 `【辅助画像】/【切入话术】/【卖点】/【挽留话术】` 全部 `replace` 成 `<strong>…</strong>` |
 | 字段替换 | **无**。不收集 `#标签名&`、不查 F09635；IOP 只用于辅助画像与场景命中，不改动话术原文字符 |
 | 失败边界 | `extract_selling_point_fields()`：无该 `product_id` 行或 `product_name` 为空 → `None`（工厂返回 `None` → `code: "2"`）；有行但话术全空 → 只输出【卖点】段 |
 | 字段 dict | `product_id / business_name / auxiliary_portrait / cut_in_statement / selling_point_block / retain_statement`，不含任何诊断 8 表字段、不含 `is_fallback` / `fallback_reason` |
+
+**【辅助画像】的硬编码标签 ID 开关（`services/selling_point_script/logic.py`）**：`_LABEL_ZERO_TO_WU`（`0.00→无`）、`_LABEL_FEE_YUAN`（费用加「元」）、`_LABEL_FLOW_M`（流量加「M」，2 个 ID）、`_LABEL_BOOL`（`1 / 0 → 是 / 否`）、`_LABEL_DOWNGRADE_RED`（降档阈值名称标红，2 个 ID）共 5 组常量，取值在代码内逐项固化，转换只作用于命中的 ITEMCODE。属外部依赖：上游标签 ITEMCODE 的获取渠道 <待填写：上游标签字典 / 接口人>，责任人 <待填写：配置管理员>；维表「标签ID」子集未命中这些 ID 时对应转换不生效，画像按 IOP 原值输出。
 
 **维表列声明（`db_config.py`）**：`SELLING_POINTS_REQUIRED_COLUMNS = (product_id, label_id)`；`SELLING_POINTS_OPTIONAL_COLUMNS = (product_name, selling_point, fallback_script, match_result)`；`SELLING_POINTS_TAG_COLUMNS = tag_0 … tag_27`（28 个）；`SELLING_POINTS_SELECT_COLUMNS` 共 34 列，按「必需 → 可选 → tag」顺序 SELECT。`SELLING_POINTS_SCHEMA` 另含 `product_category / product_subcategory`，仅用于离线自检建临时库。`dimensions.py` 中 `load_selling_points()` 按 500 个 ID 分块、`mode=ro` 只读、`split_label_ids()` 正则 `[\n\r|｜,，;；]+` → 去空、保序、去重；`configure(None)` 还原默认库路径。另声明 `LABEL_NAME_MAPPING_TABLE = label_name_mapping` / `LABEL_NAME_MAPPING_COLUMNS = (label_id, display_name)`：`load_label_name_mapping()` 用 `mode=ro` 全表读一次，返回 `{label_id: 营销助手显示名字}`，表缺失 / 列漂移 / 异常降级 `{}`。
 
@@ -299,7 +301,7 @@ record 字段固定为 `product_id / telnum / business_name / business_type / fe
 | `F09633` 分表数改动但未重灌全量 | 号码落到其它分表查不到 → 诊断返回 `None` → 卖点话术模块 |
 | 诊断 7 个查询任一为空 / 交集为空 / 六项全空 | 诊断返回 `None`；路由改问平级的卖点话术模块，按上一版格式输出（辅助画像 / 切入 / 卖点 / 挽留），`code: "0"` |
 | 维表里没有该 `product_id`，或该行产品名称为空 | 卖点话术模块返回 `None` → 落 `ProductInfoRaw`（`code: "2"`） |
-| 卖点话术原文为空 /「匹配结果2」为空 | 切入 / 挽留段整段不出现，只留【卖点】；不填「无」、不回退「标签N」（上一版口径） |
+| 卖点话术原文为空 /「匹配结果2」为空 | 「匹配结果2」为空时仅当「兜底话术」为空且「标签0」非空才回退「标签0」原文输出兜底组，其余情况切入 / 挽留段整段不出现、只留【卖点】；不填「无」，不回退其它「标签N」 |
 | IOP 标签失败 | `main.py` 降级 `{}` 注入；商机画像为空，诊断三类话术里的 `#标签名&` 原样保留；卖点话术辅助画像为空、场景不命中 → 用「兜底话术」，输出结构不变 |
 | 卖点维表库缺失 / 表或列漂移 / 查询异常 | `dimensions` 降级 `{}`，商机辅助画像为空，卖点话术无行可用 → `code: "2"`，其余话术段照常 |
 | `product_id` 未命中维表 / 「标签ID」为空 | 标签子集为空、辅助画像为空串，不 500 |
@@ -384,7 +386,7 @@ output_script = strong_sections(output_script)   # 【xxx】 → <strong>【xxx�
 <strong><span style="color: blue;">担心合约：</span></strong>挽留B
 ```
 
-段间是真实 `\n`（不是 `<br>`）、空段整段不出现（不填「无」）、最后一段无尾换行；没有 `omit` 分支、没有标签替换、没有资费名称 / 摘要 / 痛点 / 营销段。`color: blue;` 带空格、`color:red;` 不带，均为上一版逐字符写法。
+段间是真实 `\n`（不是 `<br>`）、空段整段不出现（不填「无」）、最后一段无尾换行；没有 `omit` 分支、没有标签替换、没有资费名称 / 摘要 / 痛点 / 营销段。`color: blue;` 带空格、`color:red;` 不带，均为当前固定写法。
 
 ## 10. 自检
 

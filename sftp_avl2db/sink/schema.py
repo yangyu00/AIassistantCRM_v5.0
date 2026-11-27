@@ -85,10 +85,9 @@ class TableSchema:
     def insert_sql(self, table_name: str) -> str:
         """主键冲突时原地更新非主键列的 upsert（需 SQLite >= 3.24）。
 
-        与 ``INSERT OR REPLACE`` 的业务语义一致：同一主键只保留最新一条，
-        非主键列全部取本批值。区别在于不走「DELETE 旧行 + INSERT 新行」，
-        因此不换 rowid、不产生 freelist 碎片、不触发 REPLACE 的删除语义。
-        冲突目标直接用 ``TABLE_PRIMARY_KEYS`` 注册的主键元组，复合主键
+        同一主键只保留最新一条，非主键列全部取本批值；不删除旧行、不换
+        rowid、不产生 freelist 碎片。冲突目标直接用 ``TABLE_PRIMARY_KEYS``
+        注册的主键元组，复合主键
         （如 F09633 的 ``(product_no, scene)``）同样精确命中。
         """
         names = ", ".join(self.column_names)
