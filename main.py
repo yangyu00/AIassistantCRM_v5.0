@@ -17,7 +17,7 @@ from app_config import resolve_port
 # 日志目录：留空表示写到项目根目录下的 log/，也可填绝对路径
 LOG_DIR = ""
 
-# 在线服务监听端口：唯一来源是项目根 .env 的 CRM_PORT（默认 8990），
+# 在线服务监听端口：唯一来源是项目根 .env 的 CRM_PORT（默认 8989），
 # 由 app_config.load_config() 解析；改端口只改 .env 一行并重启进程。
 FASTAPI_CONFIG = {"host": "0.0.0.0", "port": resolve_port(), "reload": False}
 # 业务路由

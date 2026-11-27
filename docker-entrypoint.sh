@@ -42,7 +42,7 @@ write_root_env() {
 }
 
 if [ ! -f .env ]; then
-    write_root_env "${CRM_PORT:-8990}"
+    write_root_env "${CRM_PORT:-8989}"
 elif [ -n "${CRM_PORT:-}" ] && [ "${SKIP_ENV_WRITE:-0}" != "1" ]; then
     echo "[entrypoint] CRM_PORT=${CRM_PORT} 写入 /app/.env（整目录挂载时会同步改宿主机文件；SKIP_ENV_WRITE=1 可禁用）"
     write_root_env "$CRM_PORT"

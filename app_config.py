@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ENV_PATH = Path(__file__).with_name(".env")
-DEFAULT_PORT = 8990
+DEFAULT_PORT = 8989
 PORT_ENV_KEY = "CRM_PORT"
 
 

@@ -7,14 +7,14 @@
 
 ## 1. 前置条件
 
-1. 起在线服务：`python main.py`（默认 `0.0.0.0:8990`，端口由项目根 `.env` 的 `CRM_PORT` 配置）。
+1. 起在线服务：`python main.py`（默认 `0.0.0.0:8989`，端口由项目根 `.env` 的 `CRM_PORT` 配置）。
 2. 写入侧进程按需起；没起也能跑：业务库未就绪时商机 / 控损按空记录出话术（均 `code: "0"`）、诊断返回 `None` 后由平级的卖点话术模块给出四段话术（`code: "0"`），维表里也没有该 `product_id` 才落 `code: "2"`；卖点维表未就绪时商机辅助画像为空、卖点话术无行可用。`code` 始终按路由对象类型判定，不抛 500。
 3. `check_iop_direct.py` 还需要 `IOP/.env` 配好凭据、并装好 `IOPClient` 的依赖（aiohttp 等）。
 
-地址默认 `http://127.0.0.1:8990`。服务在别的机器上、或改了项目根 `.env` 的 `CRM_PORT`，都不用改代码，设环境变量即可：
+地址默认 `http://127.0.0.1:8989`。服务在别的机器上、或改了项目根 `.env` 的 `CRM_PORT`，都不用改代码，设环境变量即可：
 
 ```bash
-export CRM_SMOKE_BASE_URL=http://10.0.0.5:8990
+export CRM_SMOKE_BASE_URL=http://10.0.0.5:8989
 ```
 
 业务路由 `/api/speechQryService` 与统计路由 `/api/callStat` 分别对应 `main.py` 的 `MARKET_ASSISTANT_URL`、`call_stat/.env` 的 `CALL_STAT_QUERY_PATH`；改了这两处，脚本顶部的 `SPEECH_PATH` / `CALL_STAT_PATH` 常量要跟着改。

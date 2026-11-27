@@ -3,9 +3,9 @@
 #
 # 构建：docker build -t aiassistantcrm:v5.0 .
 # 运行（默认只起在线 API，适合本地联调）：
-#   docker run -d --name crm -p 8990:8990 aiassistantcrm:v5.0
+#   docker run -d --name crm -p 8989:8989 aiassistantcrm:v5.0
 # 运行（起 12 个 AVL 写入进程 + 维表轮询 + 在线 API，共 14 个进程）：
-#   docker run -d --name crm -p 8990:8990 aiassistantcrm:v5.0 full
+#   docker run -d --name crm -p 8989:8989 aiassistantcrm:v5.0 full
 #
 # 整目录挂载（推荐：改代码 / 改 .env 不用重建镜像，runtime 与 log 落宿主机）：
 #   docker run -d --name crm -p 8991:8991 \
@@ -42,7 +42,7 @@ RUN set -eu; \
     for d in IOP call_stat services sftp_avl2db; do \
         [ -f "$d/.env" ] || cp "$d/.env.example" "$d/.env"; \
     done; \
-    [ -f .env ] || printf 'CRM_PORT=8990\n' > .env; \
+    [ -f .env ] || printf 'CRM_PORT=8989\n' > .env; \
     mkdir -p log/startup \
              call_stat/runtime call_stat/runtime/export \
              local_excel2db/runtime/sqlite_db local_excel2db/runtime/state local_excel2db/runtime/log \
@@ -51,7 +51,7 @@ RUN set -eu; \
     python -m local_excel2db --once; \
     install -m 0755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
-EXPOSE 8990
+EXPOSE 8989
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["api"]
