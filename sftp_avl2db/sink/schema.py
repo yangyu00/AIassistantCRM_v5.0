@@ -83,10 +83,28 @@ class TableSchema:
                 f"({self.column_ddl()}, PRIMARY KEY ({pk}))")
 
     def insert_sql(self, table_name: str) -> str:
+        """主键冲突时原地更新非主键列的 upsert（需 SQLite >= 3.24）。
+
+        与 ``INSERT OR REPLACE`` 的业务语义一致：同一主键只保留最新一条，
+        非主键列全部取本批值。区别在于不走「DELETE 旧行 + INSERT 新行」，
+        因此不换 rowid、不产生 freelist 碎片、不触发 REPLACE 的删除语义。
+        冲突目标直接用 ``TABLE_PRIMARY_KEYS`` 注册的主键元组，复合主键
+        （如 F09633 的 ``(product_no, scene)``）同样精确命中。
+        """
         names = ", ".join(self.column_names)
         placeholders = ", ".join("?" for _ in self.column_names)
-        return (f"INSERT OR REPLACE INTO {table_name} ({names}) "
-                f"VALUES ({placeholders})")
+        conflict_target = ", ".join(self.primary_key_columns)
+        pk = set(self.primary_key_columns)
+        updates = [c for c in self.column_names if c not in pk]
+        if not updates:
+            # 全主键表没有可更新列：冲突即保留旧行，同样是「每主键一行」。
+            return (f"INSERT INTO {table_name} ({names}) "
+                    f"VALUES ({placeholders}) "
+                    f"ON CONFLICT({conflict_target}) DO NOTHING")
+        set_clause = ", ".join(f"{c} = excluded.{c}" for c in updates)
+        return (f"INSERT INTO {table_name} ({names}) "
+                f"VALUES ({placeholders}) "
+                f"ON CONFLICT({conflict_target}) DO UPDATE SET {set_clause}")
 
     def delete_expired_sql(self, table_name: str) -> str:
         return f"DELETE FROM {table_name} WHERE {self.time_column} < ?"

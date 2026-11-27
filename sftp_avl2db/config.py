@@ -101,7 +101,7 @@ class RetentionConfig:
     # N=每天只清 1/N 分表、N 天轮完。固定表不参与轮转，仍每天全清一次。
     # 每个 AVL 独立取值，无项目级兜底。
     purge_cycle_days: int
-    # 全量替换模式：0=关闭（按主键 INSERT OR REPLACE 追加）；
+    # 全量替换模式：0=关闭（按主键 upsert 原地覆盖）；
     # 1=开启（写入最新 AVL 前 DROP 掉本 AVL 全部目标表并按同一 DDL 重建）。
     # 全局键 AVL_DROP_BEFORE_INSERT 打底，可用 <AVL>_DROP_BEFORE_INSERT 覆盖。
     drop_before_insert: int

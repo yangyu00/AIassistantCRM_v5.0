@@ -69,7 +69,7 @@ main.py ──> log/INFO_*.log、log/ERROR_*.log（在线进程日志写入，�
 | 维表写入 | `local_excel2db/registry.json` | `load_registry()` | 配置损坏退出码 2 |
 | 在线服务 | 项目根 `.env` | `app_config.load_config()` | 端口键 `CRM_PORT`，默认 `8990`；`LOG_DIR`、`MARKET_ASSISTANT_URL` 仍是 `main.py` 顶部常量，端口非法时启动 fail-fast |
 
-**根 `.env` 与各包 `.env` 同语法**：只认整行 `#` 注释与 `KEY=VALUE`，不支持引号、行内注释、`${VAR}` 插值；都不读系统环境变量。仓库随附的 `.env` 为实际生效字符串；`.env.example` 是带注释的键模板，其中 `sftp_avl2db/.env.example` 与同目录 `.env` 不同（键集合与 `F09591_BATCH_SIZE` 取值均有差异，见第 10.2 节）；改完配置重启对应进程生效（配置对象首次加载后冻结）。
+**根 `.env` 与各包 `.env` 同语法**：只认整行 `#` 注释与 `KEY=VALUE`，不支持引号、行内注释、`${VAR}` 插值；都不读系统环境变量。仓库随附的 `.env` 为实际生效字符串；`.env.example` 是带注释的键模板，其中 `sftp_avl2db/.env.example` 与同目录 `.env` 只差键集合（`.env` 另含 8 个可选的 `<AVL>_DROP_BEFORE_INSERT` 覆盖键，见第 10.2 节），68 个必需键逐键同值；改完配置重启对应进程生效（配置对象首次加载后冻结）。
 
 关键键名：
 
@@ -218,7 +218,7 @@ docker run -d --name crm -p 8990:8990 aiassistantcrm:v5.0 full
 
 ### 10.2 凭据替换（首次部署必做）
 
-仓库随附的项目根、`IOP/`、`services/`、`call_stat/` 四对 `.env` 与 `.env.example` 逐键同值；`sftp_avl2db/` 一对不同：`.env` 比 `.env.example` 多 8 个可选的 `<AVL>_DROP_BEFORE_INSERT` 覆盖键（诊断 8 张表均为 `1`），且 `F09591_BATCH_SIZE` 在 `.env` 为 `10000`、在 `.env.example` 为 `5000`。`IOP/config.py::_SPECS` 里还内置了一份实际生效的 token 端点地址与凭据。因此直接 `cp .env.example .env` 会原样带入仓库里的明文串，必须逐项替换：
+仓库随附的项目根、`IOP/`、`services/`、`call_stat/` 四对 `.env` 与 `.env.example` 逐键同值；`sftp_avl2db/` 一对只差键集合：`.env` 比 `.env.example` 多 8 个可选的 `<AVL>_DROP_BEFORE_INSERT` 覆盖键（诊断 8 张表均为 `1`），68 个必需键逐键同值（其中 `F09591_BATCH_SIZE` 与 `F09633_BATCH_SIZE` 均为 `100000`）。`IOP/config.py::_SPECS` 里还内置了一份实际生效的 token 端点地址与凭据。因此直接 `cp .env.example .env` 会原样带入仓库里的明文串，必须逐项替换：
 
 | 文件 | 要替换的键 |
 |---|---|

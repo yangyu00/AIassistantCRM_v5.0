@@ -85,7 +85,7 @@ runtime/
 | 文件 | 作用 |
 |---|---|
 | `.env` | 与 `config.py` 同目录，日常改这个；`repr` 自动屏蔽 `SFTP_PASSWORD` |
-| `.env.example` | 带注释的 68 个必需键模板；与 `.env` 不同：缺少 8 个可选的 `<AVL>_DROP_BEFORE_INSERT` 覆盖键，且 `F09591_BATCH_SIZE` 为 `5000`（`.env` 为 `10000`）；新环境复制后需按第 5 节补齐 |
+| `.env.example` | 带注释的 68 个必需键模板；与 `.env` 只差键集合：缺少 8 个可选的 `<AVL>_DROP_BEFORE_INSERT` 覆盖键，68 个必需键取值一致（`F09591` / `F09633` 的 `BATCH_SIZE` 均为 `100000`）；新环境复制后需按第 5 节补齐覆盖键 |
 | `config.py::_AVLS` | `(AVL 名, 项目名)` 声明表；AVL 名同时是文件前缀、db 文件名与 `.env` 键前缀 |
 | `avl_specs.py` | 每个 AVL 的静态声明：项目、schema 名、解析器、是否分表；`table_name()` 表名规则、`shard_index()` 分表口径、`validate_specs()` 启动校验 |
 | `table_schemas.py` | `TABLE_SCHEMAS`（列定义）与 `TABLE_PRIMARY_KEYS`（主键），供建表 DDL、幂等与解析器列数校验 |
@@ -115,7 +115,7 @@ runtime/
 
 ### 68 个键的完整清单与当前生效值
 
-`sftp_avl2db/.env`（随仓库入库）的实际内容如下：下表列出 68 个必需键的当前生效值；`.env` 另含 8 个可选的 `<AVL>_DROP_BEFORE_INSERT` 覆盖键（诊断 8 张表均为 `1`），不在下表。仅凭 `<AVL>_*` 模板无法写出这份文件，重建时照下表逐键落盘；新环境复制 `.env.example` 后需补齐覆盖键、核对 `F09591_BATCH_SIZE` 并替换凭据。
+`sftp_avl2db/.env`（随仓库入库）的实际内容如下：下表列出 68 个必需键的当前生效值；`.env` 另含 8 个可选的 `<AVL>_DROP_BEFORE_INSERT` 覆盖键（诊断 8 张表均为 `1`），不在下表。仅凭 `<AVL>_*` 模板无法写出这份文件，重建时照下表逐键落盘；新环境复制 `.env.example` 后需补齐覆盖键并替换凭据。
 
 **SFTP 公共 5 项**
 
@@ -146,14 +146,14 @@ runtime/
 | `F09554` | 10000 | 3 | 3 | 900 | 1 | — |
 | `F09555` | 10000 | 3 | 3 | 900 | 1 | — |
 | `F09556` | 10000 | 3 | 3 | 900 | 1 | — |
-| `F09591` | 10000 | 3 | 3 | 900 | 7 | 128 |
+| `F09591` | 100000 | 3 | 3 | 900 | 7 | 128 |
 | `F09627` | 10000 | 365 | 3 | 900 | 1 | — |
 | `F09628` | 10000 | 365 | 3 | 900 | 1 | — |
 | `F09629` | 10000 | 365 | 3 | 900 | 1 | — |
 | `F09630` | 10000 | 365 | 3 | 900 | 1 | — |
 | `F09631` | 10000 | 365 | 3 | 900 | 1 | — |
 | `F09632` | 10000 | 365 | 3 | 900 | 1 | — |
-| `F09633` | 10000 | 365 | 3 | 900 | 7 | 128 |
+| `F09633` | 100000 | 365 | 3 | 900 | 7 | 128 |
 | `F09635` | 10000 | 365 | 3 | 900 | 1 | — |
 
 **分表 2 项**：`F09591_NUM_TABLES=128`、`F09633_NUM_TABLES=128`。只有这两个 AVL 有 `NUM_TABLES` 键，固定表不配（代码里 `num_tables=0`）。
@@ -162,7 +162,7 @@ runtime/
 
 ### 全量替换模式（`AVL_DROP_BEFORE_INSERT`）
 
-默认 `0`：`SqliteSink.write()` 仍按主键 `INSERT OR REPLACE` 追加，历史行由 `cleanup_expired()` 按 `DATA_EXPIRE_DAYS` 管控。
+默认 `0`：`SqliteSink.write()` 仍按主键 `INSERT ... ON CONFLICT DO UPDATE`（upsert） 追加，历史行由 `cleanup_expired()` 按 `DATA_EXPIRE_DAYS` 管控。
 
 设为 `1`：每个 AVL 文件**写入前**，`write()` 先对该 AVL 布局枚举出的全部目标表执行 `DROP TABLE IF EXISTS`，再用同一份建表 DDL 立即重建，然后才写入本批记录。分表 AVL 会一次重建全部 128 张分表；`_avl_meta` 是批次水位表、不进 layout，保留不动。效果是「表里只保留最新 AVL 的数据」，上游不再下发的主键不会残留，也不需要靠新鲜度窗口挡旧行。
 
@@ -188,7 +188,7 @@ runtime/
 - 每个 `{AVL}.db` 另有一张 `_avl_meta`（不进 layout、不参与分表路由与过期清理）：`SqliteSink.write()` 成功提交后按文件名日期登记 `latest_file_date` / `latest_op_time`，只在日期不早于已记录值时推进，补跑旧文件不回退；在线侧按同名只读，用来限定查询的新鲜度窗口（见 `services/README.md` 第 4.1 节）。元数据写失败只记 `stats.errors`，不回滚业务数据、不阻断清单登记。`write()` 产出 0 条记录时不登记水位，避免空批次把 `latest_op_time` 写成空串。
 - 表名不用声明：固定表 = `{AVL}`，分表 = `{AVL}_{分表号}`，由 `avl_specs.table_name()` 统一派生。
 - **回捞商机**（`F09554/55/56`）：一行一条、无续行，逻辑 12 列；`product_no` 为 `TEXT NOT NULL` 主键，为空跳过；列数不足补空串、超出截断，所有列原样保留文本（末列 `city_id` 声明为 INTEGER，由 SQLite 列亲和性转换）。
-- **控损**（`F09591`）：逻辑 5 列，`strategy_name` 含裸换行需续行拼接；`product_no` 为主键与分表键。单个 `F09591.db` 内 128 张表 `F09591_0 … 127`，路由为 `zlib.crc32(product_no.encode("utf-8")) % NUM_TABLES`。写入用 `INSERT OR REPLACE`，批量补跑按文件名日期升序。
+- **控损**（`F09591`）：逻辑 5 列，`strategy_name` 含裸换行需续行拼接；`product_no` 为主键与分表键。单个 `F09591.db` 内 128 张表 `F09591_0 … 127`，路由为 `zlib.crc32(product_no.encode("utf-8")) % NUM_TABLES`。写入用 `INSERT ... ON CONFLICT DO UPDATE`（upsert），批量补跑按文件名日期升序。
 - **诊断·用户场景对应关系**（`F09633`）：诊断 8 表里唯一带 `product_no` 的表，千万级行，同样按 `product_no` 分 128 张表 `F09633_0 … 127`，分表数用 `F09633_NUM_TABLES` 单独配置。
 - 改列名 / 列顺序只改 `table_schemas.py`，改 AVL 归属 / 解析器只改 `avl_specs.py` 与 `config.py::_AVLS`，改主键只改 `TABLE_PRIMARY_KEYS`，改分表数只改 `.env`；每个 AVL 只有一个 db 文件，不存在跨库路由。分表路由用的 `product_no` 列下标由 `build_layout()` 从注册的表结构推导。
 
@@ -225,9 +225,9 @@ runtime/
 | 4 | `city_id` | `TEXT` | 地市 |
 | 5 | `strategy_name` | `TEXT` | 含裸换行的自定义标签话术；**在线侧唯一消费列** |
 
-续行解析（`parsers/continuation.py`）：以行首 `YYYY-MM-DD` 判定新记录；`strip_eol()` 只去 `\n`、再只剥**一个** ASCII 反斜杠（不能用 `rstrip('\\')`，否则 GBK 尾字节 `0x5C` 的汉字会被削成乱码）；起始行 `>=5` 列取前 5 列、`==4` 列补空 `strategy_name`、`<4` 列整条跳过；空物理行与文件开头孤立续行跳过；最后一条单独入库。单个 `F09591.db` 内 128 张表 `F09591_0 … 127`，路由 `zlib.crc32(product_no.encode("utf-8")) % NUM_TABLES`，写入用 `INSERT OR REPLACE`，批量补跑按文件名日期升序。
+续行解析（`parsers/continuation.py`）：以行首 `YYYY-MM-DD` 判定新记录；`strip_eol()` 只去 `\n`、再只剥**一个** ASCII 反斜杠（不能用 `rstrip('\\')`，否则 GBK 尾字节 `0x5C` 的汉字会被削成乱码）；起始行 `>=5` 列取前 5 列、`==4` 列补空 `strategy_name`、`<4` 列整条跳过；空物理行与文件开头孤立续行跳过；最后一条单独入库。单个 `F09591.db` 内 128 张表 `F09591_0 … 127`，路由 `zlib.crc32(product_no.encode("utf-8")) % NUM_TABLES`，写入用 `INSERT ... ON CONFLICT DO UPDATE`（upsert），批量补跑按文件名日期升序。
 
-两类库都以主键 + `INSERT OR REPLACE` 保证幂等，`op_time` 不进主键（每日全量覆盖最新批次）；所有 SQLite 连接只设 `PRAGMA journal_mode = WAL` 与 `PRAGMA synchronous = NORMAL`。
+两类库都以主键 + `INSERT ... ON CONFLICT DO UPDATE`（upsert） 保证幂等，`op_time` 不进主键（每日全量覆盖最新批次）；所有 SQLite 连接只设 `PRAGMA journal_mode = WAL` 与 `PRAGMA synchronous = NORMAL`。
 
 ### 控损缺文件兜底（`op_time` +1 天）
 
@@ -266,7 +266,7 @@ runtime/
 | `F09633` | 用户场景对应关系（**分表**） | `conf_user_scene` | `op_time, user_id, product_no, scene, reason` | `product_no, scene` |
 | `F09635` | 标签ID-标签名 | `tagid_tagname` | `op_time, tag_id, tag_name, unknown1, unknown2` | `tag_name` |
 
-主键口径：`op_time` 不进主键，维表每日全量按主键 `INSERT OR REPLACE` 覆盖最新批次；主键列自动补 `NOT NULL`。`F09635` 以 `tag_name` 为主键（在线侧查询键同）：诊断话术里出现的是 `#标签名&`，按标签名反查 `tag_id`（= IOP 的 `ITEMCODE`）才能取到 `ITEMVALUE`，写入侧与在线侧 `TABLE_PRIMARY_KEYS` 同步。**部署提示**：`CREATE TABLE IF NOT EXISTS` 不会改写已有表的主键。`F09631` / `F09632` 把话术全文纳入主键，避免重复行或「同一产品 + 同一拒绝原因对应两条不同挽留话术」被 REPLACE 丢行。`F09633` 主键 `(product_no, scene)` 与分表键共用 `product_no`，同一号码一定落在同一分表。`F09629` 的 `business_name` 含【】内外文本，业务侧按【】内为资费名称、【】外为资费摘要拆分。
+主键口径：`op_time` 不进主键，维表每日全量按主键 `INSERT ... ON CONFLICT DO UPDATE`（upsert） 覆盖最新批次；主键列自动补 `NOT NULL`。`F09635` 以 `tag_name` 为主键（在线侧查询键同）：诊断话术里出现的是 `#标签名&`，按标签名反查 `tag_id`（= IOP 的 `ITEMCODE`）才能取到 `ITEMVALUE`，写入侧与在线侧 `TABLE_PRIMARY_KEYS` 同步。**部署提示**：`CREATE TABLE IF NOT EXISTS` 不会改写已有表的主键。`F09631` / `F09632` 把话术全文纳入主键，避免重复行或「同一产品 + 同一拒绝原因对应两条不同挽留话术」被 REPLACE 丢行。`F09633` 主键 `(product_no, scene)` 与分表键共用 `product_no`，同一号码一定落在同一分表。`F09629` 的 `business_name` 含【】内外文本，业务侧按【】内为资费名称、【】外为资费摘要拆分。
 
 离线复跑（8 个 AVL 各 10 行样例，日期按文件名取 `20261120`）：
 
@@ -286,19 +286,20 @@ done
 1. `FlatColumnParser` 是唯一的 flat 解析器，商机回捞与诊断 8 张维表共用：按 UTF-8 读取（`errors="ignore"`），只去行尾换行 / BOM、保留首尾制表符与空列，按 `\t` 切分后补齐或截断到 `profile.columns` 声明的列数。所有列原样保留文本、不做数值转换；空主键判定的列下标由 `build_parser()` 按 `profile.primary_key` 换算。
 2. 控损续行：规则见第 7 节「控损（`F09591`）」条目，此处不重复。
 3. `sink/schema.py` 建表 SQL 保持表级 `PRIMARY KEY (...)` 声明形式；主键列由 `TABLE_PRIMARY_KEYS` 传入，可单列可复合，自动补 `NOT NULL`。
-4. 所有 SQLite 连接统一只设 `PRAGMA journal_mode = WAL` 与 `PRAGMA synchronous = NORMAL`；写入按 `BATCH_SIZE` 分桶、逐桶满批提交，使用 `INSERT OR REPLACE` + 主键幂等。
+4. 所有 SQLite 连接统一只设 `PRAGMA journal_mode = WAL` 与 `PRAGMA synchronous = NORMAL`；写入按 `BATCH_SIZE` 分桶、逐桶满批提交，使用按 `TABLE_PRIMARY_KEYS` 注册主键生成的 `INSERT ... ON CONFLICT DO UPDATE`（upsert）原地覆盖。
 5. 分表口径 `zlib.crc32(product_no) % NUM_TABLES`；`p_no` 为空时取 `"NULL"`（解析器已跳过空主键，属不可达分支）。
+6. upsert 与旧的 `INSERT OR REPLACE` 业务语义一致（同一主键只保留最新一条、非主键列全取本批值），但不删旧行、不换 rowid、不产生 freelist 碎片；冲突目标直接用 `TABLE_PRIMARY_KEYS` 的主键元组（可为复合主键），只更新非主键列，需要 SQLite >= 3.24。`F09591` / `F09633` 的 `BATCH_SIZE=100000` 把满批提交次数降到约 1/10，代价是 128 个分桶的行缓存峰值放大约 10 倍、单事务 WAL 更大，需按可用内存评估，必要时回退到 `30000~50000`。
 
 ## 10. 拉取不变量
 
 - `runtime/state/{AVL}.fetched` 记录已成功入库的远程文件名：每轮先跳过清单命中者，入库成功后才登记；失败不登记、本地文件保留、下一轮自动重试。
 - `runtime/state/{AVL}.lock` 非阻塞单实例锁，拿不到立即失败；平台无可用锁库时明确报错。
-- 所有任务按 `TABLE_PRIMARY_KEYS` 注册的主键 + `INSERT OR REPLACE` 保证幂等：商机回捞 / 控损为 `product_no`，诊断维表为各自业务定位键（可复合）。
+- 所有任务按 `TABLE_PRIMARY_KEYS` 注册主键做 `INSERT ... ON CONFLICT DO UPDATE`（upsert）保证幂等：商机回捞 / 控损为 `product_no`，诊断维表为各自业务定位键（可复合）。
 - `exists()` 三态：`False` → INFO「远程文件尚未生成」；`FileNotFoundError` → 同 `False`；其他异常 → ERROR「stat 远程文件出错」。后两者跳过、不登记清单。
 
 ## 11. 分表 db 的库表清理降频
 
-`op_time` 不在主键里、没有索引，主键又是 `INSERT OR REPLACE` 覆盖最新批次，过期清理的成本主要在「全表扫」。用每个 AVL 自己的 `<AVL>_PURGE_CYCLE_DAYS` 降频：
+`op_time` 不在主键里、没有索引，主键又是 upsert 覆盖最新批次，过期清理的成本主要在「全表扫」。用每个 AVL 自己的 `<AVL>_PURGE_CYCLE_DAYS` 降频：
 
 | 取值 | 行为 |
 |---|---|
@@ -313,7 +314,7 @@ done
 - 单次 `--date` 补跑强制全量清（`cleanup_expired(force_full=True)`）。
 - `purge_expired(cutoff, tables=None)` 不传 `tables` 时全量清；传 `tables` 时只清指定表（测试替身与离线复跑用）。
 
-每张表每 `N` 天判定一次，`cutoff` 按清理当天算，库内峰值约 `DATA_EXPIRE_DAYS + N - 1` 天；清理当天事务和 WAL 会比日常大。保留期短的分表库建议配 `1~2`，保留期长的配 `7`。主键 REPLACE 下在线侧按主键定位单表 / 单行，晚删的旧行不影响查询结果。
+每张表每 `N` 天判定一次，`cutoff` 按清理当天算，库内峰值约 `DATA_EXPIRE_DAYS + N - 1` 天；清理当天事务和 WAL 会比日常大。保留期短的分表库建议配 `1~2`，保留期长的配 `7`。主键 upsert 下在线侧按主键定位单表 / 单行，晚删的旧行不影响查询结果。
 
 ```bash
 python tests/check_purge_rotation.py
