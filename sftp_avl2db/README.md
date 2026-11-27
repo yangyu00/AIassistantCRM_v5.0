@@ -14,7 +14,8 @@ python -m sftp_avl2db --task F09554
      └─ profiles.build_task()  按 profile 拼出 AssembledTask（全部依赖可注入）
         └─ runner.serve_forever()            拿锁 → 单次/常驻 → 清理 → 释放锁
            ├─ runner.run_once_for_date()     建表、连源、遍历该 AVL 的前缀
-           │  └─ runner.import_one()        清单 → stat → fetch → parse → write → 登记
+           │  └─ runner.import_one()        预检 → 取文件 → 解析入库 → 登记
+           │     ├─ _precheck() / _fetch()   清单·隔离 / stat·下载·控损异常文件
            │     ├─ config.remote_name_for()   拼远程文件名（唯一来源）
            │     ├─ parsers.*.parse()          生成器产出逻辑记录
            │     ├─ sink.SqliteSink.write()    按 layout 分桶、满批 commit
@@ -164,15 +165,15 @@ runtime/
 
 默认 `0`：`SqliteSink.write()` 仍按主键 `INSERT ... ON CONFLICT DO UPDATE`（upsert） 追加，历史行由 `cleanup_expired()` 按 `DATA_EXPIRE_DAYS` 管控。
 
-设为 `1`：每个 AVL 文件**写入前**，`write()` 先对该 AVL 布局枚举出的全部目标表执行 `DROP TABLE IF EXISTS`，再用同一份建表 DDL 立即重建，然后才写入本批记录；`_avl_meta` 是批次水位表、不进 layout，保留不动。例外是「分表且开启全量替换」的 `F09633`：`profiles.build_task()` 自动传 `atomic_swap=True`，`write()` 走 `_write_atomic_swap()`，先灌 `{AVL}_stage_{分表号}` 套，再在单个事务把 128 组当前套 RENAME 成 `{AVL}_old_{分表号}`、stage 套 RENAME 成当前套并推进 `_avl_meta` 水位，最后释放 old 套。效果是「表里只保留最新 AVL 的数据」，上游不再下发的主键不会残留，也不需要靠新鲜度窗口挡旧行。
+设为 `1`：每个 AVL 文件**写入前**，`write()` 先对该 AVL 布局枚举出的全部目标表执行 `DROP TABLE IF EXISTS`，再用同一份建表 DDL 立即重建，然后才写入本批记录；`_avl_meta` 是批次水位表、不进 layout，保留不动。例外是「分表且开启全量替换」的 `F09633`：`profiles.build_task()` 自动传 `atomic_swap=True`，`write()` 走 `_write_atomic_swap()`，以纯 `INSERT` 灌 `{AVL}_stage_{分表号}` 套，灌完后一次性建非唯一 `product_no` 索引，再在单个事务把 128 组当前套 RENAME 成 `{AVL}_old_{分表号}`、stage 套 RENAME 成当前套并推进 `_avl_meta` 水位，最后释放 old 套。索引名带本轮 token：`ALTER TABLE RENAME` 不改索引名，固定名会在下一轮重建 stage 套时与仍挂在 old 套上的同名索引冲突。效果是「表里只保留最新 AVL 的数据」，上游不再下发的主键不会残留，也不需要靠新鲜度窗口挡旧行。
 
-- 作用点在 `sftp_avl2db/sink/sqlite_sink.py::write()`：`F09633` 走 `_write_atomic_swap()`，其余开启全量替换的 AVL 走 `drop_existing()`；`runner.import_one()` 会打一行模式日志。离线自检直调 `build_sink()` 时不传 `atomic_swap`，仍按 DROP 重建断言。
+- 作用点在 `sftp_avl2db/sink/sqlite_sink.py::write()`：`F09633` 走 `_write_atomic_swap()`，其余开启全量替换的 AVL 走 `drop_existing()`。全量替换模式的启动说明与单文件导入前那行模式日志，文案由 sink 的 `startup_notice()` / `write_mode_log()` 提供，runner 只决定何时打印、不描述写入实现；sink 未提供该方法时（测试替身）回落到与 profile 口径一致的通用 DROP 描述。离线自检直调 `build_sink()` 时不传 `atomic_swap`，仍按 DROP 重建断言。
 - 同一轮若导入多个日期文件（常驻模式默认同时兜底前一天与当天），每次 `write()` 都会重建一次，最终只剩最后一个文件的数据——这正是「存入最新 AVL 之前清旧」的语义。
 - 与过期清理互不冲突：`purge_expired()` 仍按 `DATA_EXPIRE_DAYS` 跑；开启模式只是让表在每批写入前先归零。
 - 风险提示：走 `drop_existing()` 的 AVL 里 `DROP` 在写入前已提交，若该批解析 / 写入中途失败，表里会是空表或半批数据，下轮需用 `--force-reload` 重跑补齐；建议配合任务锁与失败告警使用。`F09633` 的原子切换路径在切换前完全不动当前套，导入失败时在线侧仍读上一日全量数据，但需预留当前套 + stage 套两份磁盘空间。
 - 只对部分 AVL 开启时，写 `<AVL>_DROP_BEFORE_INSERT=1` 覆盖全局 `0`，例如只让诊断 8 张表走全量替换。
 
-自检：`python tests/check_drop_before_insert.py`（覆盖关闭 / 开启 / 分表 / 按 AVL 覆盖 / 按业务窗口 / 365 天保留期）。
+自检：`python tests/check_drop_before_insert.py`（覆盖关闭 / 开启 / 分表 / 按 AVL 覆盖 / 按业务窗口 / 365 天保留期）；`python tests/check_f09633_write_optimization.py`（覆盖无物理主键的 DDL / 纯 `INSERT` / 灌完建索引 / 写入侧零删行 / 两轮原子切换索引名不撞 / 在线侧 `reader` 走 `product_no` 索引）；`python tests/check_pain_points_dedup.py`（覆盖上游偶发同键重复行时诊断 `pain_points` 的兜底去重）；`python tests/check_insert_mode.py`（覆盖三种 `insert_mode` 的单点推导 / SQL 文本唯一来源 / 非法组合显式报错 / 装配注入点仍可用）；`python tests/check_runner_refactor.py`（覆盖模式文案由 sink 逐字符提供 / runner 只决定何时打印且替身兜底不变 / `import_one()` 拆分后 SKIP·MISSING·FAILED·OK 四态与清单登记时机 / 控损 0 字节短路）；`python tests/check_db_session.py`（覆盖 `_session()` 的 bulk / 非 bulk PRAGMA 与连接计数 / 异常统一 rollback / 两类错误策略不串 / 九个改造方法的返回值与关键 `WriteStats`）。
 
 ## 6. 新增业务 / 新增 AVL
 
@@ -227,7 +228,7 @@ runtime/
 
 续行解析（`parsers/continuation.py`）：以行首 `YYYY-MM-DD` 判定新记录；`strip_eol()` 只去 `\n`、再只剥**一个** ASCII 反斜杠（不能用 `rstrip('\\')`，否则 GBK 尾字节 `0x5C` 的汉字会被削成乱码）；起始行 `>=5` 列取前 5 列、`==4` 列补空 `strategy_name`、`<4` 列整条跳过；空物理行与文件开头孤立续行跳过；最后一条单独入库。单个 `F09591.db` 内 128 张表 `F09591_0 … 127`，路由 `zlib.crc32(product_no.encode("utf-8")) % NUM_TABLES`，写入用 `INSERT ... ON CONFLICT DO UPDATE`（upsert），批量补跑按文件名日期升序。
 
-两类库都以主键 + `INSERT ... ON CONFLICT DO UPDATE`（upsert） 保证幂等，`op_time` 不进主键（每日全量覆盖最新批次）；所有 SQLite 连接只设 `PRAGMA journal_mode = WAL` 与 `PRAGMA synchronous = NORMAL`。
+两类库都以主键 + `INSERT ... ON CONFLICT DO UPDATE`（upsert） 保证幂等，`op_time` 不进主键（每日全量覆盖最新批次）；连接 PRAGMA 口径见「实现级规格」第 4 条，此处不重复。
 
 ### 控损缺文件兜底（`op_time` +1 天）
 
@@ -263,10 +264,10 @@ runtime/
 | `F09630` | 场景-切入话术 | `scene_qrhuashu` | `op_time, scene, qr_huashu` | `scene` |
 | `F09631` | 产品-营销话术 | `product_yxhuashu` | `op_time, business_type, yx_huashu` | `business_type, yx_huashu` |
 | `F09632` | 产品-挽留话术 | `product_wlhuashu` | `op_time, business_type, reject_reason, wl_huashu` | `business_type, reject_reason, wl_huashu` |
-| `F09633` | 用户场景对应关系（**分表**） | `conf_user_scene` | `op_time, user_id, product_no, scene, reason` | `product_no, scene` |
+| `F09633` | 用户场景对应关系（**分表**） | `conf_user_scene` | `op_time, user_id, product_no, scene, reason` | `product_no, scene`（逻辑主键，不建物理 `PRIMARY KEY`） |
 | `F09635` | 标签ID-标签名 | `tagid_tagname` | `op_time, tag_id, tag_name, unknown1, unknown2` | `tag_name` |
 
-主键口径：`op_time` 不进主键，维表每日全量按主键 `INSERT ... ON CONFLICT DO UPDATE`（upsert） 覆盖最新批次；主键列自动补 `NOT NULL`。`F09635` 以 `tag_name` 为主键（在线侧查询键同）：诊断话术里出现的是 `#标签名&`，按标签名反查 `tag_id`（= IOP 的 `ITEMCODE`）才能取到 `ITEMVALUE`，写入侧与在线侧 `TABLE_PRIMARY_KEYS` 同步。**部署提示**：`CREATE TABLE IF NOT EXISTS` 不会改写已有表的主键。`F09631` / `F09632` 把话术全文纳入主键，避免重复行或「同一产品 + 同一拒绝原因对应两条不同挽留话术」被 REPLACE 丢行。`F09633` 主键 `(product_no, scene)` 与分表键共用 `product_no`，同一号码一定落在同一分表。`F09629` 的 `business_name` 含【】内外文本，业务侧按【】内为资费名称、【】外为资费摘要拆分。
+主键口径：`op_time` 不进主键，主键列自动补 `NOT NULL`；`DROP_BEFORE_INSERT=0` 的业务按主键 `INSERT ... ON CONFLICT DO UPDATE`（upsert）覆盖最新批次，`=1` 的业务先重建表再写入。`F09635` 以 `tag_name` 为主键（在线侧查询键同）：诊断话术里出现的是 `#标签名&`，按标签名反查 `tag_id`（= IOP 的 `ITEMCODE`）才能取到 `ITEMVALUE`，写入侧与在线侧 `TABLE_PRIMARY_KEYS` 同步。**部署提示**：`CREATE TABLE IF NOT EXISTS` 不会改写已有表的主键。`F09631` / `F09632` 把话术全文纳入主键，避免重复行或「同一产品 + 同一拒绝原因对应两条不同挽留话术」被 REPLACE 丢行。`F09633` 逻辑主键 `(product_no, scene)` 与分表键共用 `product_no`，同一号码一定落在同一分表；该表建表 DDL 不声明 `PRIMARY KEY`，空 stage 套灌完后一次性建非唯一 `product_no` 索引，在线查询按 `product_no` 走该索引。上游全量 AVL 保证 `(product_no, scene)` 唯一，写入侧不去重；该唯一性属上游数据契约，仓库内样例只有 10 行、无法据此验证，现状的复合主键 + `OR REPLACE` 此前一直在默默兜底。若上游出现重复行，会原样入库；在线侧 `services/diagnosis/query.py` 对 `pain_points` 按首次出现去重，【痛点诊断】不会输出重复文案，但仍不报错、不告警。`F09629` 的 `business_name` 含【】内外文本，业务侧按【】内为资费名称、【】外为资费摘要拆分。
 
 离线复跑（8 个 AVL 各 10 行样例，日期按文件名取 `20261120`）：
 
@@ -285,16 +286,16 @@ done
 
 1. `FlatColumnParser` 是唯一的 flat 解析器，商机回捞与诊断 8 张维表共用：按 UTF-8 读取（`errors="ignore"`），只去行尾换行 / BOM、保留首尾制表符与空列，按 `\t` 切分后补齐或截断到 `profile.columns` 声明的列数。所有列原样保留文本、不做数值转换；空主键判定的列下标由 `build_parser()` 按 `profile.primary_key` 换算。
 2. 控损续行：规则见第 7 节「控损（`F09591`）」条目，此处不重复。
-3. `sink/schema.py` 建表 SQL 保持表级 `PRIMARY KEY (...)` 声明形式；主键列由 `TABLE_PRIMARY_KEYS` 传入，可单列可复合，自动补 `NOT NULL`。
-4. 所有 SQLite 连接统一只设 `PRAGMA journal_mode = WAL` 与 `PRAGMA synchronous = NORMAL`；写入按 `BATCH_SIZE` 分桶、逐桶满批提交，使用按 `TABLE_PRIMARY_KEYS` 注册主键生成的 `INSERT ... ON CONFLICT DO UPDATE`（upsert）原地覆盖。
+3. `sink/schema.py` 建表 SQL 保持表级 `PRIMARY KEY (...)` 声明形式；主键列由 `TABLE_PRIMARY_KEYS` 传入，可单列可复合，自动补 `NOT NULL`。`NO_PHYSICAL_PRIMARY_KEY` 列出的 schema（当前只有 `conf_user_scene`）只保留逻辑主键，DDL 不含 `PRIMARY KEY`，两列仍补 `NOT NULL`。
+4. 单库连接的生命周期统一由 `SqliteSink._session()` 管理：非 bulk 路径（建表 / DROP 重建 / 过期清理 / 水位登记）只设 `PRAGMA journal_mode = WAL` 与 `PRAGMA synchronous = NORMAL`，且不累计 `stats.connections`；bulk 路径（灌 stage / 原子切换 / 释放 old / `roll_forward_op_time()`）走 `_connect()`，再补 `cache_size = -65536` / `temp_store = MEMORY` / `busy_timeout = 30000`。事务边界仍归调用方：`commit()` 在 `with` 内显式执行；异常统一 rollback 后原样抛出，「记 `stats.errors` 后继续」还是「直接失败」由调用方是否包 `try/except` 决定，不塞进布尔参数。`_write_rows()` 是唯一例外：一轮写入要同时持有多库长连接，自行管理。写入按 `BATCH_SIZE` 分桶、逐桶满批提交。INSERT SQL 文本只在 `sink/schema.py::TableSchema.insert_sql()` 生成；`SqliteSink.__init__()` 按「表是否有物理主键 + 是否全量替换」单点推导本次的 `insert_mode`，调用方不参与拼串：无物理主键 → `plain`（纯 `INSERT`，当前只命中 `F09633`）；有物理主键且全量替换 → `replace`（`INSERT OR REPLACE`，灌重建后的空表）；有物理主键且追加 → `upsert`（按 `TABLE_PRIMARY_KEYS` 注册主键 `INSERT ... ON CONFLICT DO UPDATE` 原地覆盖，需 SQLite >= 3.24）。`build_sink(insert_mode=...)` 仅作装配注入点；无物理主键的表指定 `replace` / `upsert` 会在 `insert_sql()` 显式报错，不静默降级。离线自检直调 `insert_sql(表名)` 不传 mode 时按表能力自行推导。
 5. 分表口径 `zlib.crc32(product_no) % NUM_TABLES`；`p_no` 为空时取 `"NULL"`（解析器已跳过空主键，属不可达分支）。
-6. upsert 在主键冲突时原地更新非主键列：同一主键只保留最新一条、非主键列全取本批值，不删旧行、不换 rowid、不产生 freelist 碎片；冲突目标直接用 `TABLE_PRIMARY_KEYS` 的主键元组（可为复合主键），只更新非主键列，需要 SQLite >= 3.24。`F09591` / `F09633` 的 `BATCH_SIZE=100000` 把满批提交次数降到约 1/10，代价是 128 个分桶的行缓存峰值放大约 10 倍、单事务 WAL 更大，需按可用内存评估，必要时回退到 `30000~50000`。
+6. 非全量替换模式下，upsert 在主键冲突时原地更新非主键列：同一主键只保留最新一条、非主键列全取本批值，不删旧行、不换 rowid、不产生 freelist 碎片；冲突目标直接用 `TABLE_PRIMARY_KEYS` 的主键元组（可为复合主键），只更新非主键列，需要 SQLite >= 3.24。`F09633` 无物理主键，用纯 `INSERT` 灌空 stage 套，不做任何去重或全表扫描：上游全量 AVL 保证 `(product_no, scene)` 唯一，逐行 `DELETE ... WHERE EXISTS` 即使零命中也要对全表做一次索引探测，属纯开销。`F09591` / `F09633` 的 `BATCH_SIZE=100000` 把满批提交次数降到约 1/10，代价是 128 个分桶的行缓存峰值放大约 10 倍、单事务 WAL 更大，需按可用内存评估，必要时回退到 `30000~50000`。
 
 ## 10. 拉取不变量
 
 - `runtime/state/{AVL}.fetched` 记录已成功入库的远程文件名：每轮先跳过清单命中者，入库成功后才登记；失败不登记、本地文件保留、下一轮自动重试。
 - `runtime/state/{AVL}.lock` 非阻塞单实例锁，拿不到立即失败；平台无可用锁库时明确报错。
-- 所有任务按 `TABLE_PRIMARY_KEYS` 注册主键做 `INSERT ... ON CONFLICT DO UPDATE`（upsert）保证幂等：商机回捞 / 控损为 `product_no`，诊断维表为各自业务定位键（可复合）。
+- 非全量替换的任务按 `TABLE_PRIMARY_KEYS` 注册主键做 `INSERT ... ON CONFLICT DO UPDATE`（upsert）保证幂等：商机回捞 / 控损为 `product_no`，诊断维表为各自业务定位键（可复合）。`F09633` 的幂等由「全量替换 + 空 stage 套」保证，行唯一性由上游全量数据契约保证，在线侧只按 `product_no` 读非唯一索引，并对 `pain_points` 按首次出现兜底去重。
 - `exists()` 三态：`False` → INFO「远程文件尚未生成」；`FileNotFoundError` → 同 `False`；其他异常 → ERROR「stat 远程文件出错」。后两者跳过、不登记清单。
 
 ## 11. 分表 db 的库表清理降频

@@ -241,7 +241,7 @@
 - `split_fee_name(text)`：`strip()` 后无括号 → `("", 全文)`；有括号 → 名称取 `group(1) or group(2)`，摘要为**用该正则删掉全部括号**后的剩余文本再 `strip()`。样例 `【五大重点客群】不限量客户10元享40G阈值扩容` → `("五大重点客群", "不限量客户10元享40G阈值扩容")`。
 - `split_multi()` → 去空白、去空项；`pairs_by_position()` 用 `zip_longest(..., fillvalue="")` 按相同下标配对。
 - `dedup()` 按首次出现顺序去重、跳过空值；`extract_scripts(rows, column)` 取列、`strip()` 后 `dedup`。
-- `expand_user_scenes(rows)`：只收 `scene` 非空的 `(scene, reason)`；`intersect_scenes()` 保留交集首次出现顺序，同一场景可贡献多条非空 `REASON` 作为痛点诊断。
+- `expand_user_scenes(rows)`：只收 `scene` 非空的 `(scene, reason)`；`intersect_scenes()` 保留交集首次出现顺序，同一场景可贡献多条非空 `REASON` 作为痛点诊断。主链路 `query.py` 在拿到 `pain_points` 后再过一次 `dedup()`：上游全量 AVL 保证 `(product_no, scene)` 唯一，这一步是上游偶发重复行的兜底，按首次出现去重、不误伤不同文案。
 - `order_scenes_by_priority(scenes, rank_rows)`：`rn` 只能 `int()` 成功才入 ranks；排序键有 RN 为 `(0, rn, index)`、无 RN 为 `(1, 0, index)`；`allow_fallback=False` 时才过滤掉无 RN 场景。返回 `(ordered, ranked_set)`。
 - `expand_retain_pairs(rows)`：按位置配对后**只收 `huashu` 非空**的 `(拒绝原因, 挽留话术)`。
 - `pick_retain_pair(retain_pairs, *, rng=None)`：`retain_pairs` 空 → `None`；否则随机返回一条 `(拒绝原因, 挽留话术)`，按「条」抽取、不拆开配对；`rng` 可注入 `random.Random(seed)` 复现，缺省走全局 `random`。
@@ -256,12 +256,12 @@
 | 1 | `query_many(F09629, where={"product_id": product_id}, limit=1)` | `db_empty:F09629` |
 | 2 | `query_many(F09628, where={"business_type": business_type})` → `dedup(scene)` | `db_empty:F09628` |
 | 3 | `query_many(F09633, where={"product_no": telnum})` → `expand_user_scenes` | `db_empty:F09633` |
-| 4 | `intersect_scenes(user_pairs, product_scenes)` | 交集为空 → `empty_intersection` |
+| 4 | `intersect_scenes(user_pairs, product_scenes)` → `dedup(pain_points)` | 交集为空 → `empty_intersection`；痛点文案按首次出现去重 |
 | 5 | `query_in(F09627, "scene", matched_scenes)` → `order_scenes_by_priority` → `query_in(F09630, "scene", ordered_scenes)`；`qr_map` 只收 `qr_huashu` 非空；`top_scene` 取 `ordered_scenes` 里第一个能查到话术的场景，`top_scene_source` ∈ `rank` / `fallback` / `none` | 任一查询结果为空 → `db_empty:F09627` / `db_empty:F09630` |
 | 6 | `query_many(F09631, where={"business_type": business_type})` → `extract_scripts` | `db_empty:F09631` |
 | 7 | `query_many(F09632, where={"business_type": business_type})` → `expand_retain_pairs` | `db_empty:F09632` |
 
-record 字段固定为 `product_id / telnum / business_name / business_type / fee_name / fee_summary / product_scenes / user_scenes / matched_scenes / pain_points / top_scene / top_scene_source / entry_script / marketing_scripts / retain_pairs`。六项输出 `fee_name, fee_summary, pain_points, entry_script, marketing_scripts, retain_pairs` 全空时 → `empty_output`、返回 `None`。`retain_pairs` 始终保留 F09632 的全量召回（标签替换对全集生效、日志也打印全集），「随机输出一条」只发生在 `build_output_script` 的拼装阶段。
+record 字段固定为 `product_id / telnum / business_name / business_type / fee_name / fee_summary / product_scenes / user_scenes / matched_scenes / pain_points / top_scene / top_scene_source / entry_script / marketing_scripts / retain_pairs`。`pain_points` 在主链路已按首次出现去重（上游同键重复行的兜底）。六项输出 `fee_name, fee_summary, pain_points, entry_script, marketing_scripts, retain_pairs` 全空时 → `empty_output`、返回 `None`。`retain_pairs` 始终保留 F09632 的全量召回（标签替换对全集生效、日志也打印全集），「随机输出一条」只发生在 `build_output_script` 的拼装阶段。
 
 **卖点话术格式转换（`selling_point_script/logic.py`）**
 

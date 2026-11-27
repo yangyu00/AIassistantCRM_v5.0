@@ -7,6 +7,7 @@ from typing import Iterable
 
 ENV_PATH = Path(__file__).with_name(".env")
 RUNTIME_DIR = Path(__file__).with_name("runtime")
+REMOTE_NAME_TMPL = "{prefix}{date}000000.AVL"
 
 # AVL 声明表；项目名仅用于 files/ 与 sqlite_db/ 目录分组，运行参数按 <AVL>_* 声明。
 _AVLS = (
@@ -106,6 +107,21 @@ class RetentionConfig:
     # 全局键 AVL_DROP_BEFORE_INSERT 打底，可用 <AVL>_DROP_BEFORE_INSERT 覆盖。
     drop_before_insert: int
 
+    @classmethod
+    def from_env(cls, v: dict[str, str], key: str, *, global_drop: int
+                 ) -> "RetentionConfig":
+        """按 ``<AVL>_*`` 前缀一次装配全部保留期与批次参数。"""
+        return cls(
+            batch_size=_int(v, f"{key}_BATCH_SIZE"),
+            data_days=_int(v, f"{key}_DATA_EXPIRE_DAYS"),
+            local_file_days=_int(v, f"{key}_LOCAL_FILE_EXPIRE_DAYS"),
+            poll_seconds=_int(v, f"{key}_POLL_INTERVAL_SECONDS"),
+            # 允许 0（每轮全量），但仍是必需键，不是缺省回落值。
+            purge_cycle_days=_int(v, f"{key}_PURGE_CYCLE_DAYS", min_value=0),
+            drop_before_insert=_flag(
+                v, f"{key}_DROP_BEFORE_INSERT", default=global_drop),
+        )
+
 
 @dataclass(frozen=True)
 class TaskProfileConfig:
@@ -123,6 +139,7 @@ class TaskProfileConfig:
     schema: tuple[tuple[str, str], ...]
     schema_name: str                         # table_schemas.py 里的 key
     primary_key: tuple[str, ...]             # TABLE_PRIMARY_KEYS 注册的主键列（可复合）
+    physical_pk: bool                        # 建表 DDL 是否声明 PRIMARY KEY
     parser: str                              # "flat" | "continuation"
     sharded: bool                            # 该 db 内是否按 product_no 分表
     num_tables: int                          # 分表数；固定表为 0
@@ -146,7 +163,9 @@ class TaskProfileConfig:
 def load_profiles(runtime_dir=None) -> dict[str, TaskProfileConfig]:
     """读包内 ``.env``、按 AVL 装配、跑契约校验，返回冻结的 profile 表。"""
     from .avl_specs import spec_of, validate_specs
-    from .table_schemas import TABLE_PRIMARY_KEYS, TABLE_SCHEMAS
+    from .table_schemas import (
+        TABLE_PRIMARY_KEYS, TABLE_SCHEMAS, has_physical_primary_key,
+    )
 
     v = _read_env(ENV_PATH)
     root = Path(runtime_dir) if runtime_dir is not None else RUNTIME_DIR
@@ -175,17 +194,7 @@ def load_profiles(runtime_dir=None) -> dict[str, TaskProfileConfig]:
             project=project,
             file_prefixes=(name,),
             sftp=sftp,
-            retention=RetentionConfig(
-                batch_size=_int(v, f"{key}_BATCH_SIZE"),
-                data_days=_int(v, f"{key}_DATA_EXPIRE_DAYS"),
-                local_file_days=_int(v, f"{key}_LOCAL_FILE_EXPIRE_DAYS"),
-                poll_seconds=_int(v, f"{key}_POLL_INTERVAL_SECONDS"),
-                # 允许 0（每轮全量），但仍是必需键，不是缺省回落值。
-                purge_cycle_days=_int(v, f"{key}_PURGE_CYCLE_DAYS",
-                                      min_value=0),
-                drop_before_insert=_flag(
-                    v, f"{key}_DROP_BEFORE_INSERT", default=global_drop),
-            ),
+            retention=RetentionConfig.from_env(v, key, global_drop=global_drop),
             local_dir=root / "files" / project,
             db_dir=root / "sqlite_db" / project,
             state_dir=root / "state",
@@ -193,10 +202,11 @@ def load_profiles(runtime_dir=None) -> dict[str, TaskProfileConfig]:
             schema=tuple(TABLE_SCHEMAS[spec.schema]),
             schema_name=spec.schema,
             primary_key=tuple(TABLE_PRIMARY_KEYS[spec.schema]),
+            physical_pk=has_physical_primary_key(spec.schema),
             parser=spec.parser,
             sharded=spec.sharded,
             num_tables=_num_tables(v, name) if spec.sharded else 0,
-            remote_name_tmpl="{prefix}{date}000000.AVL",
+            remote_name_tmpl=REMOTE_NAME_TMPL,
         )
 
     validate_specs(profiles)

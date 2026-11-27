@@ -45,6 +45,9 @@ def build_task(profile: TaskProfileConfig, *, logger=None, local_dir=None,
     双套表原子切换（当前恰好只命中 F09633），消除每日全量导入期间在线侧
     读到空表的窗口。显式传 True/False 可强制开启 / 回退到原 DROP 语义。
 
+    写入模式（``plain`` / ``replace`` / ``upsert``）由 sink 按「表能力 +
+    是否全量替换」自行推导，装配层不再计算也不传参。
+
     在线侧 ``services/`` 不需要任何改动：当前套表名仍是 ``{AVL}_{分表号}``，
     切换是同一 db 文件内的 RENAME。
     """

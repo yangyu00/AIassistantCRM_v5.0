@@ -153,14 +153,32 @@ class Avl2DbRunner:
 
     def import_one(self, date_str: str, prefix: str,
                    force: bool = False) -> ImportResult:
-        """处理一个前缀在这一天的文件，返回结构化结果。"""
+        """处理一个前缀在这一天的文件，返回结构化结果。
+
+        四段流水线：预检 → 取文件 → 解析入库 → 登记。前三段任一返回
+        ``ImportResult`` 即短路；只有写库成功后才登记 ``fetched`` 清单。
+        """
         remote_name = remote_name_for(self.profile, prefix, date_str)
-        remote_path = self._remote_path(remote_name)
         local_path = self._local_path(remote_name)
 
+        skipped = self._precheck(remote_name, force)
+        if skipped is not None:
+            return skipped
+        fetched = self._fetch(remote_name, self._remote_path(remote_name),
+                              local_path)
+        if fetched is not None:
+            return fetched
+        return self._import_local(remote_name, prefix, local_path)
+
+    # ---- ① 预检：清单 / 失败隔离 --------------------------------------
+
+    def _precheck(self, remote_name: str,
+                  force: bool) -> ImportResult | None:
+        """命中即短路返回 SKIP；None 表示可以继续下载。"""
         if self.state.has(remote_name) and not force:
             self.log.info(f"SKIP 已在清单中，跳过: {remote_name}")
-            return ImportResult(remote_name, ImportStatus.SKIP, detail="已在清单中")
+            return ImportResult(remote_name, ImportStatus.SKIP,
+                                detail="已在清单中")
 
         # P0：DROP 全量替换 AVL 的失败隔离闸门。命中即停，不再下载 / 解析 /
         # 入库，避免 8000 万行文件被常驻轮询反复重灌。人工 --force-reload
@@ -173,7 +191,13 @@ class Avl2DbRunner:
                 f"{self._quarantine_path()} 中该行或用 --force-reload 重跑")
             return ImportResult(remote_name, ImportStatus.SKIP,
                                 detail="DROP 失败隔离，停止自动重试")
+        return None
 
+    # ---- ② 取文件：stat 三态 / 下载 / 控损异常文件 --------------------
+
+    def _fetch(self, remote_name: str, remote_path: str,
+               local_path: Path) -> ImportResult | None:
+        """None 表示本地文件已就绪，可以进入解析入库。"""
         # stat 三态：存在 / 尚未生成 / 其他错误
         try:
             present = self.source.exists(remote_path)
@@ -181,7 +205,8 @@ class Avl2DbRunner:
             present = False
         except Exception as e:
             self.log.error(f"stat 远程文件出错 {remote_name}: {e}")
-            return ImportResult(remote_name, ImportStatus.FAILED, detail=f"stat: {e}")
+            return ImportResult(remote_name, ImportStatus.FAILED,
+                                detail=f"stat: {e}")
         if not present:
             self.log.info(f"远程文件尚未生成: {remote_name}")
             return ImportResult(remote_name, ImportStatus.MISSING)
@@ -191,43 +216,44 @@ class Avl2DbRunner:
             self.source.fetch(remote_path, local_path)
         except Exception as e:
             self.log.error(f"下载失败 {remote_name}: {e}")
-            return ImportResult(remote_name, ImportStatus.FAILED, detail=f"get: {e}")
+            return ImportResult(remote_name, ImportStatus.FAILED,
+                                detail=f"get: {e}")
+        return self._reject_loss_control_file(remote_name, local_path)
 
-        # 控损：远端存在但拉下来是 0 字节，视为「文件有问题」。不写库、
-        # 不登记清单、不推进水位，交给缺文件兜底处理，下轮继续重试。
-        if self._is_loss_control():
-            try:
-                empty_file = local_path.stat().st_size == 0
-            except OSError:
-                empty_file = True
-            if empty_file:
-                self.log.error(
-                    f"控损 AVL 为空文件(0 字节)，按异常文件处理: {remote_name}")
-                return ImportResult(remote_name, ImportStatus.FAILED,
-                                    detail="空文件(0 字节)")
+    def _reject_loss_control_file(self, remote_name: str,
+                                  local_path: Path) -> ImportResult | None:
+        """控损：远端存在但拉下来是 0 字节，视为「文件有问题」。
 
+        不写库、不登记清单、不推进水位，交给缺文件兜底处理，下轮继续重试。
+        """
+        if not self._is_loss_control():
+            return None
+        try:
+            empty_file = local_path.stat().st_size == 0
+        except OSError:
+            empty_file = True
+        if empty_file:
+            self.log.error(
+                f"控损 AVL 为空文件(0 字节)，按异常文件处理: {remote_name}")
+            return ImportResult(remote_name, ImportStatus.FAILED,
+                                detail="空文件(0 字节)")
+        return None
+
+    # ---- ③ 解析入库 ----------------------------------------------------
+
+    def _import_local(self, remote_name: str, prefix: str,
+                      local_path: Path) -> ImportResult:
         try:
             # 解析层是生成器；写入层按 BATCH_SIZE 分桶、逐批 commit
             rows = self.parser.parse(local_path)
             if self._drop_before_insert():
-                if bool(getattr(self.sink, "atomic_swap", False)):
-                    self.log.info(
-                        f"[{prefix}] 全量替换模式=1（双套表原子切换）："
-                        f"{remote_name} 先灌入 staging 套，全部完成后单事务 "
-                        "RENAME 切换，在线侧全程读当前套、无空窗")
-                else:
-                    self.log.info(
-                        f"[{prefix}] 全量替换模式=1：{remote_name} 写入前 "
-                        "DROP 并重建全部目标表，只保留本批 AVL 数据；"
-                        "导入期间在线侧会读到空表（未启用双套表切换）")
+                self.log.info(self._write_mode_log(remote_name, prefix))
             written = self.sink.write(remote_name, rows, layout=self.layout)
             # 控损：文件非空但解析不出有效记录，同样视为「文件有问题」。
             # 此时不登记清单，下轮还能重试；水位也不会被空批次推进。
-            if self._is_loss_control() and written <= 0:
-                self.log.error(
-                    f"控损 AVL 无有效记录，按异常批次处理: {remote_name}")
-                return ImportResult(remote_name, ImportStatus.FAILED,
-                                    detail="无有效记录(空批次)")
+            rejected = self._reject_loss_control_batch(remote_name, written)
+            if rejected is not None:
+                return rejected
             self._log_import_done(remote_name, prefix)
             # ↑ 成功后才登记清单；下面任何异常都不 add，下轮会重试
             self.state.add(remote_name)
@@ -240,7 +266,34 @@ class Avl2DbRunner:
             # 解析 / 写入异常：按失败处理，不登记清单，下轮重试
             self.log.error(
                 f"解析入库失败 {remote_name}: {e}\n{traceback.format_exc()}")
-            return ImportResult(remote_name, ImportStatus.FAILED, detail=f"import: {e}")
+            return ImportResult(remote_name, ImportStatus.FAILED,
+                                detail=f"import: {e}")
+
+    def _reject_loss_control_batch(self, remote_name: str,
+                                   written: int) -> ImportResult | None:
+        """控损空批次：写库返回 0 行时按异常批次处理，下轮重试。"""
+        if not self._is_loss_control() or written > 0:
+            return None
+        self.log.error(f"控损 AVL 无有效记录，按异常批次处理: {remote_name}")
+        return ImportResult(remote_name, ImportStatus.FAILED,
+                            detail="无有效记录(空批次)")
+
+    # ---- 模式文案：由 sink 维护，runner 只决定何时打印 ------------------
+
+    def _write_mode_log(self, remote_name: str, prefix: str) -> str:
+        describe = getattr(self.sink, "write_mode_log", None)
+        if callable(describe):
+            return describe(remote_name, prefix)
+        # 测试替身 / 其它 sink 实现：只保留与 profile 口径一致的通用描述。
+        return (f"[{prefix}] 全量替换模式=1：{remote_name} 写入前 "
+                "DROP 并重建全部目标表，只保留本批 AVL 数据；"
+                "导入期间在线侧会读到空表（未启用双套表切换）")
+
+    def _startup_mode_notice(self) -> str:
+        describe = getattr(self.sink, "startup_notice", None)
+        if callable(describe):
+            return describe()
+        return "导入期间表为空、在线侧静默降级，请安排在业务低峰并公告窗口"
 
     def _log_import_done(self, filename: str, prefix: str) -> None:
         """单文件入库完成计数。"""
@@ -478,15 +531,11 @@ class Avl2DbRunner:
                 f"轮询间隔={self.profile.retention.poll_seconds}s "
                 f"前缀={list(self.profile.file_prefixes)}")
             if self._drop_before_insert():
-                swap = bool(getattr(self.sink, "atomic_swap", False))
                 self.log.info(
                     f"[{self.profile.name}] 全量替换模式：轮询只负责检查远程文件"
                     "是否到达，已入库文件由 .fetched 清单跳过，不是导入调度周期；"
                     "单文件全量导入耗时可能远超轮询间隔。"
-                    + ("已启用双套表原子切换：导入期间在线侧持续读上一日全量数据，"
-                       "无空窗；切换事务为秒级，磁盘需预留两套数据空间"
-                       if swap else
-                       "导入期间表为空、在线侧静默降级，请安排在业务低峰并公告窗口"))
+                    + self._startup_mode_notice())
 
             if only_date:
                 n = self.run_once_for_date(only_date,

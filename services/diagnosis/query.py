@@ -132,7 +132,10 @@ async def build_diagnosis_record(product_id, telnum, *, custom_label_info=None):
         return db_empty(AVL_CONF_USER_SCENE)
 
     # ④ 交集：痛点诊断保留全部交集场景的 REASON；交集为空即诊断不适用
+    # 上游全量 AVL 保证 (product_no, scene) 唯一，但写入侧已不做去重：这里
+    # 按首次出现兜底一次，避免上游偶发重复行让【痛点诊断】输出重复文案。
     matched_scenes, pain_points = intersect_scenes(user_pairs, product_scenes)
+    pain_points = dedup(pain_points)
     if not matched_scenes:
         return _miss(MISS_REASON_EMPTY_INTERSECTION)
 

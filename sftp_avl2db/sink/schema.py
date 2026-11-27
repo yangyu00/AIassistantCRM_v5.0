@@ -2,7 +2,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Final, Iterable
+from typing import Final, Iterable, Literal
+
+
+# 一次写入的三种 SQL 语义；全仓库唯一的取值枚举。
+InsertMode = Literal["plain", "replace", "upsert"]
+INSERT_MODES: Final[tuple[str, ...]] = ("plain", "replace", "upsert")
 
 
 # 每个 {AVL}.db 内的批次元数据表（写入侧维护，在线侧按同名只读）。
@@ -45,6 +50,7 @@ class TableSchema:
     columns: tuple[tuple[str, str], ...]
     primary_key: str | tuple[str, ...] = "product_no"
     time_column: str = "op_time"
+    physical_pk: bool = True
 
     @classmethod
     def from_profile(cls, profile) -> "TableSchema":
@@ -53,6 +59,7 @@ class TableSchema:
             columns=tuple(tuple(c) for c in profile.schema),
             primary_key=getattr(profile, "primary_key", "product_no"),
             time_column=getattr(profile, "time_column", "op_time"),
+            physical_pk=getattr(profile, "physical_pk", True),
         )
 
     @property
@@ -78,32 +85,52 @@ class TableSchema:
         return ", ".join(parts)
 
     def create_table_sql(self, table_name: str) -> str:
+        cols = self.column_ddl()
+        if not self.physical_pk:
+            return f"CREATE TABLE IF NOT EXISTS {table_name} ({cols})"
         pk = ", ".join(self.primary_key_columns)
         return (f"CREATE TABLE IF NOT EXISTS {table_name} "
-                f"({self.column_ddl()}, PRIMARY KEY ({pk}))")
+                f"({cols}, PRIMARY KEY ({pk}))")
 
-    def insert_sql(self, table_name: str) -> str:
-        """主键冲突时原地更新非主键列的 upsert（需 SQLite >= 3.24）。
+    def insert_sql(self, table_name: str,
+                   mode: InsertMode | None = None) -> str:
+        """全部 INSERT SQL 文本的唯一来源，按 ``mode`` 显式生成。
 
-        同一主键只保留最新一条，非主键列全部取本批值；不删除旧行、不换
-        rowid、不产生 freelist 碎片。冲突目标直接用 ``TABLE_PRIMARY_KEYS``
-        注册的主键元组，复合主键
-        （如 F09633 的 ``(product_no, scene)``）同样精确命中。
+        ``plain``   = 纯 INSERT（无唯一约束 / 空表裸灌）
+        ``replace`` = INSERT OR REPLACE（全量替换，灌重建后的空表）
+        ``upsert``  = INSERT ... ON CONFLICT DO UPDATE（按主键原地覆盖，
+                      需 SQLite >= 3.24；同一主键只保留最新一条、非主键列
+                      全取本批值，不删旧行、不换 rowid、不产生 freelist 碎片）
+
+        ``mode=None``（离线自检直接调用时）按表自身能力推导：有物理主键走
+        upsert、无物理主键走 plain。无物理主键的表没有唯一约束可冲突，显式
+        指定 replace / upsert 会直接报错，而不是静默生成跑不起来的 SQL。
         """
+        if mode is None:
+            mode = "upsert" if self.physical_pk else "plain"
+        if mode not in INSERT_MODES:
+            raise ValueError(
+                f"insert mode 只能是 {'/'.join(INSERT_MODES)}，当前为 {mode!r}")
+        if not self.physical_pk and mode != "plain":
+            raise ValueError(
+                f"表 {table_name} 无物理主键，不支持 {mode}；只能用 plain")
+
         names = ", ".join(self.column_names)
         placeholders = ", ".join("?" for _ in self.column_names)
+        prefix = "INSERT OR REPLACE" if mode == "replace" else "INSERT"
+        sql = (f"{prefix} INTO {table_name} ({names}) "
+               f"VALUES ({placeholders})")
+        if mode != "upsert":
+            return sql
+
         conflict_target = ", ".join(self.primary_key_columns)
         pk = set(self.primary_key_columns)
         updates = [c for c in self.column_names if c not in pk]
         if not updates:
             # 全主键表没有可更新列：冲突即保留旧行，同样是「每主键一行」。
-            return (f"INSERT INTO {table_name} ({names}) "
-                    f"VALUES ({placeholders}) "
-                    f"ON CONFLICT({conflict_target}) DO NOTHING")
+            return f"{sql} ON CONFLICT({conflict_target}) DO NOTHING"
         set_clause = ", ".join(f"{c} = excluded.{c}" for c in updates)
-        return (f"INSERT INTO {table_name} ({names}) "
-                f"VALUES ({placeholders}) "
-                f"ON CONFLICT({conflict_target}) DO UPDATE SET {set_clause}")
+        return f"{sql} ON CONFLICT({conflict_target}) DO UPDATE SET {set_clause}"
 
     def delete_expired_sql(self, table_name: str) -> str:
         return f"DELETE FROM {table_name} WHERE {self.time_column} < ?"
@@ -138,4 +165,5 @@ class TableSchema:
 
 __all__ = [
     "TableSchema", "AVL_META_TABLE", "create_meta_table_sql", "upsert_meta_sql",
+    "InsertMode", "INSERT_MODES",
 ]
