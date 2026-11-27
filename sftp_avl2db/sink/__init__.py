@@ -8,11 +8,11 @@ from .schema import (
     AVL_META_TABLE, INSERT_MODES, InsertMode, TableSchema,
     create_meta_table_sql, upsert_meta_sql,
 )
-from .sqlite_sink import SqliteSink, WriteStats, build_sink
+from .sqlite_sink import DbHealth, SqliteSink, WriteStats, build_sink
 
 __all__ = [
     "TableSchema", "AVL_META_TABLE", "create_meta_table_sql", "upsert_meta_sql",
     "InsertMode", "INSERT_MODES",
     "AvlDbLayout", "build_layout",
-    "SqliteSink", "WriteStats", "build_sink",
+    "SqliteSink", "WriteStats", "DbHealth", "build_sink",
 ]

@@ -38,12 +38,17 @@ class AssembledTask:
 def build_task(profile: TaskProfileConfig, *, logger=None, local_dir=None,
                day=None, sleeper=None, now=None, batch_size=None,
                table_schema: TableSchema | None = None,
-               atomic_swap: bool | None = None) -> AssembledTask:
+               atomic_swap: bool | None = None,
+               unsafe_no_durability: bool | None = None) -> AssembledTask:
     """按 ``profile`` 装配。
 
     ``atomic_swap`` 为 None（默认）时自动判断：分表 + 全量替换的 AVL 启用
     双套表原子切换（当前恰好只命中 F09633），消除每日全量导入期间在线侧
     读到空表的窗口。显式传 True/False 可强制开启 / 回退到原 DROP 语义。
+
+    ``unsafe_no_durability`` 为 None（默认）时按 profile 从 ``.env`` 装配的
+    ``<AVL>_SYNC_JOURNAL_OFF`` 取值：仅对该 AVL 关闭同步与回滚日志。显式传
+    True/False 可作离线复跑的注入点覆盖配置。不改任何模式说明文案。
 
     写入模式（``plain`` / ``replace`` / ``upsert``）由 sink 按「表能力 +
     是否全量替换」自行推导，装配层不再计算也不传参。
@@ -60,8 +65,12 @@ def build_task(profile: TaskProfileConfig, *, logger=None, local_dir=None,
         atomic_swap = bool(
             getattr(profile, "sharded", False)
             and int(getattr(profile.retention, "drop_before_insert", 0) or 0) == 1)
+    if unsafe_no_durability is None:
+        unsafe_no_durability = bool(
+            int(getattr(profile, "unsafe_no_durability", 0) or 0))
     sink = build_sink(profile, layout=layout, table_schema=table_schema,
-                      batch_size=batch_size, atomic_swap=atomic_swap)
+                      batch_size=batch_size, atomic_swap=atomic_swap,
+                      unsafe_no_durability=unsafe_no_durability)
     runner = Avl2DbRunner(
         profile, source=source, parser=parser, sink=sink, layout=layout,
         state=state, lock=lock, log=log, sleeper=sleeper, now=now,

@@ -81,7 +81,7 @@ runtime/
 
 ## 5. 配置
 
-唯一来源 `sftp_avl2db/.env`（68 个必需键 + 8 个可选 `<AVL>_DROP_BEFORE_INSERT` 覆盖键），唯一入口 `load_profiles()`；不读系统环境变量，没有第二套解析入口。语法只认整行 `#` 注释与 `KEY=VALUE`，不做引号、行内注释或 `${VAR}` 插值。
+唯一来源 `sftp_avl2db/.env`（68 个必需键 + 8 个可选 `<AVL>_DROP_BEFORE_INSERT` 覆盖键 + 2 个 F09633 临时吞吐配套键 `F09633_SYNC_JOURNAL_OFF` / `F09633_STARTUP_FULL_CHECK`，见本节末），唯一入口 `load_profiles()`；不读系统环境变量，没有第二套解析入口。语法只认整行 `#` 注释与 `KEY=VALUE`，不做引号、行内注释或 `${VAR}` 插值。这两个可选键都不计入 68 个必需键，不写等价于 `0`。
 
 | 文件 | 作用 |
 |---|---|
@@ -174,6 +174,74 @@ runtime/
 - 只对部分 AVL 开启时，写 `<AVL>_DROP_BEFORE_INSERT=1` 覆盖全局 `0`，例如只让诊断 8 张表走全量替换。
 
 自检：`python tests/check_drop_before_insert.py`（覆盖关闭 / 开启 / 分表 / 按 AVL 覆盖 / 按业务窗口 / 365 天保留期）；`python tests/check_f09633_write_optimization.py`（覆盖无物理主键的 DDL / 纯 `INSERT` / 灌完建索引 / 写入侧零删行 / 两轮原子切换索引名不撞 / 在线侧 `reader` 走 `product_no` 索引）；`python tests/check_pain_points_dedup.py`（覆盖上游偶发同键重复行时诊断 `pain_points` 的兜底去重）；`python tests/check_insert_mode.py`（覆盖三种 `insert_mode` 的单点推导 / SQL 文本唯一来源 / 非法组合显式报错 / 装配注入点仍可用）；`python tests/check_runner_refactor.py`（覆盖模式文案由 sink 逐字符提供 / runner 只决定何时打印且替身兜底不变 / `import_one()` 拆分后 SKIP·MISSING·FAILED·OK 四态与清单登记时机 / 控损 0 字节短路）；`python tests/check_db_session.py`（覆盖 `_session()` 的 bulk / 非 bulk PRAGMA 与连接计数 / 异常统一 rollback / 两类错误策略不串 / 九个改造方法的返回值与关键 `WriteStats`）。
+
+### F09633 临时吞吐模式（关闭同步与回滚日志）
+
+> **这是临时开关，不是常规配置。** 触发背景：2026-11 复核发现 `F09633` 上游每日全量实为约 **8 亿条**（此前按 8000 万条估算），必须在 **8 小时内**灌完，故暂时牺牲持久性换吞吐。以后缩减数据规模或改用 MySQL `LOAD DATA INFILE` 时，把键删除 / 置 `0` 即可，无需改代码。
+
+**主开关**：`sftp_avl2db/.env` 的可选键 `F09633_SYNC_JOURNAL_OFF`（`0` / `1`，缺省 `0`，非法值启动 fail-fast）。键前缀按 AVL 名走，所以只能影响 `F09633`；其余 11 个 AVL 保持 `WAL` + `NORMAL`。另有配套的 `F09633_STARTUP_FULL_CHECK`（缺省 `0`）控制启动自检是否跑全库页校验，见下一小节。
+
+装配链：`load_profiles()` 把键读进 `TaskProfileConfig.unsafe_no_durability` → `build_task()` → `build_sink(unsafe_no_durability=...)` → `SqliteSink` → `_configure()`。作用点是 `sftp_avl2db/sink/sqlite_sink.py::_configure()`，对该 AVL 的**所有**写入连接（`_connect()` 与 `_session()` 非 bulk 分支）生效：
+
+| 取值 | `journal_mode` | `synchronous` | 回滚日志 / fsync |
+|---|---|---|---|
+| `0`（默认） | `WAL` | `NORMAL` | 有：WAL + 提交时 fsync |
+| `1`（当前 F09633） | `OFF` | `OFF` | **无**：不写 WAL / rollback journal，不 fsync |
+
+两种口径的 PRAGMA 条数都是 2（bulk 路径仍是 5），`_session()` 的连接计数契约不变。`_configure()` 会校验 `PRAGMA journal_mode=OFF` 的实际返回值；若库仍被 WAL 下的在线读连接持有而切不过去，直接抛 `RuntimeError`，避免「以为关了其实没关」把时间窗耗在 fsync 上。
+
+**风险清单（开启前逐条确认）**：
+
+- **库损坏**：`journal_mode=OFF` + `synchronous=OFF` 下，进程崩溃、断电、`kill -9` 可能损坏**整个 `F09633.db`**，不只是丢最后一批；SQLite 官方明确不保证该组合的崩溃安全性。下面「启动时库损坏自检与重建」能自动发现并让进程继续跑，但它**直接删除损坏库、不保留副本**，是「丢掉旧数据重建空库」的兜底，不是修复损坏数据，也没有事后取证的余地——**导入前的文件级备份现在是硬性要求**。
+- **原子切换失去事务性**：`_atomic_switch()` 的 128 组 RENAME + 水位推进靠 `BEGIN IMMEDIATE` / `COMMIT` 保证原子，关掉 journal 后不再能回滚；切换中途失败会留下「部分表已 RENAME」的半切换 schema，当前套可能缺失。
+- **在线读抖动**：WAL 提供的读写并发与一致快照消失；切换事务期间在线侧 `services/reader.py` 的短读连接可能撞上 `database is locked` 或读到不一致的表集合，诊断链路按既有降级返回 `None` → 卖点话术 / 兜底，但接口不 500。
+- **WAL → OFF 切换需独占**：`journal_mode=OFF` 本身是连接级、不写进库文件头，但 F09633.db 此前是持久化的 WAL 库，首次以 `OFF` 打开会执行 WAL → 非 WAL 切换（这一步改文件头、需独占访问），其他连接未退干净时会切换失败（上面已做 fail-fast）；此后在线侧读连接按默认 `delete` 模式打开，只读不产生 journal 文件。改回 `0` 时再由写入侧把库切回 WAL，同样需要独占。
+
+### 启动时库损坏自检与重建
+
+针对上面风险清单第 1 条：`F09633` 进程**拿锁之后、`ensure_schema()` 之前**做一次库健康检查，判定损坏就**直接删除损坏库**并重建空库，让进程能继续跑而不是启动即失败。入口 `Avl2DbRunner._startup_db_health_check()`，检查与重建实现在 `SqliteSink.startup_health_check()` / `rebuild_corrupt_db()`。
+
+**触发条件**（只在该有风险的时候做，不做日常危险动作）：
+
+- 当前 `F09633_SYNC_JOURNAL_OFF=1`（临时吞吐模式）→ 每次启动都检查；
+- 或 `runtime/state/F09633.unsafe_mode` 标记存在 → **改回 `0` 之后首次启动补做一次**，覆盖「上一轮 OFF+OFF 崩溃、改回安全模式后才重启」的时间差；检查通过即删除标记，之后不再检查。
+- 其余 11 个 AVL、以及恢复后的后续启动完全不检查；sink 未提供检查方法（测试替身）只打 WARNING 跳过。
+
+**检查分两级**：
+
+| 级别 | 开关 | 做什么 | 代价 | 能抓到 |
+|---|---|---|---|---|
+| 快速（默认） | `F09633_STARTUP_FULL_CHECK=0` | 文件头 16 字节、能否打开、128 张当前套表 + `_avl_meta` 齐全、每张表 `SELECT 1 ... LIMIT 1` 触碰 B-tree 根页 | 毫秒级，不扫表 | 崩溃截断、根页写坏、**原子切换到一半的半套 schema**（OFF 模式下最常见）、文件被写成垃圾 |
+| 全量 | `F09633_STARTUP_FULL_CHECK=1` | 追加 `PRAGMA quick_check` 全表页校验 | **8 亿行全库扫描，小时级** | 上述 + 中间页 / 索引页损坏 |
+
+> 诚实边界：快速检查**抓不到中间页损坏**。要做完整体检，请在非导入窗口把 `F09633_STARTUP_FULL_CHECK` 置 `1` 手动起一次，跑完改回 `0` 重启；别在 8 小时窗口里开，它会把窗口吃掉。检查用裸连接且只跑只读语句，不套 `_configure()`，避免检查动作本身改库头（WAL ↔ 非 WAL）。
+
+**判定损坏后的动作**（`status=corrupt` 或 `incomplete`）：
+
+1. **直接删除** `F09633.db` 及 `-wal` / `-shm` / `-journal` 残留，**不改名、不保留任何副本**，立即把磁盘空间释放出来，并打 ERROR 说明。理由：OFF+OFF 下写坏的数据本就不完整也无法信任，保留没有价值；8 亿行量级的副本还会持续占住磁盘，把重建 / 本轮灌入的空间挤没。需要事后取证请在启动前自行做文件级备份，本流程不代劳。
+2. `ensure_schema()` 重建空库：128 张当前套表 + `_avl_meta`，水位为空。
+3. **清空 `runtime/state/F09633.fetched` 清单与 `.drop_quarantine` 隔离标记**——这一步最关键：不清清单，重建后的空库会被 `SKIP 已在清单中` 永远晾着，数据再也回不来。
+4. 本轮强制重新拉取入库，打 ERROR 告警。
+
+**后果（必须知晓）**：重建 = **上一日全量数据丢失**，新批次切换完成前在线侧诊断读空表，按既有降级返回 `None` → 卖点话术 / 兜底，接口不 500，但业务话术质量会退化。若远端当日全量文件已被上游清理，用 `--local-dir` 指向 `runtime/files/diagnosis/` 里保留 3 天的 `.AVL` 补跑：
+
+```bash
+python -m sftp_avl2db --task F09633 --date 20261120 \
+  --local-dir sftp_avl2db/runtime/files/diagnosis --force-reload
+```
+
+**执行建议**：**导入前必须做 `F09633.db` 的文件级备份**（判定损坏会直接删库、不留副本）；安排在业务低峰；确认在线侧可容忍短暂读抖动；导入期间不要重启 / 杀进程；可用下面的自检先在本地临时库验证开关生效范围与重建链路。
+
+自检：`python tests/check_f09633_startup_rebuild.py`（覆盖健康库不重建 / 库不存在按正常建库 / 文件头损坏 / 半切换缺表 / 损坏库连 WAL/SHM/journal 残留一起删除且无任何副本 / 重建后清清单与隔离标记、本轮强制重灌 / 全量检查开关 / 恢复 0 后标记补做一次 / 普通 AVL 不触发）。
+
+**恢复步骤（用完必须做）**：
+
+1. 确认导入完成：`F09633.db` 的 `_avl_meta` 水位已推进到本批 `latest_file_date`，且当前套 `F09633_{i}` 行数与上游一致。
+2. 把 `sftp_avl2db/.env` 的 `F09633_SYNC_JOURNAL_OFF` 改回 `0`。
+3. **重启 `F09633` 写入进程**（`load_profiles()` 首次加载后冻结配置对象，不重启不生效）；其余 11 个进程无需动。
+4. 重启后首次连接会重新执行 `PRAGMA journal_mode=WAL`，库恢复 `WAL` + `synchronous=NORMAL`。这一步会**补做一次启动库健康检查**（靠 `runtime/state/F09633.unsafe_mode` 标记触发），确认上一轮 OFF+OFF 没把库写坏；检查通过后标记自动删除。可用 `python -c "from sftp_avl2db import load_profiles; print(load_profiles()['F09633'].unsafe_no_durability)"` 确认读到的是 `0`。
+
+自检：`python tests/check_f09633_unsafe_write.py`（覆盖开关只作用于 F09633、两种 PRAGMA 口径、装配层透传、关闭日志下完整跑一次原子切换、改回 0 后恢复 WAL+NORMAL、非法值 fail-fast）；`python tests/check_f09633_startup_rebuild.py`（覆盖启动库损坏自检与重建链路）。
 
 ## 6. 新增业务 / 新增 AVL
 
@@ -287,7 +355,7 @@ done
 1. `FlatColumnParser` 是唯一的 flat 解析器，商机回捞与诊断 8 张维表共用：按 UTF-8 读取（`errors="ignore"`），只去行尾换行 / BOM、保留首尾制表符与空列，按 `\t` 切分后补齐或截断到 `profile.columns` 声明的列数。所有列原样保留文本、不做数值转换；空主键判定的列下标由 `build_parser()` 按 `profile.primary_key` 换算。
 2. 控损续行：规则见第 7 节「控损（`F09591`）」条目，此处不重复。
 3. `sink/schema.py` 建表 SQL 保持表级 `PRIMARY KEY (...)` 声明形式；主键列由 `TABLE_PRIMARY_KEYS` 传入，可单列可复合，自动补 `NOT NULL`。`NO_PHYSICAL_PRIMARY_KEY` 列出的 schema（当前只有 `conf_user_scene`）只保留逻辑主键，DDL 不含 `PRIMARY KEY`，两列仍补 `NOT NULL`。
-4. 单库连接的生命周期统一由 `SqliteSink._session()` 管理：非 bulk 路径（建表 / DROP 重建 / 过期清理 / 水位登记）只设 `PRAGMA journal_mode = WAL` 与 `PRAGMA synchronous = NORMAL`，且不累计 `stats.connections`；bulk 路径（灌 stage / 原子切换 / 释放 old / `roll_forward_op_time()`）走 `_connect()`，再补 `cache_size = -65536` / `temp_store = MEMORY` / `busy_timeout = 30000`。事务边界仍归调用方：`commit()` 在 `with` 内显式执行；异常统一 rollback 后原样抛出，「记 `stats.errors` 后继续」还是「直接失败」由调用方是否包 `try/except` 决定，不塞进布尔参数。`_write_rows()` 是唯一例外：一轮写入要同时持有多库长连接，自行管理。写入按 `BATCH_SIZE` 分桶、逐桶满批提交。INSERT SQL 文本只在 `sink/schema.py::TableSchema.insert_sql()` 生成；`SqliteSink.__init__()` 按「表是否有物理主键 + 是否全量替换」单点推导本次的 `insert_mode`，调用方不参与拼串：无物理主键 → `plain`（纯 `INSERT`，当前只命中 `F09633`）；有物理主键且全量替换 → `replace`（`INSERT OR REPLACE`，灌重建后的空表）；有物理主键且追加 → `upsert`（按 `TABLE_PRIMARY_KEYS` 注册主键 `INSERT ... ON CONFLICT DO UPDATE` 原地覆盖，需 SQLite >= 3.24）。`build_sink(insert_mode=...)` 仅作装配注入点；无物理主键的表指定 `replace` / `upsert` 会在 `insert_sql()` 显式报错，不静默降级。离线自检直调 `insert_sql(表名)` 不传 mode 时按表能力自行推导。
+4. 单库连接的生命周期统一由 `SqliteSink._session()` 管理：非 bulk 路径（建表 / DROP 重建 / 过期清理 / 水位登记）默认只设 `PRAGMA journal_mode = WAL` 与 `PRAGMA synchronous = NORMAL`，且不累计 `stats.connections`（该 AVL 开启 `<AVL>_SYNC_JOURNAL_OFF=1` 时改为 `journal_mode=OFF` + `synchronous=OFF`，PRAGMA 条数与计数契约不变，见第 5 节「F09633 临时吞吐模式」）；bulk 路径（灌 stage / 原子切换 / 释放 old / `roll_forward_op_time()`）走 `_connect()`，再补 `cache_size = -65536` / `temp_store = MEMORY` / `busy_timeout = 30000`。事务边界仍归调用方：`commit()` 在 `with` 内显式执行；异常统一 rollback 后原样抛出，「记 `stats.errors` 后继续」还是「直接失败」由调用方是否包 `try/except` 决定，不塞进布尔参数。`_write_rows()` 是唯一例外：一轮写入要同时持有多库长连接，自行管理。写入按 `BATCH_SIZE` 分桶、逐桶满批提交。INSERT SQL 文本只在 `sink/schema.py::TableSchema.insert_sql()` 生成；`SqliteSink.__init__()` 按「表是否有物理主键 + 是否全量替换」单点推导本次的 `insert_mode`，调用方不参与拼串：无物理主键 → `plain`（纯 `INSERT`，当前只命中 `F09633`）；有物理主键且全量替换 → `replace`（`INSERT OR REPLACE`，灌重建后的空表）；有物理主键且追加 → `upsert`（按 `TABLE_PRIMARY_KEYS` 注册主键 `INSERT ... ON CONFLICT DO UPDATE` 原地覆盖，需 SQLite >= 3.24）。`build_sink(insert_mode=...)` 仅作装配注入点；无物理主键的表指定 `replace` / `upsert` 会在 `insert_sql()` 显式报错，不静默降级。离线自检直调 `insert_sql(表名)` 不传 mode 时按表能力自行推导。
 5. 分表口径 `zlib.crc32(product_no) % NUM_TABLES`；`p_no` 为空时取 `"NULL"`（解析器已跳过空主键，属不可达分支）。
 6. 非全量替换模式下，upsert 在主键冲突时原地更新非主键列：同一主键只保留最新一条、非主键列全取本批值，不删旧行、不换 rowid、不产生 freelist 碎片；冲突目标直接用 `TABLE_PRIMARY_KEYS` 的主键元组（可为复合主键），只更新非主键列，需要 SQLite >= 3.24。`F09633` 无物理主键，用纯 `INSERT` 灌空 stage 套，不做任何去重或全表扫描：上游全量 AVL 保证 `(product_no, scene)` 唯一，逐行 `DELETE ... WHERE EXISTS` 即使零命中也要对全表做一次索引探测，属纯开销。`F09591` / `F09633` 的 `BATCH_SIZE=100000` 把满批提交次数降到约 1/10，代价是 128 个分桶的行缓存峰值放大约 10 倍、单事务 WAL 更大，需按可用内存评估，必要时回退到 `30000~50000`。
 

@@ -70,14 +70,14 @@ main.py ──> log/INFO_*.log、log/ERROR_*.log（在线进程日志写入，�
 | 维表写入 | `local_excel2db/registry.json` | `load_registry()` | 配置损坏退出码 2 |
 | 在线服务 | 项目根 `.env` | `app_config.load_config()` | 端口键 `CRM_PORT`，默认 `8989`；`LOG_DIR`、`MARKET_ASSISTANT_URL` 仍是 `main.py` 顶部常量，端口非法时启动 fail-fast |
 
-**根 `.env` 与各包 `.env` 同语法**：只认整行 `#` 注释与 `KEY=VALUE`，不支持引号、行内注释、`${VAR}` 插值；都不读系统环境变量。仓库随附的 `.env` 为实际生效字符串；`.env.example` 是带注释的键模板，其中 `sftp_avl2db/.env.example` 与同目录 `.env` 只差键集合（`.env` 另含 8 个可选的 `<AVL>_DROP_BEFORE_INSERT` 覆盖键，见第 10.2 节），68 个必需键逐键同值；改完配置重启对应进程生效（配置对象首次加载后冻结）。
+**根 `.env` 与各包 `.env` 同语法**：只认整行 `#` 注释与 `KEY=VALUE`，不支持引号、行内注释、`${VAR}` 插值；都不读系统环境变量。仓库随附的 `.env` 为实际生效字符串；`.env.example` 是带注释的键模板，其中 `sftp_avl2db/.env.example` 与同目录 `.env` 的 68 个必需键逐键同值，差异只在可选键（`.env` 另含 8 个 `<AVL>_DROP_BEFORE_INSERT` 覆盖键，见第 10.2 节；另有 2 个临时吞吐配套键 `F09633_SYNC_JOURNAL_OFF` / `F09633_STARTUP_FULL_CHECK`，模板都不写（等价 `0`）、当前 `.env` 分别为 `1` / `0`）；改完配置重启对应进程生效（配置对象首次加载后冻结）。
 
 关键键名：
 
 - `IOP/.env`：`IOP_TOKEN_HOST/PORT/ID/SECRET`、`IOP_CUSTINFO_HOST/PORT/VERSION/TYPE`、`IOP_TIMEOUT_TOTAL/CONNECT/SOCK_READ`、`IOP_RETRY_MAX_ATTEMPTS/BACKOFF_BASE/BACKOFF_FACTOR/BACKOFF_MAX/COOLDOWN`、`IOP_LIFETIME_DEFAULT_EXPIRES_IN/REFRESH_BUFFER/MIN_LIFETIME/MAX_EXPIRES_IN`。
 - `services/.env`：`AVL_DB_ROOT`、`DIMENSIONS_DB`、`LOSS_CONTROL_NUM_TABLES`、`F09633_NUM_TABLES`，以及按业务分别配置的新鲜度窗口 `OPPORTUNITY_RECALL_FRESHNESS_WINDOW_DAYS`（默认 `2`）、`LOSS_CONTROL_FRESHNESS_WINDOW_DAYS`（默认 `2`）、`DIAGNOSIS_FRESHNESS_WINDOW_DAYS`（默认 `0`，关闭过滤）。
 - `call_stat/.env`：`CALL_STAT_FLUSH_THRESHOLD`（默认 100）、`CALL_STAT_QUERY_PATH`（默认 `/api/callStat`）、`CALL_STAT_DB_FILENAME`（默认 `call_sum.db`）、`CALL_STAT_EXPORT_DIRNAME`（默认 `export`）。
-- `sftp_avl2db/.env`：SFTP 公共 5 项 + 全局模式开关 `AVL_DROP_BEFORE_INSERT`（`0` 关闭 / `1` 开启；开启后写入最新 AVL 前按 AVL 重建目标表，其中分表且开启的 `F09633` 走双套表原子切换而非 DROP，见第 3 节；可用 `<AVL>_DROP_BEFORE_INSERT` 覆盖）+ 每个 AVL 的 `<AVL>_BATCH_SIZE / _DATA_EXPIRE_DAYS / _LOCAL_FILE_EXPIRE_DAYS / _POLL_INTERVAL_SECONDS / _PURGE_CYCLE_DAYS`，分表 AVL 另加 `<AVL>_NUM_TABLES`；无项目级键。诊断 8 张表的 `_DATA_EXPIRE_DAYS` 统一为 `365`，商机 / 控损仍为 `3`。
+- `sftp_avl2db/.env`：SFTP 公共 5 项 + 全局模式开关 `AVL_DROP_BEFORE_INSERT`（`0` 关闭 / `1` 开启；开启后写入最新 AVL 前按 AVL 重建目标表，其中分表且开启的 `F09633` 走双套表原子切换而非 DROP，见第 3 节；可用 `<AVL>_DROP_BEFORE_INSERT` 覆盖）+ 每个 AVL 的 `<AVL>_BATCH_SIZE / _DATA_EXPIRE_DAYS / _LOCAL_FILE_EXPIRE_DAYS / _POLL_INTERVAL_SECONDS / _PURGE_CYCLE_DAYS`，分表 AVL 另加 `<AVL>_NUM_TABLES`；无项目级键。诊断 8 张表的 `_DATA_EXPIRE_DAYS` 统一为 `365`，商机 / 控损仍为 `3`。另有**可选**的 per-AVL 临时吞吐键 `<AVL>_SYNC_JOURNAL_OFF`（缺省 `0`；`1` = 仅该 AVL 的写入连接改用 `PRAGMA journal_mode=OFF` + `PRAGMA synchronous=OFF`，关闭回滚日志与 fsync），以及配套的 `<AVL>_STARTUP_FULL_CHECK`（缺省 `0`；`1` = 启动自检追加 `PRAGMA quick_check` 全库页校验，8 亿行耗时小时级，仅建议非导入窗口人工体检）。当前仅为 `F09633` 的「约 8 亿条 / 8 小时」全量导入临时置 `SYNC_JOURNAL_OFF=1`，其余 11 个 AVL 不受影响；导入完成后必须改回 `0` 并重启 F09633 写入进程恢复 WAL + NORMAL。因关闭日志带来的全库损坏风险，进程启动时会做库健康检查、判定损坏则**直接删除损坏库（不保留副本）**重建空库并清空 `.fetched` 清单强制重灌（**兜底不等于修复，旧数据会丢，导入前必须另行备份**）；风险清单、检查覆盖范围与恢复步骤见 `sftp_avl2db/README.md` 第 5 节。
 
 **在线服务端口**：唯一来源是**项目根 `.env`** 的 `CRM_PORT`（默认 `8989`），由 `app_config.load_config()` 解析。`main.py` 的 `FASTAPI_CONFIG["port"]` 与 `start_project.sh` 打印的地址都取这一份值，改端口只改这一行、重启进程即生效，不必改代码；与其它包的 `.env` 一样，不读系统环境变量。
 

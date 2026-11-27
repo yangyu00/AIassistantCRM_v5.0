@@ -116,9 +116,9 @@ TABLE_PRIMARY_KEYS: Final[Mapping[str, tuple[str, ...]]] = {
 
 
 # 不在 DDL 里声明 PRIMARY KEY 的 schema。逻辑主键仍保留在 TABLE_PRIMARY_KEYS，
-# 用于解析期跳过空键行、写入侧 / 在线侧的契约校验。F09633 每日全量约 8000 万行，
-# 逐行维护一棵 (product_no, scene) 唯一 B-tree 是导入瓶颈；改为空表裸灌完成后
-# 一次性建非唯一 product_no 索引。
+# 用于解析期跳过空键行、写入侧 / 在线侧的契约校验。F09633 每日全量约 8 亿行
+# （2026-11 复核，此前按 8000 万行估算），逐行维护一棵 (product_no, scene)
+# 唯一 B-tree 是导入瓶颈；改为空表裸灌完成后一次性建非唯一 product_no 索引。
 NO_PHYSICAL_PRIMARY_KEY: Final[frozenset[str]] = frozenset({"conf_user_scene"})
 
 

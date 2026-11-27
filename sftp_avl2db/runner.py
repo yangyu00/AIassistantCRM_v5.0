@@ -22,6 +22,10 @@ _LOSS_CONTROL_PROJECT = "loss_control"
 DROP_FAILURE_LIMIT = 2
 _DROP_QUARANTINE_SUFFIX = ".drop_quarantine"
 
+# 记录「本 AVL 曾以 OFF+OFF 临时吞吐模式运行」。改回安全模式后首次启动仍
+# 会补做一次库健康检查，覆盖「上一轮崩溃、改回 0 之后才重启」的时间差。
+_UNSAFE_MARKER_SUFFIX = ".unsafe_mode"
+
 
 class Avl2DbRunner:
     """单任务编排器。"""
@@ -143,6 +147,117 @@ class Avl2DbRunner:
             "8000 万行/天全量重灌代价极高，请确认上游文件与磁盘空间后人工介入："
             f"删除 {self._quarantine_path()} 中的该行，或用 --force-reload 重跑；"
             "在此之前该文件不会再被拉取入库")
+
+    # ---- 启动期库健康自检 / 损坏重建 ------------------------------------
+
+    def _unsafe_marker_path(self) -> Path | None:
+        state_dir = getattr(self.profile, "state_dir", None)
+        if state_dir is None:
+            return None
+        return (Path(state_dir)
+                / f"{self.profile.name}{_UNSAFE_MARKER_SUFFIX}")
+
+    def _write_unsafe_marker(self) -> None:
+        path = self._unsafe_marker_path()
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                self._now().strftime("%Y-%m-%d %H:%M:%S"), encoding="utf-8")
+        except OSError as e:
+            self.log.warning(f"写入 OFF+OFF 模式标记失败 {path}: {e}")
+
+    def _clear_unsafe_marker(self) -> None:
+        path = self._unsafe_marker_path()
+        if path is None:
+            return
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as e:
+            self.log.warning(f"清除 OFF+OFF 模式标记失败 {path}: {e}")
+
+    def _reset_state_after_rebuild(self) -> None:
+        """库重建后必须强制重灌，否则旧清单会让本轮 SKIP、库永远空着。"""
+        clear = getattr(self.state, "clear", None)
+        if callable(clear):
+            clear()
+        else:
+            # 测试替身 / 其它 state 实现兜底：直接截断清单文件。
+            try:
+                manifest = Path(self.state.manifest_path)
+                manifest.parent.mkdir(parents=True, exist_ok=True)
+                manifest.write_text("", encoding="utf-8")
+                done = getattr(self.state, "_done", None)
+                if isinstance(done, set):
+                    done.clear()
+            except Exception as e:
+                self.log.error(f"清空断点续传清单失败: {e}")
+        # 之前若因连续失败被隔离，重建后也要解除，否则仍会 SKIP。
+        q = self._quarantine()
+        q.clear()
+        self._write_quarantine()
+
+    def _startup_db_health_check(self) -> None:
+        """拿锁之后、``ensure_schema()`` 之前检查 db，损坏则直接删除并重建空库。
+
+        触发条件：当前以 OFF+OFF 临时吞吐模式运行，或存在「曾以该模式运行」
+        的标记（改回 0 后的首次启动补做一次）。普通 AVL / 恢复后的后续启动
+        完全不检查，也不做任何危险的删库动作。
+
+        只作用于 runner 的启动路径；sink 未提供检查方法时（测试替身）跳过。
+        """
+        name = self.profile.name
+        unsafe = bool(getattr(self.sink, "unsafe_no_durability", False))
+        marker = self._unsafe_marker_path()
+        if not unsafe and (marker is None or not marker.is_file()):
+            return
+
+        check = getattr(self.sink, "startup_health_check", None)
+        if not callable(check):
+            self.log.warning(
+                f"[{name}] 启动库健康检查跳过：sink 未实现 "
+                "startup_health_check()")
+            return
+        if unsafe:
+            self._write_unsafe_marker()
+
+        full = bool(int(getattr(self.profile, "startup_full_check", 0) or 0))
+        try:
+            health = check(full=full)
+        except Exception as e:
+            # 检查本身跑不了，不能当作「库健康」继续。退出由 serve_forever
+            # 统一兜住并返回 1，避免带着未知状态的库往下灌 8 亿行。
+            self.log.error(
+                f"[{name}] 启动库健康检查执行失败，拒绝带病继续: {e}")
+            raise
+
+        if not getattr(health, "is_bad", False):
+            self.log.info(
+                f"[{name}] 启动库健康检查: {health.status} — {health.reason}"
+                + (f"（{health.detail}）" if health.detail else "")
+                + ("；全量页校验会扫全库、耗时小时级" if full else ""))
+            if not unsafe:
+                self._clear_unsafe_marker()
+            return
+
+        rebuild = getattr(self.sink, "rebuild_corrupt_db", None)
+        if not callable(rebuild):
+            raise RuntimeError(
+                f"[{name}] 启动库健康检查判定损坏，但 sink 未实现 "
+                "rebuild_corrupt_db()，拒绝继续")
+        self.log.error(
+            f"[{name}] 启动库健康检查判定 {health.status}: {health.reason}"
+            + (f"；{health.detail}" if health.detail else "")
+            + "。将直接删除损坏库并重建空库（不保留副本），上一日全量数据会丢失。")
+        action = rebuild(health)
+        self._reset_state_after_rebuild()
+        self.log.error(
+            f"[{name}] 损坏库处置: {action}；已重建空库并清空 .fetched 清单与"
+            "失败隔离标记，本轮强制重新拉取入库。⚠ 若远端当日全量文件已被"
+            "上游清理，请用 --local-dir 指向 runtime/files/diagnosis/ 里残留"
+            "的 .AVL 补跑；新批次切换完成前在线侧诊断按既有降级静默退化"
+            "（接口不 500）。")
 
     def _remote_path(self, remote_name: str) -> str:
         root = self.profile.sftp.remote_path.rstrip("/")
@@ -525,6 +640,9 @@ class Avl2DbRunner:
             return 1
         try:
             self.profile.local_dir.mkdir(parents=True, exist_ok=True)
+            # 必须在 ensure_schema() 之前：损坏库上跑 CREATE TABLE 要么直接
+            # 抛错退出、要么把半套 schema 补成「看起来齐全」的假象。
+            self._startup_db_health_check()
             self.sink.ensure_schema()
             self.log.info(
                 f"{self.profile.name} 守护进程启动 pid={os.getpid()} "

@@ -12,7 +12,8 @@
     暂存套（导入目标）  {AVL}_stage_{i}
     上一套（切换后）    {AVL}_old_{i}
 
-流程：建空 stage 套 → 8000 万行纯 INSERT 灌入 stage → 一次性建非唯一
+流程：建空 stage 套 → 约 8 亿行（上游每日全量，2026-11 由 8000 万复核上调）
+纯 INSERT 灌入 stage → 一次性建非唯一
 ``product_no`` 索引 → 单个事务里把 128 组
 ``{AVL}_{i}`` RENAME 成 ``{AVL}_old_{i}``、把 ``{AVL}_stage_{i}`` RENAME 成
 ``{AVL}_{i}``，并在同一事务推进 ``_avl_meta`` 水位 → COMMIT → 独立事务释放
@@ -24,6 +25,17 @@ old 套。RENAME 只改 schema 不搬数据，切换事务是毫秒级；WAL 下
 继续读上一日全量数据；不会出现「失败即空表」。
 代价：磁盘峰值从约 8.4GB 升到约 16.8GB（当前 + stage 两套），需预留
 ≥25GB（含 WAL 峰值）。
+
+临时吞吐开关（本次为 F09633 的「8 亿行 / 8 小时」窗口临时启用）：
+    ``sftp_avl2db/.env`` 的可选键 ``F09633_SYNC_JOURNAL_OFF=1`` 经
+    ``load_profiles()`` → ``build_task()`` → ``build_sink(unsafe_no_durability=True)``
+    传到本层。开启后该 AVL 的**所有**写入连接改为
+    ``PRAGMA journal_mode = OFF`` + ``PRAGMA synchronous = OFF``，即关闭
+    回滚日志（WAL / rollback journal）与 fsync，换取最大吞吐。只作用于该
+    AVL，其余 11 个 AVL 仍是 WAL + NORMAL；把键改回 ``0`` 并重启进程即恢复。
+    代价：崩溃 / 断电可能损坏整个 ``F09633.db``，且 ``_atomic_switch()`` 的
+    128 组 RENAME 事务不再具备回滚与 WAL 快照隔离，切换期间在线读可能撞上
+    锁或半切换 schema。风险与恢复步骤见 ``sftp_avl2db/README.md`` 第 5 节。
 """
 from __future__ import annotations
 
@@ -39,7 +51,8 @@ from pathlib import Path
 from typing import Iterable, Iterator
 
 from .schema import (
-    INSERT_MODES, TableSchema, create_meta_table_sql, upsert_meta_sql,
+    AVL_META_TABLE, INSERT_MODES, TableSchema, create_meta_table_sql,
+    upsert_meta_sql,
 )
 
 # 远程文件名 {AVL}{YYYYMMDD}000000.AVL：取末尾 000000 之前的 8 位日期。
@@ -55,12 +68,46 @@ STAGE_SUFFIX: str = "_stage"
 OLD_SUFFIX: str = "_old"
 
 
-def _configure(conn: sqlite3.Connection) -> sqlite3.Cursor:
-    """建表、写入共用的连接配置。"""
+def _configure(conn: sqlite3.Connection, *,
+               unsafe_no_durability: bool = False) -> sqlite3.Cursor:
+    """建表、写入共用的连接配置。
+
+    默认（``False``）保持 ``WAL`` + ``synchronous=NORMAL``；仅当某个 AVL
+    显式开启 ``<AVL>_SYNC_JOURNAL_OFF`` 时改为 ``journal_mode=OFF`` +
+    ``synchronous=OFF``，完全关闭回滚日志与 fsync 换取吞吐。两种口径的
+    PRAGMA 条数都是 2，``_session()`` 的连接计数契约不变。
+    """
     cur = conn.cursor()
-    cur.execute("PRAGMA journal_mode = WAL")
-    cur.execute("PRAGMA synchronous = NORMAL")
+    if unsafe_no_durability:
+        # 库仍是 WAL（常见于在线侧读连接正持有该库）时切换会静默失败，
+        # PRAGMA 会返回实际模式而不是抛异常。必须显式拦住，避免「以为关了
+        # 其实没关」，把 8 小时窗口白白耗在 fsync 与 WAL 写入上。
+        row = cur.execute("PRAGMA journal_mode = OFF").fetchone()
+        mode = str(row[0]).lower() if row else ""
+        if mode != "off":
+            raise RuntimeError(
+                f"无法关闭回滚日志：PRAGMA journal_mode=OFF 实际返回 {mode!r}；"
+                "请确认没有其它进程正在读写该 db（尤其是 WAL 下的在线读连接）")
+        cur.execute("PRAGMA synchronous = OFF")
+    else:
+        cur.execute("PRAGMA journal_mode = WAL")
+        cur.execute("PRAGMA synchronous = NORMAL")
     return cur
+
+
+@dataclass(frozen=True)
+class DbHealth:
+    """启动期库健康检查结果（只读探测，不改动库文件头）。"""
+
+    status: str        # missing / healthy / corrupt / incomplete
+    db_path: str
+    reason: str = ""   # 人类可读的判定原因
+    detail: str = ""   # 缺表清单 / quick_check 前几条错误等
+
+    @property
+    def is_bad(self) -> bool:
+        """是否达到「删除损坏库并重建空库」的条件。"""
+        return self.status in ("corrupt", "incomplete")
 
 
 @dataclass
@@ -89,7 +136,8 @@ class SqliteSink:
                  global_flush_rows: int | None = None,
                  insert_mode: str | None = None,
                  bulk_pragmas: bool = True,
-                 atomic_swap: bool = False):
+                 atomic_swap: bool = False,
+                 unsafe_no_durability: bool = False):
         self.profile = profile
         self.layout = layout
         self.schema = table_schema or TableSchema.from_profile(profile)
@@ -115,6 +163,9 @@ class SqliteSink:
         else:
             self.insert_mode = "replace" if self._full_replace else "upsert"
         self.bulk_pragmas = bool(bulk_pragmas)
+        # 仅该 sink 所属 AVL 开启时为真；决定 _connect() / _session() 里
+        # _configure() 走 WAL+NORMAL 还是 OFF+OFF。
+        self.unsafe_no_durability = bool(unsafe_no_durability)
         # 只对分表 AVL 启用全局水位；固定表保持原有「单桶满批提交」语义。
         num_tables = int(getattr(layout, "num_tables", 0) or 0)
         if global_flush_rows is None:
@@ -203,11 +254,103 @@ class SqliteSink:
                 cur.execute(create_meta_table_sql())
                 conn.commit()
 
+    # ---- 启动期库健康自检（OFF+OFF 崩溃兜底） ----------------------------
+
+    def startup_health_check(self, *, full: bool = False) -> DbHealth:
+        """进程启动、拿锁之后检查本 AVL 的 db 是否可安全继续写。
+
+        默认只做**快速检查**（毫秒级，不扫表）：文件头、能否打开、128 张
+        当前套表 + ``_avl_meta`` 是否齐全、每张表 B-tree 根页是否可读。这能
+        抓到「崩溃截断 / 页写坏 / 原子切换到一半留下半套 schema」，而这正是
+        ``journal_mode=OFF`` 下最常见的两种损坏形态。
+
+        ``full=True`` 追加 ``PRAGMA quick_check`` 全表页校验，能抓到中间页
+        损坏，但 8 亿行会全库扫描、耗时小时级，会吃掉导入窗口，故默认关闭。
+
+        检查用**裸连接**、不套 ``_configure()``：避免检查动作本身把库头从
+        WAL 改成非 WAL（或反过来）。下面全是只读语句。
+        """
+        db_path = Path(self.layout.db_path)
+        expected = [t for _, t in self.layout.all_targets()]
+        if not db_path.is_file():
+            return DbHealth("missing", str(db_path),
+                            "库文件不存在（首轮启动，按正常流程建库）")
+        try:
+            with db_path.open("rb") as f:
+                head = f.read(16)
+        except OSError as e:
+            return DbHealth("corrupt", str(db_path), f"库文件无法读取: {e}")
+        if head != b"SQLite format 3\x00":
+            return DbHealth(
+                "corrupt", str(db_path),
+                f"库文件头非法（前 16 字节 {head!r}），疑似截断或写坏")
+
+        try:
+            conn = sqlite3.connect(str(db_path))
+        except sqlite3.Error as e:
+            return DbHealth("corrupt", str(db_path), f"无法打开库: {e}")
+        try:
+            names = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+            absent = [t for t in expected if t not in names]
+            if AVL_META_TABLE not in names:
+                absent.append(AVL_META_TABLE)
+            if absent:
+                return DbHealth(
+                    "incomplete", str(db_path),
+                    f"库内表结构不完整（缺 {len(absent)} 张表），"
+                    "疑似原子切换事务中途崩溃",
+                    "缺表样例: " + ", ".join(absent[:6]))
+            # 逐表触碰 B-tree 根页：LIMIT 1 不扫表，128 张表合计毫秒级。
+            for t in expected:
+                conn.execute(f"SELECT 1 FROM {t} LIMIT 1")
+            if full:
+                msgs = [str(r[0])
+                        for r in conn.execute("PRAGMA quick_check").fetchall()]
+                if msgs != ["ok"]:
+                    return DbHealth("corrupt", str(db_path),
+                                    "PRAGMA quick_check 未通过",
+                                    "; ".join(msgs[:5]))
+        except sqlite3.DatabaseError as e:
+            return DbHealth("corrupt", str(db_path),
+                            f"只读探测触发 SQLite 错误: {e}")
+        finally:
+            conn.close()
+        return DbHealth(
+            "healthy", str(db_path),
+            f"结构完整、{len(expected)} 张表根页可读"
+            + ("，quick_check 通过" if full else "（未跑全量页校验）"))
+
+    def rebuild_corrupt_db(self, health: DbHealth) -> str:
+        """直接删除损坏库并重建空库，不保留任何副本，返回处置说明。
+
+        损坏库没有保留价值：OFF+OFF 下写坏的数据本就不完整、也无法信任；
+        8 亿行量级的副本还会持续占住磁盘，把重建 / 本轮灌入的空间挤没。
+        因此连主库带 ``-wal`` / ``-shm`` / ``-journal`` 残留一起 ``unlink``，
+        不做改名、不留 ``*.corrupt.*``，立刻把空间释放出来。
+
+        重建后由 runner 清空 ``.fetched`` 清单与失败隔离标记，强制本轮重灌。
+        需要事后取证请在启动前自行做文件级备份，本方法不代劳。
+        """
+        db_path = Path(health.db_path)
+        siblings = [db_path] + [Path(str(db_path) + s)
+                                for s in ("-wal", "-shm", "-journal")]
+        present = [p for p in siblings if p.is_file()]
+        total = sum(p.stat().st_size for p in present)
+        for p in present:
+            p.unlink()
+        action = (f"已直接删除 {len(present)} 个文件（共 {total} 字节），"
+                  "未保留任何副本，磁盘空间已立即释放")
+        # 空库重建：128 张当前套表 + _avl_meta，在线侧读空按既有降级不 500。
+        self.ensure_schema()
+        return action
+
     def _connect(self, db_path: Path) -> sqlite3.Connection:
         conn = sqlite3.connect(str(db_path), timeout=30,
                                cached_statements=256 if self.bulk_pragmas else 128)
         self.stats.connections += 1
-        cur = _configure(conn)
+        cur = _configure(conn,
+                         unsafe_no_durability=self.unsafe_no_durability)
         if self.bulk_pragmas:
             # 大事务下默认 2MB page cache 会频繁把脏页刷回磁盘；
             # 64MB 缓存 + 内存临时表对千万级导入是纯收益，重启进程即失效。
@@ -222,8 +365,10 @@ class SqliteSink:
         """单库连接的唯一生命周期：PRAGMA → 业务动作 → 回滚/关闭。
 
         ``bulk=True`` 走 ``_connect()``（额外 cache_size / temp_store /
-        busy_timeout，并累计 ``stats.connections``）；``False`` 只设 WAL +
-        synchronous=NORMAL，且不计数，与建表 / 清理路径原本一致。
+        busy_timeout，并累计 ``stats.connections``）；``False`` 不计数，
+        与建表 / 清理路径一致。两者都把 ``self.unsafe_no_durability`` 传给
+        ``_configure()``：默认 WAL + synchronous=NORMAL，该 AVL 开启临时
+        吞吐开关时改为 journal_mode=OFF + synchronous=OFF。
 
         事务边界仍归调用方：``commit()`` 在 with 内显式执行，本上下文不替
         调用方决定何时提交。异常统一 rollback 后原样抛出；「记 errors 后继续」
@@ -236,7 +381,8 @@ class SqliteSink:
             cur = conn.cursor()
         else:
             conn = sqlite3.connect(str(db_path))
-            cur = _configure(conn)
+            cur = _configure(conn,
+                         unsafe_no_durability=self.unsafe_no_durability)
         try:
             yield conn, cur
         except Exception:
@@ -640,8 +786,11 @@ def build_sink(profile, *, layout=None, table_schema: TableSchema | None = None,
                global_flush_rows: int | None = None,
                insert_mode: str | None = None,
                bulk_pragmas: bool = True,
-               atomic_swap: bool = False) -> SqliteSink:
-    """装配写入层。``atomic_swap`` 默认关闭，``insert_mode=None`` 自动推导。"""
+               atomic_swap: bool = False,
+               unsafe_no_durability: bool = False) -> SqliteSink:
+    """装配写入层。``atomic_swap`` 默认关闭，``insert_mode=None`` 自动推导；
+    ``unsafe_no_durability`` 默认关闭（WAL + NORMAL），由 ``build_task()``
+    按 profile 的 per-AVL 开关注入。"""
     if layout is None:
         from .router import build_layout
         layout = build_layout(profile)
@@ -650,8 +799,9 @@ def build_sink(profile, *, layout=None, table_schema: TableSchema | None = None,
                       global_flush_rows=global_flush_rows,
                       insert_mode=insert_mode,
                       bulk_pragmas=bulk_pragmas,
-                      atomic_swap=atomic_swap)
+                      atomic_swap=atomic_swap,
+                      unsafe_no_durability=unsafe_no_durability)
 
 
-__all__ = ["SqliteSink", "WriteStats", "build_sink",
+__all__ = ["SqliteSink", "WriteStats", "DbHealth", "build_sink",
            "STAGE_SUFFIX", "OLD_SUFFIX"]

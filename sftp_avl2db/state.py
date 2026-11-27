@@ -44,6 +44,18 @@ class FetchedManifest:
             os.fsync(f.fileno())
         self._done.add(remote_filename)
 
+    def clear(self) -> None:
+        """清空断点续传清单（库被重建后必须调用，否则会 SKIP 导致永远空库）。
+
+        截断而非 unlink：保持 inode 不变，已持有的 ``manifest_path`` 仍可
+        ``add()``；截断后 fsync，避免崩溃后又读到半行旧清单。
+        """
+        self.manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.manifest_path, "w", encoding="utf-8") as f:
+            f.flush()
+            os.fsync(f.fileno())
+        self._done.clear()
+
     def __len__(self):
         return len(self._done)
 

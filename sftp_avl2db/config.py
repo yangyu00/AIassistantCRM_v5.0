@@ -143,6 +143,15 @@ class TaskProfileConfig:
     parser: str                              # "flat" | "continuation"
     sharded: bool                            # 该 db 内是否按 product_no 分表
     num_tables: int                          # 分表数；固定表为 0
+    # 临时吞吐开关：0（缺省）= WAL + synchronous=NORMAL；1 = 该 AVL 的写入
+    # 连接改用 journal_mode=OFF + synchronous=OFF，关闭回滚日志与 fsync。
+    # 仅在大批量全量导入期间按 AVL 临时开启，由可选键 <AVL>_SYNC_JOURNAL_OFF
+    # 装配；导入完成改回 0 并重启进程即恢复。详见 sftp_avl2db/README.md。
+    unsafe_no_durability: int
+    # 启动库健康检查是否跑 PRAGMA quick_check（全表扫描）：0（缺省）= 只做
+    # 毫秒级的快速检查；1 = 追加全量页校验。8 亿行大库跑全量检查是小时级，
+    # 会吃掉导入窗口，故默认关闭，仅运维在非窗口期显式开启。
+    startup_full_check: int
     remote_name_tmpl: str
 
     @property
@@ -206,6 +215,13 @@ def load_profiles(runtime_dir=None) -> dict[str, TaskProfileConfig]:
             parser=spec.parser,
             sharded=spec.sharded,
             num_tables=_num_tables(v, name) if spec.sharded else 0,
+            # 可选键，缺省 0：只有显式写了 <AVL>_SYNC_JOURNAL_OFF=1 的 AVL
+            # 才关闭同步与回滚日志；其余 AVL 与不写该键时完全保持原口径。
+            unsafe_no_durability=_flag(
+                v, f"{name}_SYNC_JOURNAL_OFF", default=0),
+            # 可选键，缺省 0：启动检查默认只做快速结构 / 首页探测。
+            startup_full_check=_flag(
+                v, f"{name}_STARTUP_FULL_CHECK", default=0),
             remote_name_tmpl=REMOTE_NAME_TMPL,
         )
 
