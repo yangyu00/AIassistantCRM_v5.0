@@ -95,8 +95,8 @@ TAG_TEXTS = (
 SELL_TEXT = ("1、资费：基础100分钟+1GB国内。2、价格：9元/月。"
              "3、业务确认：合约期1年。")
 # 无标签时（无辅助画像段）的逐字符期望输出。
-# 用 "\n".join 写清楚段间是真实换行，不是 <br>。
-EXPECTED_LEGACY_OUTPUT = "\n".join([
+# 中间层仍按换行拼装，但唯一组合出口会把全部换行转成 <br>。
+EXPECTED_LEGACY_OUTPUT = "<br>".join([
     "<strong>【切入话术】</strong>",
     '<strong><span style="color: blue;">基于客户标签特征切入（壹号）：</span></strong>切入B',
     "<strong>【卖点】</strong>",
@@ -378,11 +378,11 @@ def main():
     check("四段标题统一包 <strong>",
           strong_sections("【卖点】") == "<strong>【卖点】</strong>" and
           strong_sections("【切入话术】") == "<strong>【切入话术】</strong>")
-    check("段间用真实 \\n 拼接、不是 <br>",
+    check("出口把段间换行全部转成 <br>、不再含真实换行",
           build_output_script({"cut_in_statement": "A",
                                "selling_point_block": "B",
                                "retain_statement": "C"})
-          == "A\nB\nC")
+          == "A<br>B<br>C")
     check("四段顺序（辅助画像 / 切入 / 卖点 / 挽留）",
           SELLING_POINT_SECTIONS ==
           ("辅助画像", "切入话术", "卖点", "挽留话术"))
@@ -398,11 +398,11 @@ def main():
           "担心合约" in rec0["retain_statement"],
           rec0["cut_in_statement"][:60])
     fb_obj = ProductInfoBySellingPoint(FALLBACK_PID, rec0)
-    check("★ output_script 与上一版逐字符一致",
+    check("★ output_script 与独立参照逐字符一致（含 <br> 出口）",
           fb_obj.output_script == EXPECTED_LEGACY_OUTPUT,
           fb_obj.output_script)
-    check("段间是 \\n、不含 <br>",
-          "\n" in fb_obj.output_script and "<br>" not in fb_obj.output_script)
+    check("段间是 <br>、不含真实换行",
+          "<br>" in fb_obj.output_script and "\n" not in fb_obj.output_script)
     check("不含【资费名称】/【资费摘要】/【痛点诊断】/【营销话术】",
           all(f"【{seg}】" not in fb_obj.output_script for seg in
               ("资费名称", "资费摘要", "痛点诊断", "营销话术")))
@@ -457,7 +457,7 @@ def main():
         GOLDEN_PID, pspm, cisd, iop_for_sp, label_name_mapping)
     golden_obj = build_selling_point_object(
         GOLDEN_PID, sp_golden, iop_for_sp, label_name_mapping)
-    check("★ 有 IOP 返回时 output_script 与上一版逐字符一致",
+    check("★ 有 IOP 返回时 output_script 与独立参照逐字符一致（含 <br> 出口）",
           golden_obj is not None and
           golden_obj.output_script == expected_script,
           (golden_obj.output_script[:220] if golden_obj else "None"))
@@ -481,8 +481,8 @@ def main():
           "NOT_IN_IOP" not in golden_script and "None:" not in golden_script)
     check("命中「匹配结果2」第 1 个场景 → 用「标签1」切入话术",
           "切入B" in golden_script and "切入A" not in golden_script)
-    check("段间仍是真实 \\n、不含 <br>",
-          "\n" in golden_script and "<br>" not in golden_script)
+    check("段间仍是 <br>、不含真实换行",
+          "<br>" in golden_script and "\n" not in golden_script)
     qids = "\n".join(golden_row.label_ids).split("\n")
     qnvs = [iop_for_sp.get(x) if x in iop_for_sp else None for x in qids]
     check("build_auxiliary_portrait 与上一版参照实现逐字符一致",
@@ -756,7 +756,7 @@ def main():
     sp_db = build_selling_point_object(FALLBACK_PID, sp)
     check("db 查空 → 由平级模块给出卖点话术对象",
           isinstance(sp_db, ProductInfoBySellingPoint))
-    check("★ 端到端输出与上一版逐字符一致",
+    check("★ 端到端输出与独立参照逐字符一致（含 <br> 出口）",
           sp_db is not None and
           sp_db.output_script == EXPECTED_LEGACY_OUTPUT,
           sp_db.output_script[:160] if sp_db else "None")
@@ -920,7 +920,14 @@ def main():
         async def fake_labels(_telnum):
             iop_calls.append(_telnum)
             return dict(iop_stub)
+
+        async def fake_labels_with_status(_telnum):
+            """main.py 的 IopLabelProvider 用 with_status 拿降级原因。"""
+            iop_calls.append(_telnum)
+            return dict(iop_stub), "ok"
+
         main.iop_client.get_customer_labels = fake_labels
+        main.iop_client.get_customer_labels_with_status = fake_labels_with_status
         args = main.Args(telnum=TEL, productId=[
             main.ProductIds(id=PID),
             main.ProductIds(id="202608041615335173"),   # 商机回捞
@@ -961,7 +968,7 @@ def main():
         check("卖点话术 productName 取维表产品名称原文",
               fb_resp.get("productName") == "【兜底套餐】兜底摘要",
               str(fb_resp.get("productName")))
-        check("★ 在线侧 script 与上一版逐字符一致",
+        check("★ 在线侧 script 与独立参照逐字符一致（含 <br> 出口）",
               fb_script == EXPECTED_LEGACY_OUTPUT, fb_script[:160])
         check("卖点话术 script 含「兜底话术」原文的切入话术",
               "切入B" in fb_script and "切入A" not in fb_script,

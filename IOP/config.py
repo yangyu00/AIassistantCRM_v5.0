@@ -35,7 +35,26 @@ _SPECS = (
     ("IOP_LIFETIME_DEFAULT_EXPIRES_IN", 600.0, 1.0),
     ("IOP_LIFETIME_REFRESH_BUFFER", 360.0, 0.0),
     ("IOP_LIFETIME_MIN_LIFETIME", 60.0, 1.0),
-    ("IOP_LIFETIME_MAX_EXPIRES_IN", 86400.0, 1.0),
+    # 上游实际 expires_in 可能是 600000 秒量级（约 7 天）；上限提到 7 天，
+    # 避免把长有效期硬截断到 24h 后「每天刷新一次」并且掩盖上游真实语义。
+    ("IOP_LIFETIME_MAX_EXPIRES_IN", 604800.0, 1.0),
+    # ---- 本次修复新增 ----
+    # token 响应里有效期字段的候选名（按序取第一个存在的）。
+    # 上游字段名不是标准 expires_in 时不再静默回落到 default=600s。
+    ("IOP_EXPIRES_IN_FIELDS", "expires_in,expiresIn,expire_in", None),
+    # 标签查询返回这些业务码 / 描述命中这些关键词时，判定为「token 失效」。
+    ("IOP_AUTH_FAILURE_CODES", "401,403,1001,1002,10001,10102,30001", None),
+    ("IOP_AUTH_FAILURE_KEYWORDS",
+     "access_token,accesstoken,token,invalid,expired,unauthorized,unauthenticated,"
+     "not valid,认证,令牌,失效,无效,过期,未授权,未登录", None),
+    # 判定为 token 失效时，是否 invalidate + 重刷 + 重试一次标签查询。
+    ("IOP_AUTH_RETRY_ENABLED", 1, 0),
+    # 后台 token 续期：把刷新移出用户请求的关键路径。
+    ("IOP_BACKGROUND_REFRESH_ENABLED", 1, 0),
+    ("IOP_BACKGROUND_REFRESH_LEAD", 60.0, 1.0),
+    ("IOP_BACKGROUND_REFRESH_MIN_INTERVAL", 30.0, 1.0),
+    # lifespan 启动预热的最长等待，超时不阻塞服务启动。
+    ("IOP_WARMUP_TIMEOUT", 5.0, 0.1),
 )
 
 
@@ -78,6 +97,12 @@ def _resolve(values: dict[str, str]) -> dict[str, object]:
             number = min(number, MAX_ATTEMPTS_CAP)
         out[key] = int(number) if isinstance(default, int) else number
     return out
+
+
+def _csv(raw) -> tuple[str, ...]:
+    """逗号分隔字符串 → 去空保序元组。"""
+    return tuple(part.strip() for part in str(raw or "").split(",")
+                 if part.strip())
 
 
 # 冻结配置对象（字段无默认值：配置一律由 load() 产生）
@@ -127,6 +152,25 @@ class TokenLifetime:
 
 
 @dataclass(frozen=True)
+class AuthFailureCfg:
+    """标签查询失败中「token 失效」的识别口径与是否自动重刷。"""
+
+    codes: tuple[str, ...]
+    keywords: tuple[str, ...]
+    retry_enabled: bool
+
+
+@dataclass(frozen=True)
+class BackgroundRefreshCfg:
+    """后台续期与启动预热参数。"""
+
+    enabled: bool
+    lead: float
+    min_interval: float
+    warmup_timeout: float
+
+
+@dataclass(frozen=True)
 class IOPConfig:
     """IOP 全部运行配置的不可变聚合。"""
 
@@ -135,6 +179,9 @@ class IOPConfig:
     timeout: TimeoutCfg
     retry: RetryPolicy
     lifetime: TokenLifetime
+    expires_in_fields: tuple[str, ...]
+    auth_failure: AuthFailureCfg
+    background_refresh: BackgroundRefreshCfg
 
     @classmethod
     def load(cls, env_path=ENV_PATH) -> "IOPConfig":
@@ -154,4 +201,18 @@ class IOPConfig:
                                    v["IOP_LIFETIME_REFRESH_BUFFER"],
                                    v["IOP_LIFETIME_MIN_LIFETIME"],
                                    v["IOP_LIFETIME_MAX_EXPIRES_IN"]),
+            expires_in_fields=(_csv(v["IOP_EXPIRES_IN_FIELDS"])
+                               or ("expires_in",)),
+            auth_failure=AuthFailureCfg(
+                codes=_csv(v["IOP_AUTH_FAILURE_CODES"]),
+                keywords=tuple(k.lower() for k in
+                               _csv(v["IOP_AUTH_FAILURE_KEYWORDS"])),
+                retry_enabled=bool(v["IOP_AUTH_RETRY_ENABLED"]),
+            ),
+            background_refresh=BackgroundRefreshCfg(
+                enabled=bool(v["IOP_BACKGROUND_REFRESH_ENABLED"]),
+                lead=v["IOP_BACKGROUND_REFRESH_LEAD"],
+                min_interval=v["IOP_BACKGROUND_REFRESH_MIN_INTERVAL"],
+                warmup_timeout=v["IOP_WARMUP_TIMEOUT"],
+            ),
         )

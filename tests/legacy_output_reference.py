@@ -9,7 +9,9 @@
 * ``rewrite.py::ProductInfoRewrite``（卖点 / 切入 / 挽留 / 总拼装）
 
 这个模块不参与线上运行、不被 ``services`` import，只提供一份独立的
-「上一版本会输出什么」的答案，用来证明新模块的输出逐字符一致。
+「按当前口径会输出什么」的答案，用来证明新模块的输出逐字符一致。
+与上一版历史文件唯一差异：出口把全部换行转成 ``<br>``（见
+``legacy_output()`` 末尾），其余 HTML 模板逐字符保持历史形状。
 """
 from __future__ import annotations
 
@@ -222,6 +224,8 @@ def legacy_output(product_id, pspm, cisd, custom_label_info,
 
     for title in _STRONG_TITLES:
         output_script = output_script.replace(title, f"<strong>{title}</strong>")
+    # 本次口径变更：与商机 / 控损一致，出口把全部换行转成 <br>。
+    output_script = output_script.replace("\n", "<br>")
     return product_name, output_script
 
 

@@ -63,7 +63,7 @@ main.py ──> log/INFO_*.log、log/ERROR_*.log（在线进程日志写入，�
 
 | 作用域 | 唯一来源 | 装配入口 | 缺文件 / 缺键行为 |
 |---|---|---|---|
-| IOP 客户端 | `IOP/.env`（20 键） | `IOPConfig.load()` | 回落 `config.py` 内置默认值 |
+| IOP 客户端 | `IOP/.env`（键表见 `IOP/README.md` 第 4 节） | `IOPConfig.load()` | 回落 `config.py` 内置默认值 |
 | SFTP 写入 | `sftp_avl2db/.env`（68 必需键 + 8 个可选 `<AVL>_DROP_BEFORE_INSERT` 覆盖键） | `load_profiles()` | 缺任一必需键直接 fail-fast |
 | 调用量统计 | `call_stat/.env`（4 键） | `load_config()` | 缺文件告警；缺键静默回落 `config.py` 内置默认值，仅显式写了非法值才告警 |
 | 在线读取 | `services/.env`（7 键） | `db_config.load()` | 回落 `db_config.py` 代码内默认值 |
@@ -130,7 +130,7 @@ python -c "from app_config import load_config; print(load_config())"   # 查看�
 
 ## 6. 请求编排（`main.py::marketAssistant`）
 
-1. 模块级创建唯一 `IOPClient`；FastAPI `lifespan` 的 startup / shutdown 分别 `await iop_client.start()` / `await iop_client.aclose()`。startup 还先调 `call_stat.startup()` 建表并恢复当天已落库基数（打 INFO 日志），shutdown 在 `finally` 里调 `call_stat.flush()` 补齐不足阈值的尾部增量（`uvicorn` 的 SIGTERM 退出路径不经过 `atexit`）。
+1. 模块级创建唯一 `IOPClient(logger=my_log)`（注入在线进程文件日志，不注入则 IOP 失败全静默）；FastAPI `lifespan` 的 startup / shutdown 分别 `await iop_client.start()` / `await iop_client.aclose()`。`start()` 会尽力预热 token 并启动后台续期任务，`aclose()` 取消该任务；预热超时不阻塞服务启动。startup 还先调 `call_stat.startup()` 建表并恢复当天已落库基数（打 INFO 日志），shutdown 在 `finally` 里调 `call_stat.flush()` 补齐不足阈值的尾部增量（`uvicorn` 的 SIGTERM 退出路径不经过 `atexit`）。
 2. 请求内创建 `IopLabelProvider`（函数局部变量）：标签属于单个手机号，同请求最多查 1 次 IOP，任何失败降级 `{}`，不跨请求共享。
 3. 循环外读两次 `dimensions.db`（各 1 次 `mode=ro`、无进程级缓存）：`load_selling_points(全部 productId)` 批量 `IN` 查 `selling_points` 得 `{product_id: SellingPointRow}`；`load_label_name_mapping()` 全表读 `label_name_mapping` 得 `{label_id: 营销助手显示名字}`（由「标签转换维表.xlsx」写出）。
 4. 逐个 `productId`：`services.routing.need_labels(id)` 决定是否取标签（商机回捞、诊断链路与卖点话术都查，控损不查；诊断无静态 ID 白名单，除控损外均需标签），再调 `services.build_product_object(id, telnum, custom_label_info=..., selling_points=..., label_name_mapping=...)` 完成路由、取数与对象构造。提供者保证整请求最多查 1 次 IOP。
@@ -162,7 +162,7 @@ python -c "from app_config import load_config; print(load_config())"   # 查看�
 | 商机回捞 | 四段【通话总结 / 用户需求 / 已推荐政策 / 拒绝原因】HTML | 记录缺失 / 空值填「无」；末尾按需追加【辅助画像】 |
 | 控损 | `strategy_name` 自定义标签转 HTML | 无记录输出「无历史话术记录」 |
 | 诊断 | 六段【资费名称 / 资费摘要 / 痛点诊断 / 切入话术 / 营销话术 / 挽留话术】HTML | 空值填「无」；资费名称 / 摘要取 `F09629.BUSINESS_NAME` 按【】内外拆分（同时支持 ASCII `[]`）；只认 8 张表；**【挽留话术】只从 F09632 召回的「拒绝原因 + 挽留话术」里随机输出一条**（按配对整条抽，不拆开），痛点诊断 / 营销话术仍输出全部召回 |
-| 卖点维表话术 | 四段【辅助画像 / 切入话术 / 卖点 / 挽留话术】，空段整段不出现 | 与诊断平级的独立业务，不读诊断 8 表；**输出格式逐字符复现上一版 `ProductInfoRewrite`**：段间真实 `\n`（非 `<br>`）、`【xxx】` 包 `<strong>`、切入 / 挽留前缀蓝色 span、卖点首段标红 + 标题加粗。db 列 → 段：「产品名称」→ 响应 `productName`；「生成话术」→【卖点】；「兜底话术」→【切入话术】/【挽留话术】；「匹配结果2」为空时仅当「兜底话术」为空且「标签0」非空才回退输出兜底组，否则不输出切入 / 挽留；「标签ID」+ IOP 返回 + `label_name_mapping` →【辅助画像】，IOP 命中「匹配结果2」里的 ID 时改用对应「标签N」话术；不做 `#标签名&` 字段替换 |
+| 卖点维表话术 | 四段【辅助画像 / 切入话术 / 卖点 / 挽留话术】，空段整段不出现 | 与诊断平级的独立业务，不读诊断 8 表；**输出格式逐字符复现上一版 `ProductInfoRewrite` 的 HTML 形状，唯一差异是出口把全部换行转成 `<br>`**：段间 / 段内真实换行在 `build_output_script()` 末尾统一转 `<br>`（与商机 / 控损一致，最终不含 `\n`）、`【xxx】` 包 `<strong>`、切入 / 挽留前缀蓝色 span、卖点首段标红 + 标题加粗。db 列 → 段：「产品名称」→ 响应 `productName`；「生成话术」→【卖点】；「兜底话术」→【切入话术】/【挽留话术】；「匹配结果2」为空时仅当「兜底话术」为空且「标签0」非空才回退输出兜底组，否则不输出切入 / 挽留；「标签ID」+ IOP 返回 + `label_name_mapping` →【辅助画像】，IOP 命中「匹配结果2」里的 ID 时改用对应「标签N」话术；不做 `#标签名&` 字段替换 |
 
 - 诊断标签替换：切入 / 营销 / 挽留三段话术里的 `#标签名&`（如 `#客运个性化运营标签34&`）统一替换——按标签名查第 8 张表 `F09635`（主键 `tag_name`）得 `tag_id`，它即 IOP 返回的 `ITEMCODE`，用该 ITEMCODE 对应的 `ITEMVALUE` 替换整个占位符；**只作用于诊断成功 record**。卖点话术模块的原文不存在待替换字段，不收集、不替换、逐字符输出。标签名未登记、`ITEMCODE` 不存在、`ITEMVALUE` 为 `None` 或 IOP 降级 `{}` 时诊断里的占位符原样保留。挽留段的随机选取只发生在输出拼装阶段：`retain_pairs` 仍是全量召回，标签替换对全集生效，被选中的那条一定已完成替换。
 - 辅助画像：商机侧 `build_auxiliary_portrait()` 按 `标签名: <strong><span style="color:blue;">值</span></strong>; ` 逐项拼接，跳过空值，末尾加 `【辅助画像】` 前缀并 `rstrip`；卖点话术侧 `selling_point_script.build_auxiliary_portrait()` 额外套用上一版硬编码转换（显示名映射 / `0.00→无` / 加元 / 加 M / 是否 / 降档阈值标红 / 同名去重），HTML 形状一致。空输入返回空串，不追加该段。
@@ -190,7 +190,7 @@ python -c "from app_config import load_config; print(load_config())"   # 查看�
 | 维表中无该 `product_id` 或产品名称为空 | 卖点话术工厂返回 `None`，落 `ProductInfoRaw`（`code: "2"`） |
 | 卖点话术原文为空 /「匹配结果2」为空 | 「匹配结果2」为空时仅当「兜底话术」为空且「标签0」非空才回退「标签0」原文输出兜底组，其余情况切入 / 挽留段整段不出现、只留【卖点】；不填「无」，不回退其它「标签N」 |
 | 卖点维表库缺失 / 列漂移 / 查询异常 | `dimensions` 降级 `{}`，商机辅助画像为空，卖点话术无行可用 → `code: "2"`，其余话术段照常；`label_name_mapping` 表缺失同样降级 `{}`，辅助画像直接用 IOP 原名 |
-| IOP token / 标签超时、连接失败、响应异常、冷却期 | 重试退避后降级 `{}`，不阻塞其它并发请求；商机画像为空，诊断话术里的 `#标签名&` 原样保留；卖点话术不受影响 |
+| IOP token / 标签超时、连接失败、响应异常、冷却期 | 重试退避后降级 `{}`，不阻塞其它并发请求；商机画像为空，诊断话术里的 `#标签名&` 原样保留；**卖点话术同样受影响**：无【辅助画像】段，且切入 / 挽留话术回落「兜底话术」组。降级原因（status）记进 `log/`，标签端点明确返回 token 失效时自动 invalidate + 重刷 + 重试一次，不再带病跑完整个有效期 |
 | 调用量库写入 / 启动读取失败 | 保留 `_PENDING` 下轮重试，或基数按 0 恢复，服务照常启动 |
 | 维表 xlsx 缺失 / 缺必需表头列 | 写入侧告警跳过本表，保留上次成功版本，下轮重试 |
 
@@ -254,7 +254,7 @@ python tests/check_call_stat.py
 python tests/check_online_api.py
 ```
 
-期望响应基线（业务库为空时）：商机 3 个 ID 返回四段各填「无」的 HTML（`code: "0"`）；控损 `202609180955095402` 返回 `script: "无历史话术记录"`（`code: "0"`）；诊断返回 `None` 后由卖点话术模块接手——维表有该行且产品名称非空时返回与上一版逐字符一致的 script（`code: "0"`），维表无该行或产品名称为空才 `code: "2"`；`res_code` 恒为 `0`，非法入参恒返回 HTTP 200 + `res_code: 1`。在线冒烟脚本只打印结果、结论靠人看，不是自动断言。
+期望响应基线（业务库为空时）：商机 3 个 ID 返回四段各填「无」的 HTML（`code: "0"`）；控损 `202609180955095402` 返回 `script: "无历史话术记录"`（`code: "0"`）；诊断返回 `None` 后由卖点话术模块接手——维表有该行且产品名称非空时返回与独立参照逐字符一致的 script（`code: "0"`），维表无该行或产品名称为空才 `code: "2"`；`res_code` 恒为 `0`，非法入参恒返回 HTTP 200 + `res_code: 1`。在线冒烟脚本只打印结果、结论靠人看，不是自动断言。
 
 ### 10.5 常驻进程与维护命令
 
@@ -308,7 +308,9 @@ python tests/check_purge_rotation.py           # 库表清理轮转自检，结�
 python tests/check_online_api.py               # 在线主链路冒烟（需先起服务）
 python tests/check_param_validation.py         # 入参校验冒烟
 python tests/check_call_stat.py                # 调用量 GET 冒烟
-python tests/check_iop_direct.py 13900000000   # IOP 上游直连冒烟
+python tests/check_iop_direct.py 13900000000   # IOP 上游直连冒烟（打印降级 status）
+python tests/check_iop_token_raw.py            # 抓 token 端点原始响应，核对 expires_in 字段/单位
+python tests/check_iop_offline.py              # IOP 修复离线自检（不打真实上级）
 ```
 
 `check_diagnosis_offline.py` 真正断言的是：`F09633` 建满 128 张分表、号码不串表、按 `telnum` 精确定位且缺 `product_no` 时降级 `[]`；写入侧 / 在线侧分表口径一致；维表「标签ID」拆分与库缺失降级；商机画像端到端来自维表 → IOP；诊断 7 表关联与六段话术、诊断不适用返回 `None`；平级卖点话术模块（**把上一版 `ProductInfoRewrite.output_script` 的逐字符期望固化成 `EXPECTED_LEGACY_OUTPUT`**，离线与在线两处断言相等；另用 `tests/legacy_output_reference.py` 直译上一版四个历史文件，对「有 IOP 返回 + `label_name_mapping` + 标签专属话术命中」的完整输出做 golden 逐字符比对；`tests/check_legacy_output_parity.py` 再用真实 `dimensions.db` 全量（当前 1361 个 product_id × 多组 IOP 返回 = 5121 次输出）做独立 oracle 对照，含辅助画像 896 次、不一致 0；切入 / 卖点 / 挽留的蓝 / 红 span 与加粗标题、段间 `\n`、「匹配结果2」为空不输出切入挽留、按标签选话术可选路径、降级边界与 `#标签名&` 原样保留）；业务库未就绪时商机 / 控损按空记录出话术；五类路由输出与 `code` 按对象类型判定；商机回捞与诊断链路共用请求级 IOP 标签（整请求最多 1 次）、`F09635` 按 `tag_name` 反查并把诊断三类话术里的 `#标签名&` 换成 `ITEMVALUE`（含降级保留）。
@@ -321,7 +323,7 @@ python tests/check_iop_direct.py 13900000000   # IOP 上游直连冒烟
 
 - [`requirements.txt`](requirements.txt)：运行依赖、版本下限与安装命令
 - [`services/README.md`](services/README.md)：在线业务层分层、五类路由、读取配置、诊断 8 表取数与平级卖点话术模块（输出格式复现上一版）
-- [`IOP/README.md`](IOP/README.md)：标签客户端的入口、请求链路、上游契约、配置与并发约束
+- [`IOP/README.md`](IOP/README.md)：标签客户端的入口、请求链路、上游契约、配置、token 失效自愈与并发约束，以及「同样查询一次无辅助画像」的排查步骤
 - [`sftp_avl2db/README.md`](sftp_avl2db/README.md)：AVL 注册、表结构、解析写入、清理轮转
 - [`local_excel2db/README.md`](local_excel2db/README.md)：registry 配置、库表结构与导入流程
 - [`call_stat/Readme.md`](call_stat/Readme.md)：调用量统计的存储、生命周期、GET 契约与自检

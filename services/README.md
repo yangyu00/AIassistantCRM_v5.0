@@ -29,7 +29,7 @@
 | 商机回捞 | `opportunity_recall/` | 四段话术 + 辅助画像 |
 | 控损 | `loss_control/` | `strategy_name` 自定义标签 → HTML；`parse_custom_tags()` 为模块级纯函数 |
 | 诊断 | `diagnosis/` | **只认 8 张表**：取数、纯逻辑、六段话术对象、口径常量；不读卖点维表、不做兜底 |
-| 卖点维表话术 | `selling_point_script/` | **与诊断平级的第四类业务**：消费维表一行 + 请求级 IOP 返回 + `label_name_mapping`，复现上一版 `ProductInfoRewrite` 的输出格式；字段抽取与话术组合各自单点可改；不读诊断 8 表、不做 `#标签名&` 替换 |
+| 卖点维表话术 | `selling_point_script/` | **与诊断平级的第四类业务**：消费维表一行 + 请求级 IOP 返回 + `label_name_mapping`，复现上一版 `ProductInfoRewrite` 的 HTML 形状（唯一差异：出口把全部换行转成 `<br>`）；字段抽取与话术组合各自单点可改；不读诊断 8 表、不做 `#标签名&` 替换 |
 
 四类业务包以业务名命名，包内 `rewrite.py` 承载业务对象、`__init__.py` 显式导出。诊断与卖点话术**互不 import**：诊断的话术拼接只需要 8 张表，卖点话术的组合只需要维表一行，两边的数据源与字段集完全不重叠。
 
@@ -180,7 +180,7 @@
 
 | 文件 | 职责 |
 |---|---|
-| `logic.py` | 纯函数零 I/O：`cut_in_str2tuple()`（切入 / 挽留话术分段 + 蓝色 span）、`build_selling_point()`（卖点标红 / 加粗）、`strong_sections()`（标题加粗）、`build_output_script()`（**唯一组合点**）、`select_script()`（按标签选话术）、`extract_selling_point_fields()`（**唯一抽取点**） |
+| `logic.py` | 纯函数零 I/O：`cut_in_str2tuple()`（切入 / 挽留话术分段 + 蓝色 span）、`build_selling_point()`（卖点标红 / 加粗）、`strong_sections()`（标题加粗）、`build_output_script()`（**唯一组合点**，末尾把全部换行转 `<br>`）、`select_script()`（按标签选话术）、`extract_selling_point_fields()`（**唯一抽取点**） |
 | `rewrite.py` | `ProductInfoBySellingPoint`（业务对象）+ `build_selling_point_object(product_id, selling_points, custom_label_info=None, label_name_mapping=None)`（工厂，无行 / 产品名为空返回 `None`） |
 | `__init__.py` | 显式导出语义化类名与两个单点函数 |
 
@@ -198,11 +198,12 @@
 **输出格式（逐字符）**
 
 1. 四段固定顺序：`辅助画像 → 切入话术 → 卖点 → 挽留话术`；**空段整段不出现**（不是填「无」）。
-2. 段间用真实换行 `\n`（**不是** `<br>`），最后一段不带尾换行；`【xxx】` 标题统一包 `<strong>…</strong>`。
+2. 中间层段间仍按真实换行 `\n` 拼接，但**唯一组合出口把全部 `\n` 转成 `<br>`**（与商机 / 控损一致），最终 `output_script` 不含真实换行；最后一段不带尾换行；`【xxx】` 标题统一包 `<strong>…</strong>`。
 3. 切入 / 挽留：`cut_in_str2tuple()` 用 `r'切入话术(.*?)拒绝挽留话术(.*)'`（DOTALL）切两段，各自加 `【切入话术】\n` / `【挽留话术】\n`；每行先 `strip()` → `:` 换 `：` → 按 `：` 分割，第一段去掉 `^\d+\s?\.\s?` 后包成 `<strong><span style="color: blue;">前缀：</span></strong>`（**`color: blue;` 带空格**），再拼回其余段；行间 `\n`。调用前先去掉全部 `**`。
 4. 卖点：`build_selling_point()` 用 `r'\d、.*?：'`（DOTALL）找 `1、资费：` / `2、价格：` / `3、业务确认：` 等标题；首段内容包 `<span style="color:red;">…</span>`（**无空格**）、首标题一起包 `<strong>`；后续每段 `\n<strong>标题：</strong>内容.strip()`。无标题时原文原样跟在 `【卖点】\n` 后。
 5. **不做 `#标签名&` 字段替换**：不收集占位符、不查 `F09635`，话术原文逐字符输出——这是与诊断链路的关键区别（诊断三类话术才做替换）。IOP 返回另有用处：拼【辅助画像】、按「匹配结果2」选标签专属话术，二者都不改动话术原文里的字符。
 6. 降级边界：维表无该 `product_id` 或 `product_name` 为空 → 工厂返回 `None` → 路由落 `ProductInfoRaw`（`code: "2"`）。
+7. **换行出口转换**：`parse_fusion_scripts()` / `build_selling_point_section()` 等中间函数仍返回含 `\n` 的文本；只有 `build_output_script()` 在标题加粗后做 `.replace("\n", "<br>")`，与商机 / 控损一致。离线自检的 `EXPECTED_LEGACY_OUTPUT` 与独立参照 `legacy_output()` 已同步到该口径。
 
 **取数口径（仍只从 db 列重建）**
 
@@ -362,7 +363,7 @@ return "\n".join(lines).strip().replace("\n", "<br>")
 
 **卖点维表话术（`selling_point_script/logic.py`）**
 
-`ProductInfoBySellingPoint` 令 `product_name = record.get("business_name") or ""`（维表「产品名称」原文），`output_script = build_output_script(record)`，逐字符复现上一版 `ProductInfoRewrite`：
+`ProductInfoBySellingPoint` 令 `product_name = record.get("business_name") or ""`（维表「产品名称」原文），`output_script = build_output_script(record)`，逐字符复现上一版 `ProductInfoRewrite` 的 HTML 形状，唯一差异是末尾的换行转换：
 
 ```python
 output_script = ""
@@ -371,9 +372,10 @@ output_script += (record["cut_in_statement"] + "\n") if ... else ""
 output_script += (record["selling_point_block"] + "\n") if ... else ""
 output_script += record["retain_statement"] if ... else ""
 output_script = strong_sections(output_script)   # 【xxx】 → <strong>【xxx】</strong>
+output_script = output_script.replace("\n", "<br>")  # 与商机 / 控损一致
 ```
 
-样例（无标签数据时）：
+样例（无标签数据时；按行展示便于阅读，实际 `output_script` 中这些位置均为 `<br>`）：
 
 ```
 <strong>【切入话术】</strong>
@@ -386,7 +388,7 @@ output_script = strong_sections(output_script)   # 【xxx】 → <strong>【xxx�
 <strong><span style="color: blue;">担心合约：</span></strong>挽留B
 ```
 
-段间是真实 `\n`（不是 `<br>`）、空段整段不出现（不填「无」）、最后一段无尾换行；没有 `omit` 分支、没有标签替换、没有资费名称 / 摘要 / 痛点 / 营销段。`color: blue;` 带空格、`color:red;` 不带，均为当前固定写法。
+段间与段内的换行在出口统一为 `<br>`（不再含真实 `\n`）、空段整段不出现（不填「无」）、最后一段无尾换行；没有 `omit` 分支、没有标签替换、没有资费名称 / 摘要 / 痛点 / 营销段。`color: blue;` 带空格、`color:red;` 不带，均为当前固定写法。
 
 ## 10. 自检
 
@@ -395,7 +397,7 @@ python tests/check_diagnosis_offline.py      # 零第三方依赖主体，不连
 python -m call_stat --self-check            # 调用量统计组件自检
 ```
 
-`check_diagnosis_offline.py` 用 8 个样例 AVL 建临时库并补一组业务键自洽数据；其中卖点话术部分把上一版 `ProductInfoRewrite.output_script` 的逐字符期望固化成 `EXPECTED_LEGACY_OUTPUT`（无 IOP 时），离线自检与在线路由两处都断言相等；另用独立的 `tests/legacy_output_reference.py` 直译上一版四个历史文件，对「有 IOP 返回 + `label_name_mapping` + 标签专属话术命中」的完整输出做 golden 逐字符比对；`tests/check_legacy_output_parity.py` 把同一 oracle 跑在真实 `dimensions.db` 全量（1361 个 product_id × 多组 IOP 返回 = 5121 次输出）上，逐字符不一致 0。断言：注册 / 解析 / 入库、单一 flat 解析器、`F09633` 分表（128 张表、号码不串表、按 telnum 精确定位、缺 `product_no` 降级 `[]`、两侧分表口径一致）、卖点维表 → 商机标签 ID（按 `db_config` 声明建临时 `dimensions.db`、换行 / 竖线拆分、库缺失降级）、**卖点话术格式复现**（`cut_in_str2tuple` / `build_selling_point` / `strong_sections` 逐字符断言、`EXPECTED_LEGACY_OUTPUT` 端到端相等、段间 `\n` 而非 `<br>`、「匹配结果2」为空不输出切入挽留、按标签选话术可选路径、无该行或产品名为空返回 `None`、`#标签名&` 原样保留）、多行查询、诊断 7 表关联与六段话术、诊断不适用 → 平级卖点话术对象、业务库未就绪时商机 / 控损按空记录出话术、商机 / 诊断共用请求级 IOP 标签（整请求 1 次）、`F09635` 主键 `tag_name` 与三类话术 `#标签名&` → `ITEMVALUE` 替换（含降级保留）、在线侧 `code=0` 且与上一版输出逐字符一致，结论 `ALL PASS`。
+`check_diagnosis_offline.py` 用 8 个样例 AVL 建临时库并补一组业务键自洽数据；其中卖点话术部分把上一版 `ProductInfoRewrite.output_script` 的逐字符期望固化成 `EXPECTED_LEGACY_OUTPUT`（无 IOP 时），离线自检与在线路由两处都断言相等；另用独立的 `tests/legacy_output_reference.py` 直译上一版四个历史文件，对「有 IOP 返回 + `label_name_mapping` + 标签专属话术命中」的完整输出做 golden 逐字符比对；`tests/check_legacy_output_parity.py` 把同一 oracle 跑在真实 `dimensions.db` 全量（1361 个 product_id × 多组 IOP 返回 = 5121 次输出）上，逐字符不一致 0。断言：注册 / 解析 / 入库、单一 flat 解析器、`F09633` 分表（128 张表、号码不串表、按 telnum 精确定位、缺 `product_no` 降级 `[]`、两侧分表口径一致）、卖点维表 → 商机标签 ID（按 `db_config` 声明建临时 `dimensions.db`、换行 / 竖线拆分、库缺失降级）、**卖点话术格式复现**（`cut_in_str2tuple` / `build_selling_point` / `strong_sections` 逐字符断言、`EXPECTED_LEGACY_OUTPUT` 端到端相等、出口 `\n` → `<br>` 且不再含真实换行、「匹配结果2」为空不输出切入挽留、按标签选话术可选路径、无该行或产品名为空返回 `None`、`#标签名&` 原样保留）、多行查询、诊断 7 表关联与六段话术、诊断不适用 → 平级卖点话术对象、业务库未就绪时商机 / 控损按空记录出话术、商机 / 诊断共用请求级 IOP 标签（整请求 1 次）、`F09635` 主键 `tag_name` 与三类话术 `#标签名&` → `ITEMVALUE` 替换（含降级保留）、在线侧 `code=0` 且与上一版输出逐字符一致，结论 `ALL PASS`。
 
 脚本里写入侧配置（`load_profiles(runtime_dir=TMP)`）与在线侧配置（`db_config.load(avl_db_root=TMP/sqlite_db, ...)`）各自独立装配，共同指向同一批临时 db 文件；临时 `sftp_avl2db/.env` 只服务写入侧，结束后删除；维表库用临时路径注入，不写包内 `runtime/`。
 

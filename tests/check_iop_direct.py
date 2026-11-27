@@ -14,19 +14,33 @@ if __package__ in (None, ""):
 DEFAULT_TEL = ""
 
 
+class _StdoutLogger:
+    """把 IOP 侧原本静默的失败 / 冷却 / 重刷原因打到终端。"""
+
+    def info(self, msg):
+        print(f"[IOP INFO] {msg}")
+
+    def error(self, msg):
+        print(f"[IOP ERROR] {msg}")
+
+    def warning(self, msg):
+        print(f"[IOP WARN] {msg}")
+
+
 async def _query(tel):
-    """发起一次真实查询并返回客户标签画像 dict。"""
+    """发起一次真实查询，返回 (labels, status)。"""
     from IOP import IOPClient
 
-    async with IOPClient() as client:
-        return await client.get_customer_labels(tel)
+    async with IOPClient(logger=_StdoutLogger()) as client:
+        return await client.get_customer_labels_with_status(tel)
 
 
-def _render(tel, profile):
-    """把画像打印到终端。"""
-    print(f"客户画像查询结果 | 电话号 {tel}")
+def _render(tel, profile, status=""):
+    """把画像与 IOP 降级原因打印到终端。"""
+    print(f"客户画像查询结果 | 电话号 {tel} | IOP status={status}")
     if not profile:
         print("  未查到标签画像（IOP 返回空，或本次查询已降级）。")
+        print(f"  本次判定原因：{status or '未知'}（详见上方 [IOP ERROR] 日志）")
         print("  常见原因：token 不可用 / 上游非 200 / 超时 / 号码不在标签库")
         return
 
@@ -52,8 +66,8 @@ def main(argv=None):
         print("  或把号码填进本文件的 DEFAULT_TEL 后不带参数运行。")
         return 2
 
-    profile = asyncio.run(_query(tel))
-    _render(tel, profile)
+    profile, status = asyncio.run(_query(tel))
+    _render(tel, profile, status)
     return 0
 
 

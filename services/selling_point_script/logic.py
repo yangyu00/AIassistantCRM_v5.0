@@ -17,7 +17,7 @@
     辅助画像 → 切入话术 → 卖点 → 挽留话术
 
 四个【】标题统一包 ``<strong>``；话术行前缀用 ``color: blue;``（带空格），
-卖点首段内容用 ``color:red;``；段落之间用字面 ``\\n``，**不**转成 ``<br>``。
+卖点首段内容用 ``color:red;``；段落之间用字面 ``\\n``；但唯一组合出口会把所有换行统一转成 ``<br>``（与商机 / 控损一致），最终 ``output_script`` 不含真实换行。
 「匹配结果2」为空时整张话术表为空（例外见下）；
 「兜底话术」列缺失 / 为空时回退「标签0」原文充当兜底话术组，其余「标签N」
 仍只服务「匹配结果2」，不参与兜底。
@@ -332,8 +332,8 @@ _OUTPUT_KEYS = ("auxiliary_portrait", "cut_in_statement",
 def build_output_script(record):
     """**唯一组合点**：各段按固定顺序拼成 ``output_script``。
 
-    字面 ``\\n`` 连接，最后把四个【】标题统一包 ``<strong>``；不做
-    ``strip()``、不把 ``\\n`` 转成 ``<br>``。
+    各段先按字面 ``\\n`` 连接、四个【】标题统一包 ``<strong>``，最后与
+    商机 / 控损一致，把全部换行转成 ``<br>``；不做 ``strip()``。
     """
     record = record or {}
     out = ""
@@ -341,7 +341,7 @@ def build_output_script(record):
         value = record.get(key)
         if value:
             out += value + ("" if i == len(_OUTPUT_KEYS) - 1 else "\n")
-    return strong_sections(out)
+    return strong_sections(out).replace("\n", "<br>")
 
 
 def extract_selling_point_fields(product_id, row, custom_label_info=None,

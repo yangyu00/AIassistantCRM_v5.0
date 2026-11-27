@@ -1,4 +1,4 @@
-"""卖点话术「输出复现」自检：转好的 ``dimensions.db`` **全量**逐字符对照上一版。
+"""卖点话术「输出复现」自检：转好的 ``dimensions.db`` **全量**逐字符对照独立参照。
 
 用法::
 
@@ -108,7 +108,7 @@ def main():
         if fails:
             print("FAILED")
             return 1
-        print("ALL PASS · 现版输出与上一版 ProductInfoRewrite 逐字符一致")
+        print("ALL PASS · 现版输出与独立参照逐字符一致")
         return 0
     finally:
         dimensions.configure(None)

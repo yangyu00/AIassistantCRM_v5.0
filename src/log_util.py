@@ -19,7 +19,7 @@ def configure_logging(log_dir: str = "") -> None:
     logger.add(
         str(log_dir_path / f"INFO_{time.strftime('%Y-%m-%d')}.log"),
         level="INFO",
-        filter=lambda record: record["level"].name == "INFO",
+        filter=lambda record: record["level"].name in ("INFO", "WARNING"),
         rotation="00:00",  # 每天 00:00 轮转
         encoding="utf8",
         compression=None,  # 不压缩归档
