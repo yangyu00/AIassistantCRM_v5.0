@@ -301,7 +301,6 @@ async def part_other_paths():
     check("上游成功但号码无标签 → status=ok_empty（可与降级区分）",
           labels == {} and status == STATUS_OK_EMPTY, status)
 
-    # 原入口向后兼容
     log = Log()
     compat = parse_custinfo_response(
         label_ok().payload, status_code=200, logger=log, cost_ms=1.0)

@@ -118,7 +118,7 @@ def parse_custinfo_response(
     logger: Any,
     cost_ms: float,
 ) -> dict:
-    """原入口：只返回 ``{ITEMCODE: [ITEMNAME, ITEMVALUE]}``。
+    """返回 ``{ITEMCODE: [ITEMNAME, ITEMVALUE]}``。
 
     需要区分降级原因时用 ``parse_custinfo_response_ex()``。
     """

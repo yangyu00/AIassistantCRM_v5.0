@@ -34,7 +34,7 @@ async with IOPClient() as client:
 ## 2. 请求链路
 
 1. **启动预热**：lifespan `startup` 里 `IOPClient.start()` 尽力预热 token（`IOP_WARMUP_TIMEOUT` 秒内），失败 / 超时只记 ERROR，不阻塞服务启动。
-2. **后台续期**：`start()` 起一个 `asyncio.Task`，在 `deadline - IOP_BACKGROUND_REFRESH_LEAD` 处续期，`shutdown` 时取消。刷新不再落在用户请求的关键路径上。
+2. **后台续期**：`start()` 起一个 `asyncio.Task`，在 `deadline - IOP_BACKGROUND_REFRESH_LEAD` 处续期，`shutdown` 时取消。
 3. `ensure_token()`：token 有效则零开销直接返回；否则在单飞锁内完成一轮刷新。**续期刷新失败时保留仍在有效期内的旧 token**（记 ERROR），避免一次上游抖动把整个进程打回无 token 状态。
 4. 刷新后仍无有效 token，返回 `{}` + `status=token_unavailable`，不发标签请求；冷却期内的请求同样在这里短路（0 次 HTTP），但会记 INFO。
 5. 标签查询用 `json=` + 显式 headers 发出；建连 / 读超时与网络异常就地收口，返回 `{}` + 对应 `status`。

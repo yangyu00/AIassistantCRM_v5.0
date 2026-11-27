@@ -215,7 +215,7 @@ docker run -d --name crm -p 8989:8989 aiassistantcrm:v5.0
 docker run -d --name crm -p 8989:8989 aiassistantcrm:v5.0 full
 ```
 
-`docker-entrypoint.sh` 作为 PID 1，按首参分派：`api`（默认，只 `exec python3 main.py`）、`full`（12 个 `python3 -m sftp_avl2db --task <AVL>` + 1 个 `python3 -m local_excel2db` + `python3 main.py`，共 14 个进程，AVL 清单与第 10.5 节一致）、`shell`（`exec /bin/sh`）、其它原样 `exec`。`CRM_PORT` 环境变量由该脚本写回 `/app/.env`（`SKIP_ENV_WRITE=1` 禁用写回）；`app_config.load_config()` 仍只读 `.env`，不读系统环境变量。整目录挂载时脚本校验 `app_config.py` 与 `local_excel2db/registry.json` 存在，`local_excel2db/runtime/sqlite_db/dimensions.db` 缺失时自动执行 `python3 -m local_excel2db --once`。镜像构建时 `Dockerfile` 会用各包 `.env.example` 初始化缺失的 `.env`，凭据替换仍按 10.2 节执行。
+`docker-entrypoint.sh` 作为 PID 1，按首参分派：`api`（默认，只 `exec python3 main.py`）、`full`（12 个 `python3 -m sftp_avl2db --task <AVL>` + 1 个 `python3 -m local_excel2db` + `python3 main.py`，共 14 个进程，AVL 清单与第 10.5 节一致）、`shell`（`exec /bin/sh`）、其它原样 `exec`。`CRM_PORT` 环境变量由该脚本写回 `/app/.env`（`SKIP_ENV_WRITE=1` 禁用写回）；`app_config.load_config()` 仍只读 `.env`，不读系统环境变量。整目录挂载时脚本校验 `app_config.py` 与 `local_excel2db/registry.json` 存在，`local_excel2db/runtime/sqlite_db/dimensions.db` 缺失时自动执行 `python3 -m local_excel2db --once`。镜像构建时 `Dockerfile` 会用各包 `.env.example` 初始化缺失的 `.env`，凭据替换仍按 10.2 节执行。`full` 模式下 API 是主进程，脚本 `wait "$api_pid"` 等它退出即容器退出；`TERM` / `INT` 由 `trap terminate` 转发给 12 个写入进程与维表进程后收尾。
 
 ### 10.2 凭据替换（首次部署必做）
 
@@ -225,7 +225,7 @@ docker run -d --name crm -p 8989:8989 aiassistantcrm:v5.0 full
 |---|---|
 | `sftp_avl2db/.env` 与 `.env.example` | `SFTP_HOST` / `SFTP_PORT` / `SFTP_USERNAME` / `SFTP_PASSWORD` / `SFTP_REMOTE_PATH` |
 | `IOP/.env` 与 `.env.example` | `IOP_TOKEN_HOST` / `IOP_TOKEN_PORT` / `IOP_TOKEN_ID` / `IOP_TOKEN_SECRET` / `IOP_CUSTINFO_HOST` / `IOP_CUSTINFO_PORT` |
-| `IOP/config.py::_SPECS` | `IOP_TOKEN_HOST` / `IOP_TOKEN_PORT` / `IOP_TOKEN_ID` / `IOP_TOKEN_SECRET` / `IOP_CUSTINFO_HOST` / `IOP_CUSTINFO_PORT` 共 6 个内置默认值；`.env` 缺文件 / 缺键 / 空值 / 写成 `<...>` 占位符时回落这些内置值 |
+| `IOP/config.py::_SPECS` | 上表所列 6 个键对应的内置默认值；`.env` 缺文件 / 缺键 / 空值 / 写成 `<...>` 占位符时回落这些内置值 |
 
 最后一处不能漏：`.env` 缺键、空值或写成 `<...>` 占位符时会**回落到 `_SPECS` 的内置值**（见 `IOP/README.md` 第 4 节），只改 `.env` 并不能保证生效值已换掉。生产环境不要把 `.env` 再提交进版本库。改完配置重启对应进程生效（配置对象首次加载后冻结）。
 

@@ -169,8 +169,8 @@ runtime/
 
 - 作用点在 `sftp_avl2db/sink/sqlite_sink.py::write()`：`F09633` 走 `_write_atomic_swap()`，其余开启全量替换的 AVL 走 `drop_existing()`。全量替换模式的启动说明与单文件导入前那行模式日志，文案由 sink 的 `startup_notice()` / `write_mode_log()` 提供，runner 只决定何时打印、不描述写入实现；sink 未提供该方法时（测试替身）回落到与 profile 口径一致的通用 DROP 描述。离线自检直调 `build_sink()` 时不传 `atomic_swap`，仍按 DROP 重建断言。
 - 同一轮若导入多个日期文件（常驻模式默认同时兜底前一天与当天），每次 `write()` 都会重建一次，最终只剩最后一个文件的数据——这正是「存入最新 AVL 之前清旧」的语义。
-- 与过期清理互不冲突：`purge_expired()` 仍按 `DATA_EXPIRE_DAYS` 跑；开启模式只是让表在每批写入前先归零。
-- 风险提示：走 `drop_existing()` 的 AVL 里 `DROP` 在写入前已提交，若该批解析 / 写入中途失败，表里会是空表或半批数据，下轮需用 `--force-reload` 重跑补齐；建议配合任务锁与失败告警使用。`F09633` 的原子切换路径在切换前完全不动当前套，导入失败时在线侧仍读上一日全量数据，但需预留当前套 + stage 套两份磁盘空间。
+- 开启全量替换时，`runner.cleanup_expired()` 在非 `force_full` 的常驻轮次跳过库表过期清理（表内只保留最新一批，无历史行可清）；单次 `--date` 补跑 `force_full=True` 仍执行全量清理。本地 AVL 文件清理仍每轮执行。
+- 风险提示：走 `drop_existing()` 的 AVL 里 `DROP` 在写入前已提交，若该批解析 / 写入中途失败，表里会是空表或半批数据，需用 `--force-reload` 重跑补齐；同一远程文件连续 2 次失败（`DROP_FAILURE_LIMIT=2`）会被写入 `runtime/state/{AVL}.drop_quarantine` 并停止自动重试，预检阶段命中隔离即返回 SKIP，需人工删除标记中该行或用 `--force-reload` 解除；控损（含断供兜底）不参与该闸门；建议配合任务锁与失败告警使用。`F09633` 的原子切换路径在切换前完全不动当前套，导入失败时在线侧仍读上一日全量数据，但需预留当前套 + stage 套两份磁盘空间。
 - 只对部分 AVL 开启时，写 `<AVL>_DROP_BEFORE_INSERT=1` 覆盖全局 `0`，例如只让诊断 8 张表走全量替换。
 
 自检：`python tests/check_drop_before_insert.py`（覆盖关闭 / 开启 / 分表 / 按 AVL 覆盖 / 按业务窗口 / 365 天保留期）；`python tests/check_f09633_write_optimization.py`（覆盖无物理主键的 DDL / 纯 `INSERT` / 灌完建索引 / 写入侧零删行 / 两轮原子切换索引名不撞 / 在线侧 `reader` 走 `product_no` 索引）；`python tests/check_pain_points_dedup.py`（覆盖上游偶发同键重复行时诊断 `pain_points` 的兜底去重）；`python tests/check_insert_mode.py`（覆盖三种 `insert_mode` 的单点推导 / SQL 文本唯一来源 / 非法组合显式报错 / 装配注入点仍可用）；`python tests/check_runner_refactor.py`（覆盖模式文案由 sink 逐字符提供 / runner 只决定何时打印且替身兜底不变 / `import_one()` 拆分后 SKIP·MISSING·FAILED·OK 四态与清单登记时机 / 控损 0 字节短路）；`python tests/check_db_session.py`（覆盖 `_session()` 的 bulk / 非 bulk PRAGMA 与连接计数 / 异常统一 rollback / 两类错误策略不串 / 九个改造方法的返回值与关键 `WriteStats`）。
@@ -228,7 +228,7 @@ runtime/
 
 续行解析（`parsers/continuation.py`）：以行首 `YYYY-MM-DD` 判定新记录；`strip_eol()` 只去 `\n`、再只剥**一个** ASCII 反斜杠（不能用 `rstrip('\\')`，否则 GBK 尾字节 `0x5C` 的汉字会被削成乱码）；起始行 `>=5` 列取前 5 列、`==4` 列补空 `strategy_name`、`<4` 列整条跳过；空物理行与文件开头孤立续行跳过；最后一条单独入库。单个 `F09591.db` 内 128 张表 `F09591_0 … 127`，路由 `zlib.crc32(product_no.encode("utf-8")) % NUM_TABLES`，写入用 `INSERT ... ON CONFLICT DO UPDATE`（upsert），批量补跑按文件名日期升序。
 
-两类库都以主键 + `INSERT ... ON CONFLICT DO UPDATE`（upsert） 保证幂等，`op_time` 不进主键（每日全量覆盖最新批次）；连接 PRAGMA 口径见「实现级规格」第 4 条，此处不重复。
+两类库都以主键 + `INSERT ... ON CONFLICT DO UPDATE`（upsert） 保证幂等，`op_time` 不进主键（每日全量覆盖最新批次）；连接 PRAGMA 口径见本文档第 9 节第 4 条，此处不重复。
 
 ### 控损缺文件兜底（`op_time` +1 天）
 
