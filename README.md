@@ -44,7 +44,7 @@ SFTP AVL ──> sftp_avl2db ──> runtime/sqlite_db/{project}/{AVL}.db ──
 excels/*.xlsx ──> local_excel2db ──> runtime/sqlite_db/dimensions.db ─┤
                                                                      ├──> services/reader.py ──> services/routing.py ──> 产品对象 ──> main.py 响应
 IOP 上游 ──> IOPClient（进程级共享）──> 请求级标签 ────────────────────┘        ▲
-                                                          services/dimensions.py ─┘（每请求只读 1 次 dimensions.db）
+                                                          services/dimensions.py ─┘（每请求 2 次 mode=ro 连接：selling_points + label_name_mapping）
 
 main.py ──> call_stat/runtime/call_sum.db（在线进程唯一业务写入）
 main.py ──> log/INFO_*.log、log/ERROR_*.log（在线进程日志写入，非业务数据）
@@ -56,6 +56,7 @@ main.py ──> log/INFO_*.log、log/ERROR_*.log（在线进程日志写入，�
 - `F09591`（控损）与 `F09633`（诊断·用户场景对应关系）按 `product_no` 分表，默认 128 张；`F09633` 是千万级表，分表键与在线查询键一致，一次请求只命中一张分表。
 - 写入侧与在线侧各自独立声明库路径、表字段与分表数，代码 / 配置互不引用；唯一交集是磁盘上的 db 文件。改列顺序、分表数或库路径必须同步两侧声明（写入侧 `sftp_avl2db/table_schemas.py`、`avl_specs.py`、`.env`；在线侧 `services/db_config.py`、`services/.env`）。改分表数须重灌对应 AVL 全量数据。
 - 每个 `{AVL}.db` 内另有 `_avl_meta` 批次水位表（写入侧维护、在线侧按同名只读），用于把查询限定在最近 `N` 个 `op_time` 批次；不参与分表与过期清理。
+- `F09633` 开启 `<AVL>_DROP_BEFORE_INSERT` 且分表时走双套表原子切换：暂存套表名 `F09633_stage_{分表号}`、上一套 `F09633_old_{分表号}`，在线侧读的当前套仍是 `F09633_{分表号}`；128 组 RENAME 与 `_avl_meta` 水位推进在同一事务提交，导入失败时当前套不动、在线侧继续读上一日全量数据。触发条件由 `sftp_avl2db/profiles.py::build_task()` 判定：分表 + 全量替换时自动传 `atomic_swap=True`（当前只命中 `F09633`）；磁盘需容纳当前套 + stage 套两份；容量估算见 `sftp_avl2db/sink/sqlite_sink.py` 模块注释（属注释层估算，未验证）。
 - 商机、控损、诊断的 AVL 归属与库文件见 [`sftp_avl2db/README.md`](sftp_avl2db/README.md) 与 [`services/README.md`](services/README.md)；平级的卖点话术业务不读任何 AVL 表，只用 `dimensions.db` 里的 `selling_points` 一行。
 
 ## 4. 配置来源
@@ -63,7 +64,7 @@ main.py ──> log/INFO_*.log、log/ERROR_*.log（在线进程日志写入，�
 | 作用域 | 唯一来源 | 装配入口 | 缺文件 / 缺键行为 |
 |---|---|---|---|
 | IOP 客户端 | `IOP/.env`（20 键） | `IOPConfig.load()` | 回落 `config.py` 内置默认值 |
-| SFTP 写入 | `sftp_avl2db/.env`（68 键） | `load_profiles()` | 缺任一键直接 fail-fast |
+| SFTP 写入 | `sftp_avl2db/.env`（68 必需键 + 8 个可选 `<AVL>_DROP_BEFORE_INSERT` 覆盖键） | `load_profiles()` | 缺任一必需键直接 fail-fast |
 | 调用量统计 | `call_stat/.env`（4 键） | `load_config()` | 缺文件告警；缺键静默回落 `config.py` 内置默认值，仅显式写了非法值才告警 |
 | 在线读取 | `services/.env`（7 键） | `db_config.load()` | 回落 `db_config.py` 代码内默认值 |
 | 维表写入 | `local_excel2db/registry.json` | `load_registry()` | 配置损坏退出码 2 |
@@ -76,7 +77,7 @@ main.py ──> log/INFO_*.log、log/ERROR_*.log（在线进程日志写入，�
 - `IOP/.env`：`IOP_TOKEN_HOST/PORT/ID/SECRET`、`IOP_CUSTINFO_HOST/PORT/VERSION/TYPE`、`IOP_TIMEOUT_TOTAL/CONNECT/SOCK_READ`、`IOP_RETRY_MAX_ATTEMPTS/BACKOFF_BASE/BACKOFF_FACTOR/BACKOFF_MAX/COOLDOWN`、`IOP_LIFETIME_DEFAULT_EXPIRES_IN/REFRESH_BUFFER/MIN_LIFETIME/MAX_EXPIRES_IN`。
 - `services/.env`：`AVL_DB_ROOT`、`DIMENSIONS_DB`、`LOSS_CONTROL_NUM_TABLES`、`F09633_NUM_TABLES`，以及按业务分别配置的新鲜度窗口 `OPPORTUNITY_RECALL_FRESHNESS_WINDOW_DAYS`（默认 `2`）、`LOSS_CONTROL_FRESHNESS_WINDOW_DAYS`（默认 `2`）、`DIAGNOSIS_FRESHNESS_WINDOW_DAYS`（默认 `0`，关闭过滤）。
 - `call_stat/.env`：`CALL_STAT_FLUSH_THRESHOLD`（默认 100）、`CALL_STAT_QUERY_PATH`（默认 `/api/callStat`）、`CALL_STAT_DB_FILENAME`（默认 `call_sum.db`）、`CALL_STAT_EXPORT_DIRNAME`（默认 `export`）。
-- `sftp_avl2db/.env`：SFTP 公共 5 项 + 全局模式开关 `AVL_DROP_BEFORE_INSERT`（`0` 关闭 / `1` 开启，写入最新 AVL 前 DROP 并重建全部目标表，可用 `<AVL>_DROP_BEFORE_INSERT` 覆盖）+ 每个 AVL 的 `<AVL>_BATCH_SIZE / _DATA_EXPIRE_DAYS / _LOCAL_FILE_EXPIRE_DAYS / _POLL_INTERVAL_SECONDS / _PURGE_CYCLE_DAYS`，分表 AVL 另加 `<AVL>_NUM_TABLES`；无项目级键。诊断 8 张表的 `_DATA_EXPIRE_DAYS` 统一为 `365`，商机 / 控损仍为 `3`。
+- `sftp_avl2db/.env`：SFTP 公共 5 项 + 全局模式开关 `AVL_DROP_BEFORE_INSERT`（`0` 关闭 / `1` 开启；开启后写入最新 AVL 前按 AVL 重建目标表，其中分表且开启的 `F09633` 走双套表原子切换而非 DROP，见第 3 节；可用 `<AVL>_DROP_BEFORE_INSERT` 覆盖）+ 每个 AVL 的 `<AVL>_BATCH_SIZE / _DATA_EXPIRE_DAYS / _LOCAL_FILE_EXPIRE_DAYS / _POLL_INTERVAL_SECONDS / _PURGE_CYCLE_DAYS`，分表 AVL 另加 `<AVL>_NUM_TABLES`；无项目级键。诊断 8 张表的 `_DATA_EXPIRE_DAYS` 统一为 `365`，商机 / 控损仍为 `3`。
 
 **在线服务端口**：唯一来源是**项目根 `.env`** 的 `CRM_PORT`（默认 `8990`），由 `app_config.load_config()` 解析。`main.py` 的 `FASTAPI_CONFIG["port"]` 与 `start_project.sh` 打印的地址都取这一份值，改端口只改这一行、重启进程即生效，不必改代码；与其它包的 `.env` 一样，不读系统环境变量。
 
@@ -129,7 +130,7 @@ python -c "from app_config import load_config; print(load_config())"   # 查看�
 
 ## 6. 请求编排（`main.py::marketAssistant`）
 
-1. 模块级创建唯一 `IOPClient`；FastAPI `lifespan` 的 startup / shutdown 分别 `await iop_client.start()` / `await iop_client.aclose()`。
+1. 模块级创建唯一 `IOPClient`；FastAPI `lifespan` 的 startup / shutdown 分别 `await iop_client.start()` / `await iop_client.aclose()`。startup 还先调 `call_stat.startup()` 建表并恢复当天已落库基数（打 INFO 日志），shutdown 在 `finally` 里调 `call_stat.flush()` 补齐不足阈值的尾部增量（`uvicorn` 的 SIGTERM 退出路径不经过 `atexit`）。
 2. 请求内创建 `IopLabelProvider`（函数局部变量）：标签属于单个手机号，同请求最多查 1 次 IOP，任何失败降级 `{}`，不跨请求共享。
 3. 循环外读两次 `dimensions.db`（各 1 次 `mode=ro`、无进程级缓存）：`load_selling_points(全部 productId)` 批量 `IN` 查 `selling_points` 得 `{product_id: SellingPointRow}`；`load_label_name_mapping()` 全表读 `label_name_mapping` 得 `{label_id: 营销助手显示名字}`（由「标签转换维表.xlsx」写出）。
 4. 逐个 `productId`：`services.routing.need_labels(id)` 决定是否取标签（商机回捞、诊断链路与卖点话术都查，控损不查；诊断无静态 ID 白名单，除控损外均需标签），再调 `services.build_product_object(id, telnum, custom_label_info=..., selling_points=..., label_name_mapping=...)` 完成路由、取数与对象构造。提供者保证整请求最多查 1 次 IOP。
@@ -152,7 +153,7 @@ python -c "from app_config import load_config; print(load_config())"   # 查看�
 - `product_id → AVL 前缀` 的两张静态表集中在 `services/routing.py`；`reader.py` 只认 AVL 前缀，不知道产品 ID。
 - 商机 / 控损命中即返回；`reader.query` 返回 `{}` 时按空记录出话术，不落到诊断 / 卖点话术 / 兜底。
 - 诊断的 `F09629`（`DIM_MARKET_PRODUCT_BUSINESS_ONCE`）本身即「产品ID → 策略 / 产品」映射表；诊断只认自己的 8 张表，任一查询空、场景交集为空或六项输出全空时返回 `None`，由路由继续问平级的卖点话术模块，诊断自己不拼维表话术。卖点话术只消费维表一行，**维表中无该 `product_id`，或有该行但 `product_name`（产品名称）为空时**工厂返回 `None`，才落第 5 类（`code: "2"`）。边界实现见 `services/selling_point_script/logic.py::extract_selling_point_fields()`。
-- `selling_points` 不参与路由判定，只作为数据透传给对象工厂；诊断分支只收 `custom_label_info`，卖点话术分支只收 `selling_points`。
+- `selling_points` 不参与路由判定，只作为数据透传给对象工厂；诊断分支只收 `custom_label_info`，卖点话术分支收 `selling_points` + `custom_label_info` + `label_name_mapping`。
 
 ## 8. 业务话术规则
 

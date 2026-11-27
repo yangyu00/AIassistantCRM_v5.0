@@ -1,16 +1,9 @@
 """SQLite 写入层：建表 / 流式分批写 / 过期清理 / 全量替换原子切换。
 
-替换路径：``sftp_avl2db/sink/sqlite_sink.py``（原 P1 优化版的就地升级）。
 装配：``profiles.build_task()`` 对「分表 + 全量替换」的 AVL（当前即 F09633）
-传 ``atomic_swap=True``；默认 False，其余 AVL 与既有自检行为逐字节不变。
+传 ``atomic_swap=True``；默认 False。
 
-保留 P1 的四点优化：
-1. 分表 AVL 的「全局未刷行数」水位：内存峰值与分表数解耦。
-2. 写入连接加大 page cache / temp_store，SQL 文本按表缓存，路由查表化。
-3. DROP 全量替换模式用 ``INSERT OR REPLACE`` 替代逐行冲突探测。
-4. 末尾余量按库一次提交。
-
-P2 新增：``atomic_swap`` 双套表原子切换，消除每日全量导入的在线侧空窗。
+``atomic_swap`` 双套表原子切换，消除每日全量导入的在线侧空窗。
 
     当前套（在线侧读）  {AVL}_{i}          —— 表名派生规则不变，services/ 零改动
     暂存套（导入目标）  {AVL}_stage_{i}
@@ -24,7 +17,7 @@ old 套。RENAME 只改 schema 不搬数据，切换事务是毫秒级；WAL 下
 ``{AVL}_{i}`` 都存在且有数据，不存在「表被 DROP 但还没灌完」的空窗。
 
 导入失败（解析 / 写 stage / 切换三者任一）时当前套完全未被触碰，在线侧
-继续读上一日全量数据；P0 的失败隔离照常生效，不会出现「失败即空表」。
+继续读上一日全量数据；不会出现「失败即空表」。
 代价：磁盘峰值从约 8.4GB 升到约 16.8GB（当前 + stage 两套），需预留
 ≥25GB（含 WAL 峰值）。
 """
@@ -57,7 +50,7 @@ OLD_SUFFIX: str = "_old"
 
 
 def _configure(conn: sqlite3.Connection) -> sqlite3.Cursor:
-    """建表、写入共用的连接配置（与线上原有口径一致）。"""
+    """建表、写入共用的连接配置。"""
     cur = conn.cursor()
     cur.execute("PRAGMA journal_mode = WAL")
     cur.execute("PRAGMA synchronous = NORMAL")
@@ -618,7 +611,7 @@ def build_sink(profile, *, layout=None, table_schema: TableSchema | None = None,
                drop_insert_mode: str = "replace",
                bulk_pragmas: bool = True,
                atomic_swap: bool = False) -> SqliteSink:
-    """装配写入层。``atomic_swap`` 默认关闭，保持既有行为不变。"""
+    """装配写入层。``atomic_swap`` 默认关闭。"""
     if layout is None:
         from .router import build_layout
         layout = build_layout(profile)

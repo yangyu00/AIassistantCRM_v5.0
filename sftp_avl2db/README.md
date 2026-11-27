@@ -80,7 +80,7 @@ runtime/
 
 ## 5. 配置
 
-唯一来源 `sftp_avl2db/.env`（68 个键），唯一入口 `load_profiles()`；不读系统环境变量，没有第二套解析入口。语法只认整行 `#` 注释与 `KEY=VALUE`，不做引号、行内注释或 `${VAR}` 插值。
+唯一来源 `sftp_avl2db/.env`（68 个必需键 + 8 个可选 `<AVL>_DROP_BEFORE_INSERT` 覆盖键），唯一入口 `load_profiles()`；不读系统环境变量，没有第二套解析入口。语法只认整行 `#` 注释与 `KEY=VALUE`，不做引号、行内注释或 `${VAR}` 插值。
 
 | 文件 | 作用 |
 |---|---|
@@ -164,12 +164,12 @@ runtime/
 
 默认 `0`：`SqliteSink.write()` 仍按主键 `INSERT ... ON CONFLICT DO UPDATE`（upsert） 追加，历史行由 `cleanup_expired()` 按 `DATA_EXPIRE_DAYS` 管控。
 
-设为 `1`：每个 AVL 文件**写入前**，`write()` 先对该 AVL 布局枚举出的全部目标表执行 `DROP TABLE IF EXISTS`，再用同一份建表 DDL 立即重建，然后才写入本批记录。分表 AVL 会一次重建全部 128 张分表；`_avl_meta` 是批次水位表、不进 layout，保留不动。效果是「表里只保留最新 AVL 的数据」，上游不再下发的主键不会残留，也不需要靠新鲜度窗口挡旧行。
+设为 `1`：每个 AVL 文件**写入前**，`write()` 先对该 AVL 布局枚举出的全部目标表执行 `DROP TABLE IF EXISTS`，再用同一份建表 DDL 立即重建，然后才写入本批记录；`_avl_meta` 是批次水位表、不进 layout，保留不动。例外是「分表且开启全量替换」的 `F09633`：`profiles.build_task()` 自动传 `atomic_swap=True`，`write()` 走 `_write_atomic_swap()`，先灌 `{AVL}_stage_{分表号}` 套，再在单个事务把 128 组当前套 RENAME 成 `{AVL}_old_{分表号}`、stage 套 RENAME 成当前套并推进 `_avl_meta` 水位，最后释放 old 套。效果是「表里只保留最新 AVL 的数据」，上游不再下发的主键不会残留，也不需要靠新鲜度窗口挡旧行。
 
-- 作用点在 `sftp_avl2db/sink/sqlite_sink.py::write()` / `drop_existing()`，所有调用路径（在线 runner、离线自检直调 `write()`）一致；`runner.import_one()` 会打一行模式日志。
+- 作用点在 `sftp_avl2db/sink/sqlite_sink.py::write()`：`F09633` 走 `_write_atomic_swap()`，其余开启全量替换的 AVL 走 `drop_existing()`；`runner.import_one()` 会打一行模式日志。离线自检直调 `build_sink()` 时不传 `atomic_swap`，仍按 DROP 重建断言。
 - 同一轮若导入多个日期文件（常驻模式默认同时兜底前一天与当天），每次 `write()` 都会重建一次，最终只剩最后一个文件的数据——这正是「存入最新 AVL 之前清旧」的语义。
 - 与过期清理互不冲突：`purge_expired()` 仍按 `DATA_EXPIRE_DAYS` 跑；开启模式只是让表在每批写入前先归零。
-- 风险提示：`DROP` 在写入前已提交，若该批解析 / 写入中途失败，表里会是空表或半批数据，下轮需用 `--force-reload` 重跑补齐；建议配合任务锁与失败告警使用。
+- 风险提示：走 `drop_existing()` 的 AVL 里 `DROP` 在写入前已提交，若该批解析 / 写入中途失败，表里会是空表或半批数据，下轮需用 `--force-reload` 重跑补齐；建议配合任务锁与失败告警使用。`F09633` 的原子切换路径在切换前完全不动当前套，导入失败时在线侧仍读上一日全量数据，但需预留当前套 + stage 套两份磁盘空间。
 - 只对部分 AVL 开启时，写 `<AVL>_DROP_BEFORE_INSERT=1` 覆盖全局 `0`，例如只让诊断 8 张表走全量替换。
 
 自检：`python tests/check_drop_before_insert.py`（覆盖关闭 / 开启 / 分表 / 按 AVL 覆盖 / 按业务窗口 / 365 天保留期）。

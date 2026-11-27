@@ -72,7 +72,6 @@ __all__ = [
     "ProductInfoByOpportunityRecall", "ProductInfoByLossControl",
     "ProductInfoByDiagnosis", "build_diagnosis_record",
     "ProductInfoBySellingPoint", "build_selling_point_object",
-    # 路由与 IOP 查询依赖
     "need_labels", "build_product_object", "BUSINESS_OBJECT_TYPES",
     "OPPORTUNITY_RECALL_AVLS", "LOSS_CONTROL_AVLS",
     "OPPORTUNITY_RECALL_PRODUCT_IDS", "LOSS_CONTROL_PRODUCT_IDS",

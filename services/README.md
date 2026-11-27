@@ -58,7 +58,7 @@
 - 诊断不维护静态映射：`F09629`（`DIM_MARKET_PRODUCT_BUSINESS_ONCE`）本身即「产品ID → 策略 / 产品」映射表。**诊断只认自己的 8 张表**：7 表关联任一为空、场景交集为空、六项输出全空时返回 `None` 并打一行 WARNING，由路由层继续询问平级的卖点话术模块，诊断自己不拼任何维表话术。
 - 卖点话术模块只按 `product_id` 取维表一行：**维表里没有该 `product_id`，或有该行但 `product_name` 为空**时返回 `None`，才落第 5 类 `code: "2"`（边界见第 6 节）。
 - `product_id → AVL 前缀` 的两张静态表在 `routing.py` 唯一维护；`reader` 只按 `db_config` 声明的 `{project}/{AVL}.db` 定位。
-- `selling_points` 由 `main.py` 在循环外调一次 `dimensions.load_selling_points()` 批量查回，只透传给对象工厂，不参与路由判定；诊断分支拿到的只有 `custom_label_info`，卖点话术分支拿到的只有 `selling_points`。
+- `selling_points` 由 `main.py` 在循环外调一次 `dimensions.load_selling_points()` 批量查回，只透传给对象工厂，不参与路由判定；诊断分支只收 `custom_label_info`，卖点话术分支收维表行 + `custom_label_info` + `label_name_mapping`（见第 7 节）。
 
 ## 4. 业务库读取侧：`reader.py` + `db_config.py`
 
@@ -94,7 +94,7 @@
 - **单条** `query()`：`op_time >= 下界` + `ORDER BY op_time DESC LIMIT 1`（窗口内取最新一条）。
 - **多条** `query_many()` / `query_in()`：先按窗口过滤，再在**结果集内**收敛到 `op_time = MAX(op_time)` 的那一批。例：最新批次 21 日、`N=2`（下界 20 日），结果里同时有 20 / 21 日 → 只返回 21 日集合。
 - 下界由 `_cutoff()` 按当前 AVL 的 `project` 取对应业务的 `N` 计算；水位表缺失 / 无行 / 日期格式异常 / 该业务 `N=0` 一律降级为不过滤。`read_config.freshness_window_days_for(project)` 是唯一取数点；`load(freshness_window_days=单值)` 只是离线自检的编程式注入（把全部业务临时设成同一窗口），不是 `.env` 键。
-- 旧版全局键 `AVL_FRESHNESS_WINDOW_DAYS` 已废弃、不再被读取：`.env` 里残留也不生效，不会把诊断的 `0` 拉回 `2`。`_from_env()` 只遍历 `FRESHNESS_WINDOW_ENV_KEYS` 里的三个业务键。
+- `_from_env()` 只遍历 `FRESHNESS_WINDOW_ENV_KEYS` 里的三个业务键，其它键一律忽略；缺键用代码内默认值。
 - 水位与业务查询在**同一个 sqlite 连接**里读取，每请求不增加额外连接；`_avl_meta` 不进分表布局，也不被 `purge_expired()` 清理。
 - 自检：`python tests/check_avl_freshness.py`。
 

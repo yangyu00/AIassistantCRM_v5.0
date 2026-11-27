@@ -7,7 +7,7 @@ from .logic import build_output_script
 
 
 class ProductInfoByDiagnosis(ProductInfoBase):
-    """命中诊断 8 表后由工厂创建；不再承接任何卖点维表兜底 record。"""
+    """命中诊断 8 表后由工厂创建。"""
 
     def __init__(self, product_id, record=None):
         super().__init__(product_id, product_name="")

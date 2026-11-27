@@ -31,7 +31,7 @@ TIME_COLUMN: Final = "op_time"
 AVL_META_TABLE: Final = "_avl_meta"
 # 新鲜度窗口：只召回 op_time 落在 [最新批次-(N-1)天, 最新批次] 的数据。
 # N=0 关闭过滤；N=1 仅取最新一批。按业务（project）分别配置：
-# 商机回捞 / 控损沿用 2 天；诊断 8 张表改为 0（关闭过滤，不做批次收敛）。
+# 商机回捞 / 控损为 2 天；诊断 8 张表为 0（关闭过滤，不做批次收敛）。
 # 只作为全局回退值 / 离线单值注入的默认值，不是 .env 键。
 DEFAULT_FRESHNESS_WINDOW_DAYS: Final = 2
 DEFAULT_FRESHNESS_WINDOW_BY_PROJECT: Final[Mapping[str, int]] = {

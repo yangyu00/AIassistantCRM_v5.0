@@ -1,19 +1,4 @@
-"""SQLite 写入层：建表 / 流式分批写 / 过期清理（F09633 导入优化版）。
-
-替换路径：``sftp_avl2db/sink/sqlite_sink.py``（其余文件无需改动）。
-
-相对原版的四点改动，全部保持公开 API 与统计字段兼容：
-1. 分表 AVL 增加「全局未刷行数」水位：达到阈值时把所有分桶的写入放进
-   一个事务提交，内存峰值与分表数解耦。原版 BATCH_SIZE 是**单分桶**阈值，
-   128 张分表 × 100000 的行缓存会把整份 AVL 常驻内存；千万行时尤其严重。
-2. 写入连接加大 page cache / temp_store，SQL 文本按表缓存，分表路由查表化，
-   减少逐行 Python 开销与 SQLite prepare 次数。
-3. DROP 全量替换模式下用 ``INSERT OR REPLACE`` 代替
-   ``ON CONFLICT DO UPDATE``：表刚重建为空，冲突探测是纯开销；
-   OR REPLACE 保留「同主键只留一行」语义，且同批出现重复主键也不会报错。
-   非 DROP 模式（商机 / 控损）完全保持原 upsert 行为。
-4. 末尾余量按库一次提交，不再逐桶 commit 128 次。
-"""
+"""SQLite 写入层：建表 / 流式分批写 / 过期清理（F09633 导入优化版）。"""
 from __future__ import annotations
 
 import re
@@ -38,7 +23,7 @@ DEFAULT_GLOBAL_FLUSH_ROWS = 100000
 
 
 def _configure(conn: sqlite3.Connection) -> sqlite3.Cursor:
-    """建表、写入共用的连接配置（与线上原有口径一致）。"""
+    """建表、写入共用的连接配置。"""
     cur = conn.cursor()
     cur.execute("PRAGMA journal_mode = WAL")
     cur.execute("PRAGMA synchronous = NORMAL")
