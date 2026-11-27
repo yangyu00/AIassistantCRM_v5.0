@@ -12,7 +12,7 @@
     暂存套（导入目标）  {AVL}_stage_{i}
     上一套（切换后）    {AVL}_old_{i}
 
-流程：建空 stage 套 → 约 8 亿行（上游每日全量，2026-11 由 8000 万复核上调）
+流程：建空 stage 套 → 约 8 亿行
 纯 INSERT 灌入 stage → 一次性建非唯一
 ``product_no`` 索引 → 单个事务里把 128 组
 ``{AVL}_{i}`` RENAME 成 ``{AVL}_old_{i}``、把 ``{AVL}_stage_{i}`` RENAME 成

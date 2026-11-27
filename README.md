@@ -66,7 +66,7 @@ main.py ──> log/INFO_*.log、log/ERROR_*.log（在线进程日志写入，�
 | 作用域 | 唯一来源 | 装配入口 | 缺文件 / 缺键行为 |
 |---|---|---|---|
 | IOP 客户端 | `IOP/.env`（键表见 `IOP/README.md` 第 4 节） | `IOPConfig.load()` | 回落 `config.py` 内置默认值 |
-| SFTP 写入 | `sftp_avl2db/.env`（68 必需键 + 8 个可选 `<AVL>_DROP_BEFORE_INSERT` 覆盖键） | `load_profiles()` | 缺任一必需键直接 fail-fast |
+| SFTP 写入 | `sftp_avl2db/.env`（68 必需键 + 8 个可选 `<AVL>_DROP_BEFORE_INSERT` 覆盖键 + 2 个 `F09633` 临时吞吐配套键） | `load_profiles()` | 缺任一必需键直接 fail-fast |
 | 调用量统计 | `call_stat/.env`（4 键） | `load_config()` | 缺文件告警；缺键静默回落 `config.py` 内置默认值，仅显式写了非法值才告警 |
 | 在线读取 | `services/.env`（7 键） | `db_config.load()` | 回落 `db_config.py` 代码内默认值 |
 | 维表写入 | `local_excel2db/registry.json` | `load_registry()` | 配置损坏退出码 2 |
@@ -229,7 +229,7 @@ docker run -d --name crm -p 8989:8989 aiassistantcrm:v5.0 full
 | `IOP/.env` 与 `.env.example` | `IOP_TOKEN_HOST` / `IOP_TOKEN_PORT` / `IOP_TOKEN_ID` / `IOP_TOKEN_SECRET` / `IOP_CUSTINFO_HOST` / `IOP_CUSTINFO_PORT` |
 | `IOP/config.py::_SPECS` | 上表所列 6 个键对应的内置默认值；`.env` 缺文件 / 缺键 / 空值 / 写成 `<...>` 占位符时回落这些内置值 |
 
-最后一处不能漏：`.env` 缺键、空值或写成 `<...>` 占位符时会**回落到 `_SPECS` 的内置值**（见 `IOP/README.md` 第 4 节），只改 `.env` 并不能保证生效值已换掉。生产环境不要把 `.env` 再提交进版本库。改完配置重启对应进程生效（配置对象首次加载后冻结）。
+最后一处不能漏：`.env` 缺键、空值或写成 `<...>` 占位符时会**回落到 `_SPECS` 的内置值**（见 `IOP/README.md` 第 4 节），只改 `.env` 并不能保证生效值已换掉。生产环境不要把 `.env` 再提交进版本库。
 
 项目根 `.env` 的 `CRM_PORT` 只控制在线服务监听端口，不含任何凭据，首次部署按需改端口即可，不参与上表的凭据替换。
 

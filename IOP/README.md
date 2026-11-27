@@ -90,6 +90,8 @@ python -c "from IOP import IOPConfig; print(IOPConfig.load())"
 - 没有凭据时直接回落：缺文件、缺凭据键、值为空或显式写成 `<...>` 一类占位符时，回落到 `config.py` 内置实际值，不把占位符当成真实配置。
 - `IOPConfig.__repr__` 屏蔽 `secret`；`IOP/.env` 与 `.env.example` 随仓库入库，里面就是实际生效字符串。
 
+**外部依赖获取口径（属外部依赖）**：`IOP_TOKEN_HOST` / `IOP_TOKEN_PORT` / `IOP_TOKEN_ID` / `IOP_TOKEN_SECRET` / `IOP_CUSTINFO_HOST` / `IOP_CUSTINFO_PORT` 6 个键的取值获取渠道：<待填写：上游接口人或运维交付渠道>；责任人：<待填写：配置管理员>；缺失行为：缺文件、缺键、空值或写成 `<...>` 占位符时回落 `config.py::_SPECS` 内置值。
+
 ## 5. 并发与可靠性约束
 
 - **共享会话**：`AiohttpTransport` 只创建一个 `aiohttp.ClientSession`，`start()` / `aclose()` 对应应用 lifespan 的 startup / shutdown，幂等且异常不外抛；session 绑定创建它的 event loop，必须在同一 loop 内关闭。未经 lifespan 时（独立脚本、TestClient）降级为「本次请求一个临时 session」，结果正确、不泄漏连接。

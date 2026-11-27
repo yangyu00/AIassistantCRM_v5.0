@@ -82,12 +82,12 @@ runtime/
 
 ## 5. 配置
 
-唯一来源 `sftp_avl2db/.env`（68 个必需键 + 8 个可选 `<AVL>_DROP_BEFORE_INSERT` 覆盖键 + 2 个 F09633 临时吞吐配套键 `F09633_SYNC_JOURNAL_OFF` / `F09633_STARTUP_FULL_CHECK`，见本节末），唯一入口 `load_profiles()`；不读系统环境变量，没有第二套解析入口。语法只认整行 `#` 注释与 `KEY=VALUE`，不做引号、行内注释或 `${VAR}` 插值。这两个可选键都不计入 68 个必需键，不写等价于 `0`。
+唯一来源 `sftp_avl2db/.env`（68 个必需键 + 8 个可选 `<AVL>_DROP_BEFORE_INSERT` 覆盖键 + 2 个 F09633 临时吞吐配套键 `F09633_SYNC_JOURNAL_OFF` / `F09633_STARTUP_FULL_CHECK`，见本节末），唯一入口 `load_profiles()`；不读系统环境变量，没有第二套解析入口。语法只认整行 `#` 注释与 `KEY=VALUE`，不做引号、行内注释或 `${VAR}` 插值。这两类可选键都不计入 68 个必需键；`<AVL>_DROP_BEFORE_INSERT` 覆盖键缺省回落到全局键 `AVL_DROP_BEFORE_INSERT`，2 个 `F09633` 临时吞吐配套键不写等价于 `0`。
 
 | 文件 | 作用 |
 |---|---|
 | `.env` | 与 `config.py` 同目录，日常改这个；`repr` 自动屏蔽 `SFTP_PASSWORD` |
-| `.env.example` | 带注释的 68 个必需键模板；与 `.env` 只差键集合：缺少 8 个可选的 `<AVL>_DROP_BEFORE_INSERT` 覆盖键，68 个必需键取值一致（`F09591` / `F09633` 的 `BATCH_SIZE` 均为 `100000`）；新环境复制后需按第 5 节补齐覆盖键 |
+| `.env.example` | 带注释的 68 个必需键模板；与 `.env` 只差键集合：缺少 8 个可选的 `<AVL>_DROP_BEFORE_INSERT` 覆盖键与 2 个 `F09633` 临时吞吐配套键，68 个必需键取值一致（`F09591` / `F09633` 的 `BATCH_SIZE` 均为 `100000`）；新环境复制后需按第 5 节补齐可选键 |
 | `config.py::_AVLS` | `(AVL 名, 项目名)` 声明表；AVL 名同时是文件前缀、db 文件名与 `.env` 键前缀 |
 | `avl_specs.py` | 每个 AVL 的静态声明：项目、schema 名、解析器、是否分表；`table_name()` 表名规则、`shard_index()` 分表口径、`validate_specs()` 启动校验 |
 | `table_schemas.py` | `TABLE_SCHEMAS`（列定义）与 `TABLE_PRIMARY_KEYS`（主键），供建表 DDL、幂等与解析器列数校验 |
@@ -178,7 +178,7 @@ runtime/
 
 ### F09633 临时吞吐模式（关闭同步与回滚日志）
 
-> **这是临时开关，不是常规配置。** 触发背景：2026-11 复核发现 `F09633` 上游每日全量实为约 **8 亿条**（此前按 8000 万条估算），必须在 **8 小时内**灌完，故暂时牺牲持久性换吞吐。以后缩减数据规模或改用 MySQL `LOAD DATA INFILE` 时，把键删除 / 置 `0` 即可，无需改代码。
+> **这是临时开关，不是常规配置。** 触发背景：2026-11 复核发现 `F09633` 上游每日全量实为约 **8 亿条**，必须在 **8 小时内**灌完，故暂时牺牲持久性换吞吐。以后缩减数据规模或改用 MySQL `LOAD DATA INFILE` 时，把键删除 / 置 `0` 即可，无需改代码。
 
 **主开关**：`sftp_avl2db/.env` 的可选键 `F09633_SYNC_JOURNAL_OFF`（`0` / `1`，缺省 `0`，非法值启动 fail-fast）。键前缀按 AVL 名走，所以只能影响 `F09633`；其余 11 个 AVL 保持 `WAL` + `NORMAL`。另有配套的 `F09633_STARTUP_FULL_CHECK`（缺省 `0`）控制启动自检是否跑全库页校验，见下一小节。
 
@@ -295,7 +295,7 @@ python -m sftp_avl2db --task F09633 --date 20261120 \
 | 4 | `city_id` | `TEXT` | 地市 |
 | 5 | `strategy_name` | `TEXT` | 含裸换行的自定义标签话术；**在线侧唯一消费列** |
 
-续行解析（`parsers/continuation.py`）：以行首 `YYYY-MM-DD` 判定新记录；`strip_eol()` 只去 `\n`、再只剥**一个** ASCII 反斜杠（不能用 `rstrip('\\')`，否则 GBK 尾字节 `0x5C` 的汉字会被削成乱码）；起始行 `>=5` 列取前 5 列、`==4` 列补空 `strategy_name`、`<4` 列整条跳过；空物理行与文件开头孤立续行跳过；最后一条单独入库。单个 `F09591.db` 内 128 张表 `F09591_0 … 127`，路由 `zlib.crc32(product_no.encode("utf-8")) % NUM_TABLES`，写入用 `INSERT ... ON CONFLICT DO UPDATE`（upsert），批量补跑按文件名日期升序。
+续行解析（`parsers/continuation.py`）：以行首 `YYYY-MM-DD` 判定新记录；`strip_eol()` 只去 `\n`、再只剥**一个** ASCII 反斜杠（不能用 `rstrip('\\')`，否则 GBK 尾字节 `0x5C` 的汉字会被削成乱码）；起始行 `>=5` 列取前 5 列、`==4` 列补空 `strategy_name`、`<4` 列整条跳过；空物理行与文件开头孤立续行跳过；最后一条单独入库。
 
 两类库都以主键 + `INSERT ... ON CONFLICT DO UPDATE`（upsert） 保证幂等，`op_time` 不进主键（每日全量覆盖最新批次）；连接 PRAGMA 口径见本文档第 9 节第 4 条，此处不重复。
 
@@ -336,7 +336,7 @@ python -m sftp_avl2db --task F09633 --date 20261120 \
 | `F09633` | 用户场景对应关系（**分表**） | `conf_user_scene` | `op_time, user_id, product_no, scene, reason` | `product_no, scene`（逻辑主键，不建物理 `PRIMARY KEY`） |
 | `F09635` | 标签ID-标签名 | `tagid_tagname` | `op_time, tag_id, tag_name, unknown1, unknown2` | `tag_name` |
 
-主键口径：`op_time` 不进主键，主键列自动补 `NOT NULL`；`DROP_BEFORE_INSERT=0` 的业务按主键 `INSERT ... ON CONFLICT DO UPDATE`（upsert）覆盖最新批次，`=1` 的业务先重建表再写入。`F09635` 以 `tag_name` 为主键（在线侧查询键同）：诊断话术里出现的是 `#标签名&`，按标签名反查 `tag_id`（= IOP 的 `ITEMCODE`）才能取到 `ITEMVALUE`，写入侧与在线侧 `TABLE_PRIMARY_KEYS` 同步。**部署提示**：`CREATE TABLE IF NOT EXISTS` 不会改写已有表的主键。`F09631` / `F09632` 把话术全文纳入主键，避免重复行或「同一产品 + 同一拒绝原因对应两条不同挽留话术」被 REPLACE 丢行。`F09633` 逻辑主键 `(product_no, scene)` 与分表键共用 `product_no`，同一号码一定落在同一分表；该表建表 DDL 不声明 `PRIMARY KEY`，空 stage 套灌完后一次性建非唯一 `product_no` 索引，在线查询按 `product_no` 走该索引。上游全量 AVL 保证 `(product_no, scene)` 唯一，写入侧不去重；该唯一性属上游数据契约，仓库内样例只有 10 行、无法据此验证，现状的复合主键 + `OR REPLACE` 此前一直在默默兜底。若上游出现重复行，会原样入库；在线侧 `services/diagnosis/query.py` 对 `pain_points` 按首次出现去重，【痛点诊断】不会输出重复文案，但仍不报错、不告警。`F09629` 的 `business_name` 含【】内外文本，业务侧按【】内为资费名称、【】外为资费摘要拆分。
+主键口径：`op_time` 不进主键，主键列自动补 `NOT NULL`；`DROP_BEFORE_INSERT=0` 的业务按主键 `INSERT ... ON CONFLICT DO UPDATE`（upsert）覆盖最新批次，`=1` 的业务先重建表再写入。`F09635` 以 `tag_name` 为主键（在线侧查询键同）：诊断话术里出现的是 `#标签名&`，按标签名反查 `tag_id`（= IOP 的 `ITEMCODE`）才能取到 `ITEMVALUE`，写入侧与在线侧 `TABLE_PRIMARY_KEYS` 同步。**部署提示**：`CREATE TABLE IF NOT EXISTS` 不会改写已有表的主键。`F09631` / `F09632` 把话术全文纳入主键，避免重复行或「同一产品 + 同一拒绝原因对应两条不同挽留话术」被 REPLACE 丢行。`F09633` 逻辑主键 `(product_no, scene)` 与分表键共用 `product_no`，同一号码一定落在同一分表；该表建表 DDL 不声明 `PRIMARY KEY`，空 stage 套灌完后一次性建非唯一 `product_no` 索引，在线查询按 `product_no` 走该索引。上游全量 AVL 保证 `(product_no, scene)` 唯一，写入侧不去重；该唯一性属上游数据契约，仓库内样例只有 10 行、无法据此验证。若上游出现重复行，会原样入库；在线侧 `services/diagnosis/query.py` 对 `pain_points` 按首次出现去重，【痛点诊断】不会输出重复文案，但仍不报错、不告警。`F09629` 的 `business_name` 含【】内外文本，业务侧按【】内为资费名称、【】外为资费摘要拆分。
 
 离线复跑（8 个 AVL 各 10 行样例，日期按文件名取 `20261120`）：
 
