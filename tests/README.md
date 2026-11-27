@@ -44,6 +44,7 @@ export CRM_SMOKE_BASE_URL=http://10.0.0.5:8989
 | `check_f09633_unsafe_write.py` | 不打任何服务（临时 SQLite，改写 `.env` 副本） | `F09633` 临时吞吐开关自检：开关缺省 / `0` 时全 12 个 AVL 仍是 WAL+NORMAL / 置 `1` 时仅 F09633 改 `journal_mode=OFF`+`synchronous=OFF` 且 PRAGMA 条数（2/5）与连接计数不变 / `build_task()` 透传与显式注入覆盖 / 关闭日志下完整跑一次原子切换仍成功 / 改回 `0` 后库恢复 WAL / 非法值 fail-fast、可选键不破坏 68 必需键契约，结论 `ALL PASS` |
 | `check_drop_before_insert.py` | 不打任何服务（临时 SQLite） | 配置变更自检：诊断 8 张表 `DATA_EXPIRE_DAYS=365` / 商机控损仍为 3 / 按业务新鲜度窗口（商机 2 · 控损 2 · 诊断 0）/ 旧全局键已废弃写了不生效 / 离线单值注入 / `AVL_DROP_BEFORE_INSERT` 全局开关与 `<AVL>_` 覆盖 / 模式关闭按主键追加、开启时 DROP 重建固定表与 128 张分表且 `_avl_meta` 保留，结论 `ALL PASS` |
 | `check_loss_control_rollover.py` | 不打任何服务（临时 SQLite + 桩时钟 / 桩远端） | 控损缺文件兜底自检：远端无当日文件 / 0 字节空文件 / 文件非空但 0 条记录 / 正常文件四种轮次、同日只推一次、跨天继续续命、`_avl_meta` 水位不动、空文件不登记清单、非法 `op_time` 不被写坏、非控损 AVL 不参与、过期清理后前台仍查得到（附「不兜底则被清空」对照），结论 `ALL PASS` |
+| `check_today_only_window.py` | 不打任何服务（真实 `build_task()` + 内存远端替身） | 日期窗口自检：当天文件已到达只处理当天 / 当天缺文件仍兜底「昨天 + 今天」/ `TODAY_FILE_WINDOW_SCOPE=off` 可回退旧行为 / `date_strings` 注入不受影响 / 探测失败保守回退 / 控损「应到文件」跟着切到当天，结论 `ALL PASS` |
 
 ## 3. 运行
 

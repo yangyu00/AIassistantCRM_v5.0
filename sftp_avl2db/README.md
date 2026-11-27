@@ -60,7 +60,8 @@ python -m sftp_avl2db --task F09591 --date 20261110
 python -m sftp_avl2db --task F09591 --date 20261110 --force-reload
 ```
 
-- `--date YYYYMMDD` 为单次模式（拉完指定**文件名日期**后退出），不传则常驻轮询，每轮兜底检查「昨天 + 今天」。
+- `--date YYYYMMDD` 为单次模式（拉完指定**文件名日期**后退出），不传则常驻轮询。
+- **常驻轮询的日期窗口**：每轮先用一次只读 `stat` 探测**当天**文件；已到达就**只处理当天、无视前一天**，未到达才兜底检查「昨天 + 今天」防跨天瞬间漏拉。探测本身失败（连不上 / stat 报错）按「未到达」处理，保留双日期兜底。`sftp_avl2db/runner.py::TODAY_FILE_WINDOW_SCOPE` 默认 `each_round`（每轮生效），设 `off` 可一键回到旧行为（每轮固定「昨天 + 今天」）。单次 `--date` 补跑不参与该策略。
 - `--force-reload` 连清单命中也强制重下重入库。
 - 生产每个 AVL 各起一个常驻进程，靠 `runtime/state/{AVL}.lock` 保证单机单实例。
 - 注入型选项（离线复跑 / 单测）：`--local-dir DIR` 把本地目录当远程、不连 SFTP；`--runtime-dir DIR` 把产出隔离到临时目录；`--max-rounds N` 限制常驻轮数。
@@ -168,7 +169,7 @@ runtime/
 设为 `1`：每个 AVL 文件**写入前**，`write()` 先对该 AVL 布局枚举出的全部目标表执行 `DROP TABLE IF EXISTS`，再用同一份建表 DDL 立即重建，然后才写入本批记录；`_avl_meta` 是批次水位表、不进 layout，保留不动。例外是「分表且开启全量替换」的 `F09633`：`profiles.build_task()` 自动传 `atomic_swap=True`，`write()` 走 `_write_atomic_swap()`，以纯 `INSERT` 灌 `{AVL}_stage_{分表号}` 套，灌完后一次性建非唯一 `product_no` 索引，再在单个事务把 128 组当前套 RENAME 成 `{AVL}_old_{分表号}`、stage 套 RENAME 成当前套并推进 `_avl_meta` 水位，最后释放 old 套。索引名带本轮 token：`ALTER TABLE RENAME` 不改索引名，固定名会在下一轮重建 stage 套时与仍挂在 old 套上的同名索引冲突。效果是「表里只保留最新 AVL 的数据」，上游不再下发的主键不会残留，也不需要靠新鲜度窗口挡旧行。
 
 - 作用点在 `sftp_avl2db/sink/sqlite_sink.py::write()`：`F09633` 走 `_write_atomic_swap()`，其余开启全量替换的 AVL 走 `drop_existing()`。全量替换模式的启动说明与单文件导入前那行模式日志，文案由 sink 的 `startup_notice()` / `write_mode_log()` 提供，runner 只决定何时打印、不描述写入实现；sink 未提供该方法时（测试替身）回落到与 profile 口径一致的通用 DROP 描述。离线自检直调 `build_sink()` 时不传 `atomic_swap`，仍按 DROP 重建断言。
-- 同一轮若导入多个日期文件（常驻模式默认同时兜底前一天与当天），每次 `write()` 都会重建一次，最终只剩最后一个文件的数据——这正是「存入最新 AVL 之前清旧」的语义。
+- 当天文件未到达、同轮兜底导入「前一天 + 当天」两个日期文件时，每次 `write()` 都会重建一次，最终只剩最后一个文件的数据——这正是「存入最新 AVL 之前清旧」的语义。**当天文件已到达时不会走到这条路径**：该轮只处理当天，前一天文件直接跳过，避免同一轮把整批数据重灌两遍。
 - 开启全量替换时，`runner.cleanup_expired()` 在非 `force_full` 的常驻轮次跳过库表过期清理（表内只保留最新一批，无历史行可清）；单次 `--date` 补跑 `force_full=True` 仍执行全量清理。本地 AVL 文件清理仍每轮执行。
 - 风险提示：走 `drop_existing()` 的 AVL 里 `DROP` 在写入前已提交，若该批解析 / 写入中途失败，表里会是空表或半批数据，需用 `--force-reload` 重跑补齐；同一远程文件连续 2 次失败（`DROP_FAILURE_LIMIT=2`）会被写入 `runtime/state/{AVL}.drop_quarantine` 并停止自动重试，预检阶段命中隔离即返回 SKIP，需人工删除标记中该行或用 `--force-reload` 解除；控损（含断供兜底）不参与该闸门；建议配合任务锁与失败告警使用。`F09633` 的原子切换路径在切换前完全不动当前套，导入失败时在线侧仍读上一日全量数据，但需预留当前套 + stage 套两份磁盘空间。
 - 只对部分 AVL 开启时，写 `<AVL>_DROP_BEFORE_INSERT=1` 覆盖全局 `0`，例如只让诊断 8 张表走全量替换。
@@ -304,7 +305,7 @@ python -m sftp_avl2db --task F09633 --date 20261120 \
 
 **触发条件**（只对 `project=loss_control` / `F09591` 生效，常驻轮询模式）：
 
-- 本轮「应到文件」= 前一天日期的 `F09591{YYYYMMDD}000000.AVL`（例：26 日 02:00 期望 25 日文件）在远端不存在、stat / 下载 / 解析 / 写入任一环节失败，或本轮因 SFTP 连接失败完全没有入库结果；
+- 本轮「应到文件」= 前一天日期的 `F09591{YYYYMMDD}000000.AVL`（例：26 日 02:00 期望 25 日文件）在远端不存在、stat / 下载 / 解析 / 写入任一环节失败，或本轮因 SFTP 连接失败完全没有入库结果；**本轮按「只处理当天」窗口运行时，应到文件跟着切为当天日期的文件**，否则会拿前一天文件名去比对本轮结果、把「当天文件异常」误判成断供；
 - 拉下来的文件是 **0 字节**，或文件非空但解析出 **0 条有效记录**；
 - 且本轮没有任何日期成功入库过有效数据（只要有一批新数据到了就不兜底）。
 

@@ -6,6 +6,7 @@ import time
 import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Final
 
 from .config import remote_name_for
 from .protocols import ImportResult, ImportStatus
@@ -13,8 +14,14 @@ from .protocols import ImportResult, ImportStatus
 # 缺文件兜底只作用于控损（F09591 / project=loss_control），其余 AVL 行为不变。
 _LOSS_CONTROL_PROJECT = "loss_control"
 
+# ---- 常驻轮询的日期窗口 -----------------------------------------------
+# 每轮先只读探测当天文件；已到达就只处理当天、无视前一天，避免同一轮把
+# 全量替换表按「昨天→今天」重灌两遍。当天文件未到达才兜底「昨天 + 今天」，
+# 防跨天瞬间漏拉。设 "off" 可一键回到旧行为（每轮固定「昨天 + 今天」）。
+TODAY_FILE_WINDOW_SCOPE: Final = "each_round"
+
 # ---- P0：全量替换（DROP）AVL 的失败重试收敛 ---------------------------
-# 常驻轮询每轮都检查「昨天 + 今天」，同一文件失败时若不收敛会被反复
+# 常驻轮询每轮都会重算上面的日期窗口，同一文件失败时若不收敛会被反复
 # 重灌。连续失败达到阈值即隔离该文件、停止自动重试并 ERROR 告警，改为
 # 人工确认后用 --force-reload 重跑。
 # 只作用于 drop_before_insert=1 的 AVL；商机 / 控损（含断供兜底）行为不变。
@@ -51,6 +58,9 @@ class Avl2DbRunner:
         # 控损缺文件兜底：同一自然日最多把 op_time 后移一次，避免常驻轮询
         # 把日期反复往后推；另落一个标记文件，进程重启也不会重复推。
         self._last_roll_day: str | None = None
+        # 本轮日期窗口状态：控损断供兜底要靠它判定「应到文件」是哪一天。
+        self._round_today: str = ""
+        self._round_only_today: bool = False
         # P0：DROP 模式失败收敛的进程内计数与持久化隔离集合（懒加载）。
         self.drop_failure_limit = max(1, int(drop_failure_limit))
         self._drop_fail_counts: dict[str, int] = {}
@@ -258,6 +268,37 @@ class Avl2DbRunner:
             "的 .AVL 补跑；新批次切换完成前在线侧诊断按既有降级静默退化"
             "（接口不 500）。")
 
+    def _today_only_window(self) -> bool:
+        """是否启用「当天文件已到达就只处理当天」的窗口（每轮生效）。"""
+        return TODAY_FILE_WINDOW_SCOPE != "off"
+
+    def _today_file_exists(self, date_str: str) -> bool:
+        """只读探测本 AVL 当天文件是否已到达，不下载、不写库。
+
+        探测本身失败（连不上 / stat 报错）一律按「未到达」处理，保留
+        「昨天 + 今天」兜底，不因为一次探测失败就丢掉跨天漏拉保护。
+        """
+        prefixes = getattr(self.profile, "file_prefixes", ())
+        if not prefixes:
+            return False
+        remote_path = self._remote_path(
+            remote_name_for(self.profile, prefixes[0], date_str))
+        try:
+            self.source.connect()
+            return bool(self.source.exists(remote_path))
+        except FileNotFoundError:
+            return False
+        except Exception as e:
+            self.log.error(
+                f"[{self.profile.name}] 探测当天 AVL 文件失败 "
+                f"{remote_path}: {e}；本轮按「未到达」处理，保留前一天兜底")
+            return False
+        finally:
+            try:
+                self.source.close()
+            except Exception:
+                pass
+
     def _remote_path(self, remote_name: str) -> str:
         root = self.profile.sftp.remote_path.rstrip("/")
         return f"{root}/{remote_name}"
@@ -423,15 +464,19 @@ class Avl2DbRunner:
         return getattr(self.profile, "project", None) == _LOSS_CONTROL_PROJECT
 
     def _expected_remote_name(self) -> str | None:
-        """常驻轮次里「本应到达」的文件名：前一天日期的控损 AVL。
+        """常驻轮次里「本应到达」的文件名：控损 AVL。
 
-        例：26 日 02:00 轮询时，期望拿到 25 日的文件；上游 T+1 出文件，
-        files 里没有它就是当天业务数据没到。
+        默认取前一天日期（例：26 日 02:00 期望 25 日文件，上游 T+1 出
+        文件）；本轮按「只处理当天」窗口运行时改取当天，否则断供兜底会
+        拿前一天文件名去比对本轮结果，把「当天文件异常」误判成断供。
         """
         prefixes = getattr(self.profile, "file_prefixes", ())
         if not prefixes:
             return None
-        day = (self._now() - timedelta(days=1)).strftime("%Y%m%d")
+        if self._round_only_today:
+            day = self._round_today
+        else:
+            day = (self._now() - timedelta(days=1)).strftime("%Y%m%d")
         return remote_name_for(self.profile, prefixes[0], day)
 
     def _roll_marker_path(self) -> Path | None:
@@ -665,12 +710,26 @@ class Avl2DbRunner:
             while max_rounds is None or rounds < max_rounds:
                 if date_strings is not None:
                     dates = list(date_strings)
+                    self._round_only_today = False
                 else:
                     now = self._now()
                     today = now.strftime("%Y%m%d")
-                    # 每轮同时兜底前一天，防止跨天瞬间漏拉
-                    dates = [(now - timedelta(days=1)).strftime("%Y%m%d"),
-                             today]
+                    self._round_today = today
+                    if (self._today_only_window()
+                            and self._today_file_exists(today)):
+                        # 当天文件已到达：本轮只处理当天，无视前一天。
+                        # 尤其对全量替换 AVL，避免同轮按「昨天→今天」
+                        # 把整批数据重灌两遍、最终仍只剩当天那一批。
+                        self._round_only_today = True
+                        self.log.info(
+                            f"[{self.profile.name}] 当天 AVL 文件已到达，"
+                            f"本轮只处理 {today}，跳过前一天")
+                        dates = [today]
+                    else:
+                        self._round_only_today = False
+                        # 当天文件未到达：仍兜底前一天，防止跨天瞬间漏拉
+                        dates = [(now - timedelta(days=1)).strftime("%Y%m%d"),
+                                 today]
                 total = 0
                 round_results: list[ImportResult] = []
                 for d in sorted(set(dates)):

@@ -19,7 +19,7 @@
 
 `import` 边界并非所有包一致：`sftp_avl2db / local_excel2db / call_stat / services` 四个包根零 I/O、零第三方依赖，靠 `__getattr__` 延迟导出，第三方库在入口函数内延迟加载；但 `IOP` 包根在 `__init__.py` 顶层链式导入 `transport / token / client`，三者模块顶层 `import aiohttp`，因此 `import IOP` 必须先装 `aiohttp`（配置仍只在构造 `IOPClient()` 时才读）；`src/log_util.py` 顶层 `from loguru import logger`、`src/exceptions.py` 顶层 `from fastapi import ...`，二者同样在 import 期就要第三方库。
 
-**时区口径（运行约束）**：调用量按天计数（`call_stat/counter.py` 用 `datetime.date.today()`）、写入侧「昨天 + 今天」兜底与 `op_time` 过期清理（`sftp_avl2db/runner.py` 默认用 `datetime.now`，可注入 `now`）、在线日志按天轮转（`src/log_util.py` 用 `time.strftime` + `rotation="00:00"`）都取进程本地时间。容器镜像在 `Dockerfile` 设 `TZ=Asia/Shanghai`；venv / 裸机部署未设时区，需保证宿主机本地时区与上游 AVL 文件名日期口径一致，否则跨天计数、拉取窗口与日志切分会偏移。
+**时区口径（运行约束）**：调用量按天计数（`call_stat/counter.py` 用 `datetime.date.today()`）、写入侧当天文件探测 /「昨天 + 今天」兜底与 `op_time` 过期清理（`sftp_avl2db/runner.py` 默认用 `datetime.now`，可注入 `now`）、在线日志按天轮转（`src/log_util.py` 用 `time.strftime` + `rotation="00:00"`）都取进程本地时间。容器镜像在 `Dockerfile` 设 `TZ=Asia/Shanghai`；venv / 裸机部署未设时区，需保证宿主机本地时区与上游 AVL 文件名日期口径一致，否则跨天计数、拉取窗口与日志切分会偏移。
 
 ## 2. 目录结构
 
