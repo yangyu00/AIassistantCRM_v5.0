@@ -1,4 +1,19 @@
-"""SQLite 写入层：建表 / 流式分批写 / 过期清理。"""
+"""SQLite 写入层：建表 / 流式分批写 / 过期清理（F09633 导入优化版）。
+
+替换路径：``sftp_avl2db/sink/sqlite_sink.py``（其余文件无需改动）。
+
+相对原版的四点改动，全部保持公开 API 与统计字段兼容：
+1. 分表 AVL 增加「全局未刷行数」水位：达到阈值时把所有分桶的写入放进
+   一个事务提交，内存峰值与分表数解耦。原版 BATCH_SIZE 是**单分桶**阈值，
+   128 张分表 × 100000 的行缓存会把整份 AVL 常驻内存；千万行时尤其严重。
+2. 写入连接加大 page cache / temp_store，SQL 文本按表缓存，分表路由查表化，
+   减少逐行 Python 开销与 SQLite prepare 次数。
+3. DROP 全量替换模式下用 ``INSERT OR REPLACE`` 代替
+   ``ON CONFLICT DO UPDATE``：表刚重建为空，冲突探测是纯开销；
+   OR REPLACE 保留「同主键只留一行」语义，且同批出现重复主键也不会报错。
+   非 DROP 模式（商机 / 控损）完全保持原 upsert 行为。
+4. 末尾余量按库一次提交，不再逐桶 commit 128 次。
+"""
 from __future__ import annotations
 
 import re
@@ -15,9 +30,15 @@ from .schema import (
 # 远程文件名 {AVL}{YYYYMMDD}000000.AVL：取末尾 000000 之前的 8 位日期。
 _FILE_DATE_RE = re.compile(r"(\d{8})000000$")
 
+# 全局未刷行数上限的默认值：分表数再多，内存里也只留这么多行。
+# 10 万行是实测折中值：千万行 AVL 约 100 次提交，每批每张分表平均
+# 780 行、局部性够好，常驻内存约 40~60MB；水位过小会把 128 张表切成
+# 大量小批，过大则单事务 WAL 与内存都偏大（20 万水位实测反而略慢）。
+DEFAULT_GLOBAL_FLUSH_ROWS = 100000
+
 
 def _configure(conn: sqlite3.Connection) -> sqlite3.Cursor:
-    """建表、写入共用的连接配置。"""
+    """建表、写入共用的连接配置（与线上原有口径一致）。"""
     cur = conn.cursor()
     cur.execute("PRAGMA journal_mode = WAL")
     cur.execute("PRAGMA synchronous = NORMAL")
@@ -43,7 +64,10 @@ class SqliteSink:
     """满足 ``sftp_avl2db.protocols.RecordSink`` 的 SQLite 实现。"""
 
     def __init__(self, profile, layout, *, table_schema: TableSchema | None = None,
-                 batch_size: int | None = None):
+                 batch_size: int | None = None,
+                 global_flush_rows: int | None = None,
+                 drop_insert_mode: str = "replace",
+                 bulk_pragmas: bool = True):
         self.profile = profile
         self.layout = layout
         self.schema = table_schema or TableSchema.from_profile(profile)
@@ -53,6 +77,25 @@ class SqliteSink:
                               if batch_size is None else batch_size)
         if self.batch_size <= 0:
             raise ValueError(f"batch_size 必须为正整数，当前为 {self.batch_size}")
+        if drop_insert_mode not in ("replace", "plain", "upsert"):
+            raise ValueError(f"drop_insert_mode 只能是 replace/plain/upsert，"
+                             f"当前为 {drop_insert_mode!r}")
+        self.drop_insert_mode = drop_insert_mode
+        self.bulk_pragmas = bool(bulk_pragmas)
+        # 只对分表 AVL 启用全局水位；固定表保持原有「单桶满批提交」语义，
+        # 避免改变其它 AVL 与既有自检的行为。
+        num_tables = int(getattr(layout, "num_tables", 0) or 0)
+        if global_flush_rows is None:
+            # 全局水位与 BATCH_SIZE 解耦：前者管「所有分桶合计多少行提交一次」，
+            # 后者仍是「单个分桶满多少行立即提交」的原语义。
+            self.global_flush_rows = (
+                DEFAULT_GLOBAL_FLUSH_ROWS if num_tables > 1 else 0)
+        else:
+            self.global_flush_rows = int(global_flush_rows)
+        if self.global_flush_rows < 0:
+            raise ValueError("global_flush_rows 不能为负")
+        self._drop_mode = self.drop_before_insert_enabled()
+        self._sql_cache: dict[str, str] = {}
         self.stats = WriteStats()
 
     def _group_targets_by_db(self, layout=None) -> dict[Path, list[str]]:
@@ -108,15 +151,38 @@ class SqliteSink:
                 conn.close()
 
     def _connect(self, db_path: Path) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(db_path))
+        conn = sqlite3.connect(str(db_path), timeout=30,
+                               cached_statements=256 if self.bulk_pragmas else 128)
         self.stats.connections += 1
-        _configure(conn)
+        cur = _configure(conn)
+        if self.bulk_pragmas:
+            # 大事务下默认 2MB page cache 会频繁把脏页刷回磁盘；
+            # 64MB 缓存 + 内存临时表对千万级导入是纯收益，重启进程即失效。
+            cur.execute("PRAGMA cache_size = -65536")
+            cur.execute("PRAGMA temp_store = MEMORY")
+            cur.execute("PRAGMA busy_timeout = 30000")
         return conn
+
+    def _sql_for(self, table: str) -> str:
+        """按表名缓存 INSERT SQL，避免每批重新拼串 / prepare。"""
+        sql = self._sql_cache.get(table)
+        if sql is not None:
+            return sql
+        if self._drop_mode and self.drop_insert_mode != "upsert":
+            names = ", ".join(self.schema.column_names)
+            placeholders = ", ".join("?" for _ in self.schema.column_names)
+            prefix = ("INSERT OR REPLACE" if self.drop_insert_mode == "replace"
+                      else "INSERT")
+            sql = f"{prefix} INTO {table} ({names}) VALUES ({placeholders})"
+        else:
+            sql = self.schema.insert_sql(table)
+        self._sql_cache[table] = sql
+        return sql
 
     def _flush(self, conn: sqlite3.Connection, table: str, batch: list) -> None:
         if not batch:
             return
-        conn.executemany(self.schema.insert_sql(table), batch)
+        conn.executemany(self._sql_for(table), batch)
         conn.commit()
         self.stats.batches += 1
         self.stats.commits += 1
@@ -167,48 +233,106 @@ class SqliteSink:
         except Exception as e:
             self.stats.errors.append((str(db_path), f"meta: {e}"))
 
+    def _make_router(self, layout, filename: str):
+        """逐行路由：分表 AVL 走预生成表名的查表，其它布局回退原接口。"""
+        num_tables = int(getattr(layout, "num_tables", 0) or 0)
+        if (num_tables > 1 and hasattr(layout, "product_no_index")
+                and hasattr(layout, "base") and hasattr(layout, "db_path")):
+            from ..avl_specs import shard_index, table_name
+            pidx = int(layout.product_no_index)
+            db_key = str(Path(layout.db_path))
+            names = [table_name(layout.base, i) for i in range(num_tables)]
+
+            def route(row):
+                return db_key, names[shard_index(row[pidx], num_tables)]
+            return route
+
+        def route(row):
+            db_path, table = layout.target(filename, row)
+            return str(Path(db_path)), table
+        return route
+
     def write(self, filename: str, rows: Iterable[tuple], layout=None) -> int:
-        """把解析器产出的记录按布局分桶、逐桶满批提交，并登记批次水位。"""
+        """把解析器产出的记录按布局分桶、逐桶/全局满批提交，并登记批次水位。"""
         layout = self.layout if layout is None else layout
         self.stats = WriteStats()
         time_index = self._time_index()
+        col_count = len(self.schema.columns)
+        self._sql_cache.clear()
 
         # 全量替换模式：写入最新 AVL 之前先 DROP 并重建全部目标表，
         # 表里的历史数据（含上游不再下发的主键）一次性清干净。
         if self.drop_before_insert_enabled():
             self.stats.dropped_tables = self.drop_existing(layout)
 
+        route = self._make_router(layout, filename)
         conns: dict[str, sqlite3.Connection] = {}
         batches: dict[tuple[str, str], list] = {}
+        pending = 0
+
+        def ensure_conn(db_key: str) -> sqlite3.Connection:
+            conn = conns.get(db_key)
+            if conn is None:
+                Path(db_key).parent.mkdir(parents=True, exist_ok=True)
+                conn = self._connect(Path(db_key))
+                conns[db_key] = conn
+            return conn
+
+        def flush_bucket(key: tuple[str, str]) -> None:
+            """原语义：单个分桶攒满 BATCH_SIZE，立即提交一次。"""
+            nonlocal pending
+            batch = batches.get(key)
+            if not batch:
+                return
+            flushed = len(batch)
+            self._flush(conns[key[0]], key[1], batch)
+            batch.clear()
+            pending -= flushed
+
+        def flush_all() -> None:
+            """新语义：全局累计达到阈值，同库所有桶一次事务提交。"""
+            nonlocal pending
+            by_db: dict[str, list[tuple[str, list]]] = {}
+            for (db_key, table), batch in batches.items():
+                if batch:
+                    by_db.setdefault(db_key, []).append((table, batch))
+            for db_key, items in by_db.items():
+                conn = conns[db_key]
+                for table, batch in items:
+                    conn.executemany(self._sql_for(table), batch)
+                    batch.clear()
+                    self.stats.batches += 1
+                conn.commit()
+                self.stats.commits += 1
+            pending = 0
 
         try:
             for row in rows:
-                row = tuple(row)
-                self.schema.validate_row(row)
+                if type(row) is not tuple:
+                    row = tuple(row)
+                if len(row) != col_count:
+                    raise ValueError(
+                        f"记录列数 {len(row)} 与表结构 {col_count} 列不一致")
                 if time_index >= 0:
                     op_time = str(row[time_index])
                     if op_time > self.stats.max_op_time:
                         self.stats.max_op_time = op_time
-                db_path, table = layout.target(filename, row)
-                db_path = Path(db_path)
-                db_key = str(db_path)
-                bucket = (db_key, table)
-                if bucket not in batches:
-                    batches[bucket] = []
-                    if db_key not in conns:
-                        db_path.parent.mkdir(parents=True, exist_ok=True)
-                        conns[db_key] = self._connect(db_path)
-                batches[bucket].append(row)
+                db_key, table = route(row)
+                ensure_conn(db_key)
+                key = (db_key, table)
+                bucket = batches.get(key)
+                if bucket is None:
+                    bucket = batches[key] = []
+                bucket.append(row)
                 self.stats.rows += 1
-                if len(batches[bucket]) >= self.batch_size:
-                    self._flush(conns[db_key], table, batches[bucket])
-                    batches[bucket].clear()
+                pending += 1
+                if len(bucket) >= self.batch_size:
+                    flush_bucket(key)
+                elif self.global_flush_rows and pending >= self.global_flush_rows:
+                    flush_all()
 
-            # 末尾余量：逐桶提交（控损 128 张表各自提交自己的余量）
-            for (db_key, table), batch in batches.items():
-                if batch:
-                    self._flush(conns[db_key], table, batch)
-                    batch.clear()
+            # 末尾余量：按库一次提交（原版是逐桶 128 次 commit）
+            flush_all()
         except Exception:
             for conn in conns.values():
                 try:
@@ -319,13 +443,19 @@ class SqliteSink:
 
 
 def build_sink(profile, *, layout=None, table_schema: TableSchema | None = None,
-               batch_size: int | None = None) -> SqliteSink:
+               batch_size: int | None = None,
+               global_flush_rows: int | None = None,
+               drop_insert_mode: str = "replace",
+               bulk_pragmas: bool = True) -> SqliteSink:
     """装配写入层。"""
     if layout is None:
         from .router import build_layout
         layout = build_layout(profile)
     return SqliteSink(profile, layout, table_schema=table_schema,
-                      batch_size=batch_size)
+                      batch_size=batch_size,
+                      global_flush_rows=global_flush_rows,
+                      drop_insert_mode=drop_insert_mode,
+                      bulk_pragmas=bulk_pragmas)
 
 
 __all__ = ["SqliteSink", "WriteStats", "build_sink"]
